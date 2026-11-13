@@ -414,7 +414,12 @@
   }
 
   // The page redraws the chat by replacing its children, and the send button changes class when a run starts or ends.
-  new MutationObserver(schedule).observe(MuseUI.el.chat, { childList: true, subtree: true });
+  // A reply that is arriving is drawn into its run box many times a second. No row is drawn or changed while a run is going, so a
+  // change inside a run box asks for no pass; the box itself joining or leaving the chat still does.
+  const outsideRunBox = records => records.some(r => !(r.target instanceof Element && r.target.closest('.run-box')));
+  new MutationObserver(records => {
+    if (outsideRunBox(records)) schedule();
+  }).observe(MuseUI.el.chat, { childList: true, subtree: true });
   new MutationObserver(schedule).observe(MuseUI.el.send, { attributes: true, attributeFilter: ['class'] });
   schedule();
 })();

@@ -11,14 +11,14 @@ import {
   anthropicKey, testAnthropicKey, EFFORTS, billingFor, isSubscriptionToken, SUBSCRIPTION_TOKEN_REFUSAL,
 } from './lib/providers.mjs';
 import { summarizeUsage, totalUsage } from './lib/pricing.mjs';
-import { runCli, openSignIn, museSignedIn } from './lib/accounts.mjs';
+import { COULD_NOT_CHECK, codexLoginStatus, faultText, forgetCodexLogin, openSignIn, museSignedIn, refreshKeySecrets, softCheck } from './lib/accounts.mjs';
 import { imageSupport } from './lib/capabilities.mjs';
 import { assertCanSave, connectKeyChannel, forgetKey, keyStorage, parentChannel, storeKey } from './lib/keys.mjs';
 import { expandFileMentions, listTree, workingDiff } from './lib/files.mjs';
 import { queueUpdate, listUpdates, applyUpdate, discardUpdate, rollbackUpdate, resetOverlay, overlayStatus, acknowledgeRollback } from './lib/updates.mjs';
 import * as overlay from './lib/overlay.mjs';
 import { readUsage } from './lib/usage.mjs';
-import { invalidateProviderStatus, prewarmProviderStatus, providersQuick, statusPayload } from './lib/provider-status.mjs';
+import { invalidateProviderStatus, knownProviders, prewarmProviderStatus, providersQuick, statusPayload } from './lib/provider-status.mjs';
 import { claudeRoute, claudeCliStatus } from './lib/claude-cli.mjs';
 import { cleanReason } from './lib/tools.mjs';
 import { DEFAULT_COUNCIL, normalizeCouncil, runCouncil } from './lib/council.mjs';
@@ -49,6 +49,7 @@ import { driverFor } from './lib/computer/drivers.mjs';
 import { clearPromptsHealth, promptsHealth } from './lib/prompts.mjs';
 import { permissionHelp } from './lib/platform/computer.mjs';
 import { available as browserAvailable } from './lib/browser-bridge.mjs';
+import { endBrowserRun } from './lib/browser-tools.mjs';
 import { folderRisk } from './lib/guard.mjs';
 import { buildSystem } from './lib/prompt.mjs';
 import { apiProvider } from './lib/api-providers.mjs';
@@ -59,7 +60,7 @@ import { councilUploads } from './lib/council-files.mjs';
 import { runAfter, runBefore, runExpand } from './lib/turn-hooks.mjs';
 import { describeThreads, planModeOf, projectBusy, readOnlyNotice, readOnlyWhy, runningScopes, scopeFor, threadOf, worktreeHeld, worktreeOf } from './lib/scope.mjs';
 import { ensureThreads, migrateThreads, threadsOf } from './lib/threads.mjs';
-import { onShellMessage, shellPost } from './lib/shell.mjs';
+import { onShellFault, onShellMessage, shellPost } from './lib/shell.mjs';
 import { forgetWorktree } from './lib/worktree.mjs';
 
 // Under the desktop app this is an Electron utility process, which ends with the app, and the app sends it the saved API
@@ -70,9 +71,88 @@ if (process.parentPort) process.env.ELECTRON_RUN_AS_NODE = '1';
 // closes and the server stops too, so it never blocks the port for the next start.
 if (process.env.MUSE_CONSOLE_CHILD === '1') {
   process.stdin.on('error', () => {});
-  process.stdin.on('end', () => process.exit(0));
+  // A draft save that still waits is written first (store.flush never rejects and gives up after 2 seconds).
+  process.stdin.on('end', () => { store.flush().then(() => process.exit(0), () => process.exit(0)); });
   process.stdin.resume();
 }
+
+// ---------- faults nobody caught ----------
+// The server is some 180 modules and many background tasks, and before this one forgotten .catch anywhere ended the process with every
+// run in it. Now:
+//  - a rejection nobody handled is written to the log and the server goes on;
+//  - an error nobody caught is written to the log and the server goes on, but three of them within a minute mean the process can no
+//    longer be trusted: the runs are stopped the way a quit stops them, the state is saved, and the process ends with code 1, which
+//    the desktop app's supervisor answers by starting the server again (desktop/server-supervisor.cjs). Not code 75: that one means
+//    "restart for an update", is never counted, and would let a server that keeps failing restart for ever without a word.
+// What is logged is the error's message and the top of its stack with keys and the launch token taken out (lib/accounts.mjs
+// faultText), never a header, a body or a query. The same line is written once in ten seconds at most. The log is this process's
+// stderr, which the desktop app keeps in server.log.
+// A key saved in the app is in the memory of lib/keys.mjs and not in the environment, so the saved keys are read again before each
+// line (lib/accounts.mjs refreshKeySecrets) and their exact values are taken out whatever their shape. That read is a few turns of
+// the promise queue, so a line is written a moment after its fault, and the lines keep their order.
+const FAULT_LIMIT = 3;
+const FAULT_WINDOW_MS = 60_000;
+const FAULT_EXIT_CODE = 1;
+const SAME_LINE_MS = 10_000;
+const faultTimes = [];
+const loggedLines = new Map();
+let logQueue = Promise.resolve();
+function logFault(what, err, sameLineMs = SAME_LINE_MS) {
+  const write = () => writeFault(what, err, sameLineMs);
+  logQueue = logQueue.then(refreshKeySecrets).then(write, write);
+}
+function writeFault(what, err, sameLineMs) {
+  try {
+    const line = faultText(what, err, [token()]);
+    const now = Date.now();
+    // The error id of a request is left out of the comparison, so the same failure of a route that is asked again and again is one line.
+    const same = line.replace(/\bE-[a-f0-9]{6}\b/g, 'E-');
+    const last = loggedLines.get(same);
+    if (last !== undefined && now - last < sameLineMs) return;
+    if (loggedLines.size > 200) loggedLines.clear();
+    loggedLines.set(same, now);
+    console.error(`[${new Date(now).toISOString()}] ${line}`);
+  } catch {
+    // Writing to the log must never be a fault of its own.
+  }
+}
+let endingAfterFaults = false;
+// False until the last line of this file has run. Until then an error nobody caught is a failed start (a port that is taken, a state
+// folder that cannot be made, a module that does not load): the process says why and ends with code 1, as it always did, so the
+// launcher sees a start that failed and not a server that "goes on" without listening.
+let serverStarted = false;
+// A listener of a desktop message that threw or rejected (lib/shell.mjs dispatch) is reported here.
+onShellFault((type, err) => logFault(`A handler of the desktop app's "${String(type).slice(0, 60)}" message failed`, err));
+process.on('unhandledRejection', reason => logFault('A rejection nobody handled (the server goes on)', reason));
+process.on('uncaughtException', err => {
+  if (!serverStarted) {
+    let line = 'The server could not start.';
+    try {
+      line = faultText('The server could not start', err, [token()]);
+    } catch {
+      // The short line is written.
+    }
+    const end = () => process.exit(1);
+    setTimeout(end, 1000);
+    try {
+      process.stderr.write(`${line}
+`, end);
+    } catch {
+      end();
+    }
+    return;
+  }
+  logFault('An error nobody caught (the server goes on)', err);
+  const now = Date.now();
+  faultTimes.push(now);
+  while (faultTimes.length && now - faultTimes[0] > FAULT_WINDOW_MS) faultTimes.shift();
+  if (faultTimes.length < FAULT_LIMIT || endingAfterFaults) return;
+  endingAfterFaults = true;
+  logFault(`${FAULT_LIMIT} errors nobody caught within a minute`, 'The server stops its runs, saves and ends, so that it can be started again clean.');
+  // Whatever happens in the clean stop, the process ends: 8 seconds is more than the stop needs (3 for the runs, 2 for the save).
+  setTimeout(() => process.exit(FAULT_EXIT_CODE), 8000).unref();
+  Promise.resolve().then(() => stopRunsAndSave()).then(() => store.flush()).catch(() => {}).finally(() => process.exit(FAULT_EXIT_CODE));
+});
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT) || 4317;
@@ -140,6 +220,17 @@ const UPDATING_TEXT = 'Plenum is applying an update and will restart. Try again 
 // while it is set, so no run begins during the drain only to be stopped a moment later.
 let shuttingDown = false;
 const CLOSING_TEXT = 'Plenum is closing.';
+// The clean stop, used by the desktop app's shutdown message and by the fault handler at the top: every run is stopped the way Stop
+// stops it, so its reply is stored with what it had (the wait for that is 3 seconds at most), and the state is saved. A save that
+// fails is kept in saveFailure as usual; the stop goes on, and the last save that worked is still on disk.
+const SHUTDOWN_WAIT_MS = 3000;
+async function stopRunsAndSave() {
+  shuttingDown = true;
+  for (const ac of running.values()) ac.abort();
+  const until = Date.now() + SHUTDOWN_WAIT_MS;
+  while (running.size && Date.now() < until) await new Promise(r => setTimeout(r, 50));
+  await saveReporting(null);
+}
 // Drive id -> the computer run that is live, so a route can reach the run of a drive (the "Type it for me" box, lib/routes/computer.mjs).
 const liveComputerRuns = new Map();
 // Approval id -> { finish, fullDetail, card, meta, at } for a tool call waiting on the user. fullDetail is the whole diff when the card shows
@@ -618,6 +709,12 @@ function forgetRulesSessions(st, project) {
   for (const entry of threadsOf(st, project).list) forgetProjectSessions(entry.id);
 }
 
+// What an error event carries besides its message when the failure has a kind: its kind (lib/cli-errors.mjs for a CLI: not-signed-in,
+// model-unavailable, quota, overloaded, network, flags-rejected, bad-output, crashed, unknown; lib/api-errors.mjs for an API model: auth,
+// no-credit, rate-limit, model-gone, ...) and whether sending the same message again can work, so the page can offer the right button.
+// Added only when the error has a kind (retryable only when the error says it); every other error event is exactly what it was.
+const errorExtras = err => (typeof err?.kind === 'string' && err.kind ? { kind: err.kind, ...(typeof err.retryable === 'boolean' ? { retryable: err.retryable } : {}) } : {});
+
 // Saves the state file at the end of a run and, when the save fails, says so in the run's stream as an error event (B-28): the reply is
 // on screen but is lost on restart. It never throws, so a failed save cannot replace the error a handler is already reporting; the
 // failure also stays in publicState().saveFailure. send is the run's send, or null when no stream is open. At the start of a run
@@ -759,6 +856,8 @@ async function runTurn({ ref, system, messages, root, kind, scope, mode, effort,
   let error = false;
   // What ended the reply with an error, when something did (a failed request, or a reply with no text). Stored with the reply (B-49).
   let failure = null;
+  // The kind of that failure when it is a CLI's (err.kind), stored with the reply as errorKind so the page can draw the right buttons after a reload.
+  let failureKind = null;
   // 'length' when the reply stopped at the model's output limit (see onStop in streamChat). The page marks such a reply.
   // 'capped' when the reply passed MAX_REPLY_CHARS (B-51); a later onStop does not replace it.
   let stop = null;
@@ -842,12 +941,21 @@ async function runTurn({ ref, system, messages, root, kind, scope, mode, effort,
     if (!signal.aborted) {
       error = true;
       failure = err.message;
-      send({ type: 'error', message: err.message });
+      failureKind = typeof err?.kind === 'string' && err.kind ? err.kind : null;
+      send({ type: 'error', message: err.message, ...errorExtras(err) });
     }
   } finally {
     // Every agent of this reply is over: any that still waits is stopped, and the run's agents leave the live list. No draft is saved after this.
     clearInterval(draftTimer);
     agentRun.close();
+    // The reply is over, so the browser is no longer the model's: its drive ends now, and with it the "Model is driving" badge, the stop
+    // key and the hold on the project (lib/browser-tools.mjs endBrowserRun). A CLI's calls through the bridge use this same ctx, so this
+    // covers them too. A turn that never used the browser has nothing to end, and a failure here never touches the reply.
+    try {
+      endBrowserRun(ctx);
+    } catch {
+      // The drive's own idle limit ends it.
+    }
   }
   // The run ends before the reply is stored: it releases the keys, hides the on-screen bar and closes its log, and says what it did.
   // A stop reason the run already has (Stop, the stop key, a limit) wins over the way the turn ended.
@@ -897,6 +1005,7 @@ async function runTurn({ ref, system, messages, root, kind, scope, mode, effort,
       ...(usage ? { usage } : {}),
       ...(stop ? { stop } : {}),
       ...(kept ? { error: kept } : {}),
+      ...(kept && failure && failureKind ? { errorKind: failureKind } : {}),
       ...(signal.aborted ? { aborted: true } : {}),
     });
   } else {
@@ -1325,7 +1434,7 @@ async function handleTurn(req, res, { review }) {
     send({ type: 'done', aborted: ac.signal.aborted, timedOut, usage: turn.usage ?? null, stop: turn.stop ?? null, ...(advisorTurn ? { advisorUsage: advisorTurn.usage ?? null } : {}) });
   } catch (err) {
     if (!streaming) throw err;
-    send({ type: 'error', message: err.message });
+    send({ type: 'error', message: err.message, ...errorExtras(err) });
     // A failed run ends with done too, as streamForProject does, so a window that draws this run from the events channel
     // knows it is over. Its reply is saved before that done (B-42), as on the success path.
     finalSaved = true;
@@ -1521,7 +1630,7 @@ async function streamForProject(req, res, project, makeRun, onEvent, { kind = 'r
     if (!streaming) throw err;
     // What the run left in the chat is stored before the stream says anything more, as in the normal end.
     await finishRun();
-    send({ type: 'error', message: err.message });
+    send({ type: 'error', message: err.message, ...errorExtras(err) });
     // Saved before done, as on the normal end (B-42); the finally block does not save again.
     finalSaved = true;
     await saveReporting(send);
@@ -2020,8 +2129,16 @@ async function handleRelayRoute(req, res) {
 const RESTART_EXIT_CODE = 75;
 
 // Restarts the server after an applied update. The launcher brings it back up.
+// A draft save that still waits is written first (store.flush never rejects and gives up after 2 seconds; the try is a belt).
 function restartSoon() {
-  setTimeout(() => process.exit(RESTART_EXIT_CODE), 300);
+  setTimeout(async () => {
+    try {
+      await store.flush();
+    } catch {
+      // The restart goes on.
+    }
+    process.exit(RESTART_EXIT_CODE);
+  }, 300);
 }
 
 // The scope ids POST /api/cancel stops. Which one: body.thread (a thread of body.project) when it is sent; else the run whose scope id
@@ -2037,13 +2154,79 @@ function cancelTargets(body) {
   return active && running.has(active.id) ? [active.id] : runningScopes(running, project.id);
 }
 
+// GET /api/accounts waits this long for each of its reads (the provider status, Claude Code's sign-in, Codex's sign-in). A read that
+// takes longer goes on in the background, and the answer says what is known (lib/accounts.mjs softCheck).
+const ACCOUNT_WAIT_MS = 3000;
+// When the provider status is late and there is no snapshot of it yet (the first seconds after a start), the route waits this much
+// longer for either of them and then says that Plenum is still checking. It never waits for as long as a CLI that hangs.
+const ACCOUNT_MORE_MS = 3000;
+const STILL_CHECKING = 'Plenum is still checking your accounts. Press Refresh in a moment.';
+// The provider status for the Accounts page: a fresh read, as before, when it comes in time. When it does not (a CLI that is slow or
+// hangs), or when it fails, the background snapshot of lib/provider-status.mjs is used: that one is seconds old at most and is read
+// again when a key is saved or a route chosen. softCheck's own last answer can be minutes old, so it is never passed on
+// (lastGoodMs: 0). With no snapshot either, a read that failed is thrown to the request, as before.
+const readAccountProviders = softCheck(() => providerStatus().then(providers => ({ providers }), error => ({ failed: true, error })), { waitMs: ACCOUNT_WAIT_MS, lastGoodMs: 0 });
+async function accountProviders() {
+  const first = await readAccountProviders({ fresh: true });
+  const known = first.value?.providers ?? knownProviders();
+  if (known) return known;
+  if (first.value?.failed) throw first.value.error;
+  let poll = null;
+  const snapshot = new Promise(resolve => {
+    poll = setInterval(() => {
+      const providers = knownProviders();
+      if (providers) resolve({ value: { providers } });
+    }, 100);
+  });
+  try {
+    const more = await Promise.race([readAccountProviders({ waitMs: ACCOUNT_MORE_MS }), snapshot]);
+    const providers = more.value?.providers ?? knownProviders();
+    if (providers) return providers;
+    if (more.value?.failed) throw more.value.error;
+  } finally {
+    clearInterval(poll);
+  }
+  throw httpError(503, STILL_CHECKING);
+}
+// Claude Code's sign-in for the Accounts page: `claude auth status`, one at a time. An answer of "signed in" is kept for 20 seconds
+// and any other for 3 (the rule of Codex's check), ?fresh=1 asks again, and the sign-in route drops what is kept.
+// lib/claude-cli.mjs ends the CLI after 15 seconds and reads the silence as "not signed in". A check that took that long without a
+// "signed in", or that says it does not know, gave no answer: it is thrown as such, so a Claude Code that hangs is never shown as
+// signed out, and softCheck falls back on the last real answer.
+const CLAUDE_KEEP_MS = 20_000;
+const CLAUDE_KEEP_UNSURE_MS = 3000;
+const CLAUDE_NO_ANSWER_MS = 14_000;
+const readClaudeAccount = softCheck(async () => {
+  const began = Date.now();
+  const value = await claudeCliStatus({ fresh: true });
+  if (value?.installed && value.loggedIn !== true && (value.loggedIn !== false || Date.now() - began >= CLAUDE_NO_ANSWER_MS)) throw new Error('Claude Code gave no answer.');
+  return value;
+}, {
+  waitMs: ACCOUNT_WAIT_MS,
+  keepFor: value => (value?.loggedIn === true ? CLAUDE_KEEP_MS : CLAUDE_KEEP_UNSURE_MS),
+  settled: value => value?.installed === true,
+});
+// What the Accounts page is told about Claude Code on its CLI route. read is what readClaudeAccount gave (null when it was not asked).
+// When the check gave nothing in time and nothing is kept from the last minutes, what the provider status knows is used: a "signed
+// in" there is passed on, marked stale. Anything else is not known: connected is null with the reason in status, never false. A
+// kept "not signed in" does not win over a provider status that says "signed in" either (the person signed in a moment ago).
+function claudeCliAccount(read, providers, keySaved) {
+  const cli = read?.value;
+  const signedInElsewhere = providers.anthropic.credentials === true;
+  if (cli && !(read.stale && cli.loggedIn !== true && signedInElsewhere)) {
+    return { route: 'cli', connected: cli.loggedIn, email: cli.email, plan: cli.plan, keySaved, ...(read.stale ? { stale: true } : {}) };
+  }
+  if (signedInElsewhere) return { route: 'cli', connected: true, email: null, plan: null, keySaved, stale: true };
+  return { route: 'cli', connected: null, email: null, plan: null, keySaved, status: COULD_NOT_CHECK('Claude Code'), reason: 'timed_out' };
+}
+
 async function handleApi(req, res, url) {
   const st = store.get();
   // Route modules in lib/routes/ answer their own endpoints first.
   const ext = findExtRoute(req.method, url.pathname);
   // scopeFor(project, threadId) finds the thread a request names (lib/scope.mjs; the project's active thread when threadId is left out,
   // a 404 for a thread that is not an open thread of the project), and projectBusy(projectId) says whether any thread of it runs.
-  if (ext) return await ext.handler({ req, res, url, json, readBody, httpError, store, projectById, streamForProject, publicState, approvalRequester, running, relaySeats, events, scopeFor: (project, threadId) => scopeFor(store, project, threadId), projectBusy: projectId => projectBusy(running, projectId), computerRun: id => liveComputerRuns.get(id) ?? null });
+  if (ext) return await ext.handler({ req, res, url, json, readBody, httpError, store, projectById, streamForProject, publicState, approvalRequester, running, exclusive, relaySeats, events, scopeFor: (project, threadId) => scopeFor(store, project, threadId), projectBusy: projectId => projectBusy(running, projectId), computerRun: id => liveComputerRuns.get(id) ?? null });
   switch (`${req.method} ${url.pathname}`) {
     // One server-sent stream per window (lib/events.mjs). The first event is hello, with the state without messages.
     case 'GET /api/events': {
@@ -2347,22 +2530,38 @@ async function handleApi(req, res, url) {
       return json(res, 200, { detail: entry.fullDetail ?? '' });
     }
 
+    // The three reads start together and each answers within about 3 seconds (ACCOUNT_WAIT_MS, above handleApi), so one slow or stuck
+    // CLI does not hold the Accounts page and the setup guide. A sign-in that could not be read in time is null, never false: "not
+    // known" must not look like "signed out". ?fresh=1 asks Codex and Claude Code again whatever answer is kept. Only in the first
+    // seconds after a start, with no provider status known at all, can the route take up to 6 seconds; it then answers 503 with a
+    // sentence (accountProviders). Claude Code is asked only on its CLI route.
     case 'GET /api/accounts': {
-      const [providers, cli] = await Promise.all([providerStatus(), claudeCliStatus({ fresh: true })]);
-      const codex = providers.codex.installed ? await runCli('codex', ['login', 'status']) : null;
-      const codexText = (codex?.output || codex?.error || '').split('\n')[0].trim();
+      const fresh = url.searchParams.get('fresh') === '1';
+      const asked = Date.now();
+      const claudeOnCli = (await claudeRoute().catch(() => 'cli')) === 'cli';
+      const [providers, claudeFirst, codexFirst] = await Promise.all([
+        accountProviders(),
+        claudeOnCli ? readClaudeAccount({ fresh }) : null,
+        codexLoginStatus({ fresh }),
+      ]);
+      // A check that was late may have answered while the others were waited for. Its answer is in hand then, and is used.
+      const claudeRead = claudeFirst?.value && !claudeFirst.stale ? claudeFirst : (readClaudeAccount.since(asked) ?? claudeFirst);
+      const codex = codexFirst?.reason === 'timed_out' || codexFirst?.stale ? ((await codexLoginStatus({ since: asked })) ?? codexFirst) : codexFirst;
       return json(res, 200, {
         // keySaved on the CLI route says an Anthropic key is still saved though the CLI is in use, so the card can offer to remove it (B-60).
+        // connected is null, with the reason in status, when Claude Code gave no answer in time and nothing is known about it
+        // (claudeCliAccount, above handleApi); stale: true marks an answer that is not from this read.
         claude: providers.anthropic.route === 'cli'
-          ? { route: 'cli', connected: cli.loggedIn, email: cli.email, plan: cli.plan, keySaved: (await anthropicKey()).key !== null }
+          ? claudeCliAccount(claudeRead, providers, (await anthropicKey()).key !== null)
           // refused is set when the only credential found is a Claude subscription token, which the API route does not send.
           // storage and storageNote say where a saved key is kept on this computer (lib/keys.mjs keyStorage), so the card does not claim
           // the Windows account on a Mac or in a plain Node run (B-95).
           : { route: 'api', connected: providers.anthropic.credentials, source: providers.anthropic.source, storage: keyStorage().mode, storageNote: keyStorage().message, ...(providers.anthropic.refused ? { refused: providers.anthropic.refused } : {}) },
         muse: { installed: providers.muse.installed, signedIn: museSignedIn(), metaApiKey: providers.muse.metaApiKey },
         gemini: { installed: providers.gemini.installed, signedIn: providers.gemini.signedIn, email: providers.gemini.email },
-        // The Codex CLI prints its login status on stderr, so both streams are checked.
-        codex: { installed: providers.codex.installed, loggedIn: /logged in/i.test(`${codex?.output ?? ''}\n${codex?.error ?? ''}`), status: codexText },
+        // Codex's own answer (lib/accounts.mjs codexLoginStatus): loggedIn is true, false, or null when the CLI gave no answer in time
+        // (status then says so). reason and stale are there only when they apply.
+        codex,
       });
     }
 
@@ -2407,6 +2606,8 @@ async function handleApi(req, res, url) {
     case 'POST /api/accounts/claude/login':
       await openSignIn('claude', ['auth', 'login'], 'Claude sign-in');
       invalidateProviderStatus();
+      // The kept answer is dropped, so the next read of Accounts asks the CLI (as Codex's route does).
+      readClaudeAccount.forget();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/gemini/login':
@@ -2422,6 +2623,7 @@ async function handleApi(req, res, url) {
     case 'POST /api/accounts/codex/login':
       await openSignIn('codex', ['login'], 'Codex sign-in');
       invalidateProviderStatus();
+      forgetCodexLogin();
       return json(res, 200, { ok: true });
 
     case 'GET /api/updates':
@@ -2529,12 +2731,55 @@ const server = http.createServer(async (req, res) => {
     const body = await fs.readFile(asset.file);
     return res.end(asset.type.startsWith('text/html') ? withTheme(body.toString('utf8')) : body);
   } catch (err) {
-    if (res.headersSent) return res.end();
-    // Marks the token refusal, so a page can tell it from a provider's own 401 (an invalid API key) that a route passes on.
-    if (isRefusal(err)) res.setHeader('x-plenum-auth', 'token');
-    json(res, err.status ?? 400, { error: err.message, ...(err.terms === true ? { terms: true } : {}), ...(err.policy === true ? { policy: true } : {}) });
+    // What the request is answered with, and the log line when the failure is one nobody meant (requestFault, below).
+    const fault = requestFault(req, err);
+    try {
+      if (res.headersSent) return res.end();
+      // Marks the token refusal, so a page can tell it from a provider's own 401 (an invalid API key) that a route passes on.
+      if (isRefusal(err)) res.setHeader('x-plenum-auth', 'token');
+      json(res, fault.status, fault.body);
+    } catch {
+      // The connection is gone; there is nobody to answer.
+    }
   }
 });
+
+// What a request that threw is answered with: { status, body }.
+//  - An error with a status (httpError, a shell or provider failure) keeps its status and its text, as before. A 5xx among them is
+//    noted in the log as one line, at most once in ten minutes for the same line.
+//  - A plain Error without a status keeps the 400 and its text, as before: routes and helpers throw those on purpose with a sentence
+//    for the person ("Write a prompt first."), and so does a body that is not JSON. A web address that cannot be read and a network
+//    failure of fetch are TypeErrors by their nature and stay with them.
+//  - Anything else is a mistake in Plenum itself (a TypeError, ReferenceError or RangeError, or a thrown value that is no error). The
+//    person gets a plain sentence with an id instead of "Cannot read properties of undefined", and the log gets the id, the method,
+//    the path without its query, and the top of the stack. Never a header or a body.
+const DELIBERATE_5XX_MS = 10 * 60_000;
+const unexpectedIds = new Map();
+// The sentence says where to look: the log is the file server.log in Plenum's data folder (the desktop app keeps this process's stderr
+// there), and the line of this failure holds the id.
+const unexpectedText = id => `Plenum hit an unexpected problem. Try again. If it happens again, look for ${id} in the file server.log in Plenum's data folder.`;
+function requestFault(req, err) {
+  const errorLike = err instanceof Error || (err !== null && typeof err === 'object' && typeof err.message === 'string');
+  const flags = errorLike ? { ...(err.terms === true ? { terms: true } : {}), ...(err.policy === true ? { policy: true } : {}) } : {};
+  const where = `${String(req?.method ?? '').slice(0, 10)} ${String(req?.url ?? '').split(/[?#]/, 1)[0].slice(0, 200)}`;
+  if (errorLike && Number.isInteger(err.status) && err.status >= 400 && err.status <= 599) {
+    if (err.status >= 500) logFault(`A request was answered with ${err.status} (${where})`, String(err.message), DELIBERATE_5XX_MS);
+    return { status: err.status, body: { error: err.message, ...flags } };
+  }
+  const byNature = errorLike && (err.cause !== undefined || err.code === 'ERR_INVALID_URL' || err.message === 'fetch failed');
+  const mistake = !errorLike || ((err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err instanceof EvalError) && !byNature);
+  if (!mistake) return { status: 400, body: { error: err.message, ...flags } };
+  // The same failure of the same route within ten seconds keeps the id of its first line, so the id a person is given is always in the log.
+  const key = `${where} ${errorLike ? `${err.name} ${err.message}` : typeof err}`;
+  const now = Date.now();
+  const kept = unexpectedIds.get(key);
+  if (kept && now - kept.at < SAME_LINE_MS) return { status: 500, body: { error: unexpectedText(kept.id), errorId: kept.id } };
+  const id = `E-${randomUUID().replace(/-/g, '').slice(0, 6)}`;
+  if (unexpectedIds.size > 200) unexpectedIds.clear();
+  unexpectedIds.set(key, { id, at: now });
+  logFault(`${id} A request failed in a way nobody meant (${where})`, err, 0);
+  return { status: 500, body: { error: unexpectedText(id), errorId: id } };
+}
 
 // Phones (lib/remote/index.mjs, MOBILE.json desktop.server_mjs_lines). The Bridge gets this server's running map and publicState, so
 // stop.mjs can abort a run in this process. It starts only when "Let phones connect" is on in the saved state; with it off nothing is
@@ -2594,20 +2839,29 @@ await listen();
 // The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them.
 prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) });
 await startPhones();
+// The sign-in checks of the Accounts page (Codex, and Claude Code on its CLI route) are started once in the background a moment after
+// the start, when the License Agreement is accepted, so that the first open of Accounts or of the setup guide has an answer and does
+// not wait for a CLI. Nothing waits for them, and a check that fails is nothing: the first read asks again.
+const ACCOUNT_PREWARM_MS = 1500;
+setTimeout(() => {
+  Promise.resolve().then(async () => {
+    if (!termsAccepted(store.get())) return;
+    const codex = codexLoginStatus({ waitMs: 0 });
+    if ((await claudeRoute()) === 'cli') await readClaudeAccount({ waitMs: 0 });
+    await codex;
+  }).catch(() => {});
+}, ACCOUNT_PREWARM_MS).unref();
 // A clean stop before the desktop app quits (B-29). Every run is stopped the way Stop stops it, so its reply is stored with what it had;
 // the state is saved; then the app is told it may end the process. Only the desktop channel can ask (lib/shell.mjs), so no page, phone
 // or route can stop the server this way. The app ends the process anyway if this takes longer than its own wait.
-const SHUTDOWN_WAIT_MS = 3000;
 onShellMessage('shutdown', async () => {
   if (shuttingDown) return;
-  shuttingDown = true;
-  for (const ac of running.values()) ac.abort();
-  const until = Date.now() + SHUTDOWN_WAIT_MS;
-  while (running.size && Date.now() < until) await new Promise(r => setTimeout(r, 50));
-  // A save that fails is kept in saveFailure as usual; the quit goes on, and the last save that worked is still on disk.
-  await saveReporting(null);
+  await stopRunsAndSave();
   shellPost({ type: 'shutdown-done' });
 });
+// An error on the listening socket after the start (the start's own errors are handled in listen) is written to the log; without a
+// listener it would be an error nobody caught.
+server.on('error', err => logFault('The local server reported an error', err));
 // The server is up, so an applied update that was waiting to prove it starts has done so (lib/overlay.mjs). Only a start that went
 // through the bootstrap (plenum.mjs) proves anything: `node server.mjs` runs the shipped files and leaves pending.json alone.
 if (process.env.PLENUM_OVERLAY_DIR !== undefined) overlay.markHealthy();
@@ -2619,3 +2873,5 @@ if (tokenSource() === 'generated' && !keyChannel) console.log(`Open Plenum at ht
 else console.log(`Plenum running at http://${HOST}:${PORT}`);
 console.log(`State file: ${path.join(store.HOME, 'state.json')}`);
 console.log(buildLine());
+// From here on an error nobody caught is a fault of a running server, not a failed start (see the fault handlers at the top).
+serverStarted = true;

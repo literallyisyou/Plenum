@@ -6,7 +6,7 @@
 // A snapshot carries the seq of the last change it includes; events that arrived while it was read are applied after it, so nothing
 // is lost and nothing is applied twice. A reconnect (the 'hello' event) reads the snapshot again.
 //
-// Unread: a finished run shows a dot until its project is opened (or the run ends while its project is on screen). That is kept in
+// Unread: a finished run shows a dot until its chat is opened (or the run ends while its chat is on screen: the project's Main chat or one of its threads). That is kept in
 // this window's localStorage ('plenum.board.seen': { [scope]: endedAt }), read and written in try/catch.
 //
 // Text from the server (project and thread names, models, steps, approval summaries) is set with textContent only.
@@ -19,6 +19,7 @@
   const SIDE_MAX = 5;
   const RECENT_MAX = 30;
   const TICK_MS = 5000;
+  const SWITCH_WAIT_MS = 10000;
   const MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
   const MOD = MAC ? 'Cmd' : 'Ctrl';
 
@@ -56,7 +57,10 @@
 
   const isSeen = run => Number.isFinite(seen[run.scope]) && seen[run.scope] >= (run.endedAt ?? 0);
 
-  // Marks the finished runs of a project as seen. Called when the project is opened, and when one of its runs ends while it is open.
+  // The scope of the chat on screen: the thread's id, or the project's id for Main (the same as activeScope() in app.js).
+  const onScreen = () => MuseUI.state.activeThread || MuseUI.state.activeProject || null;
+
+  // Marks the finished runs of a chat as seen. Called when the chat is opened, and when one of its runs ends while it is on screen.
   function markSeen(scope) {
     let changed = false;
     for (const run of recent) {
@@ -88,8 +92,8 @@
         runs.delete(ev.run.scope);
         recent.unshift(ev.run);
         trimRecent();
-        // A run that ends while its project is on screen has been seen.
-        if (ev.run.scope === MuseUI.state.activeProject) seen[ev.run.scope] = Math.max(seen[ev.run.scope] ?? 0, ev.run.endedAt ?? 0);
+        // A run that ends while its chat is on screen has been seen.
+        if (ev.run.scope === onScreen()) seen[ev.run.scope] = Math.max(seen[ev.run.scope] ?? 0, ev.run.endedAt ?? 0);
         return;
       case 'approval-add':
         if (ev.card && typeof ev.card.approvalId === 'string') approvals.set(ev.card.approvalId, ev.card);
@@ -136,7 +140,7 @@
   function onActivity(ev) {
     apply(ev);
     if (buffer) buffer.push(ev);
-    if (ev.op === 'run-end' && ev.run && ev.run.scope === MuseUI.state.activeProject) markSeen(ev.run.scope);
+    if (ev.op === 'run-end' && ev.run && ev.run.scope === onScreen()) markSeen(ev.run.scope);
     notify();
   }
 
@@ -156,15 +160,15 @@
     const waitingScopes = new Set(waiting.map(c => c.scope));
     const rows = [];
     for (const c of waiting) {
-      rows.push({ key: `w:${c.approvalId}`, scope: c.scope, kind: 'wait', tone: 'amber', status: 'Waiting for you', projectName: c.projectName, threadName: c.threadName, model: c.modelLabel, step: '', clock: clock(Date.now() - (c.at ?? Date.now())), unseen: false });
+      rows.push({ key: `w:${c.approvalId}`, scope: c.scope, kind: 'wait', projectId: c.projectId, tone: 'amber', status: 'Waiting for you', projectName: c.projectName, threadName: c.threadName, model: c.modelLabel, step: '', clock: clock(Date.now() - (c.at ?? Date.now())), unseen: false });
     }
     for (const r of [...runs.values()].sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) {
       if (waitingScopes.has(r.scope)) continue;
-      rows.push({ key: `r:${r.scope}`, scope: r.scope, kind: 'run', tone: '', status: `Running ${Math.floor(Math.max(0, Date.now() - (r.startedAt ?? Date.now())) / 60000)}m`, projectName: r.projectName, threadName: r.threadName, model: r.modelLabel, step: stepText(r), clock: clock(Date.now() - (r.startedAt ?? Date.now())), unseen: false, via: r.via ?? '' });
+      rows.push({ key: `r:${r.scope}`, scope: r.scope, kind: 'run', projectId: r.projectId, tone: '', status: `Running ${Math.floor(Math.max(0, Date.now() - (r.startedAt ?? Date.now())) / 60000)}m`, projectName: r.projectName, threadName: r.threadName, model: r.modelLabel, step: stepText(r), clock: clock(Date.now() - (r.startedAt ?? Date.now())), unseen: false, via: r.via ?? '' });
     }
     for (const r of recent) {
       if (isSeen(r)) continue;
-      rows.push({ key: `d:${r.scope}:${r.endedAt}`, scope: r.scope, kind: 'done', tone: r.status === 'error' ? 'red' : '', status: ENDED_WORDS[r.status] ?? 'Done', projectName: r.projectName, threadName: r.threadName, model: r.modelLabel, step: stepText(r), clock: clock((r.endedAt ?? 0) - (r.startedAt ?? 0)), unseen: true, via: r.via ?? '' });
+      rows.push({ key: `d:${r.scope}:${r.endedAt}`, scope: r.scope, kind: 'done', projectId: r.projectId, tone: r.status === 'error' ? 'red' : '', status: ENDED_WORDS[r.status] ?? 'Done', projectName: r.projectName, threadName: r.threadName, model: r.modelLabel, step: stepText(r), clock: clock((r.endedAt ?? 0) - (r.startedAt ?? 0)), unseen: true, via: r.via ?? '' });
     }
     return rows;
   }
@@ -187,12 +191,88 @@
     return node;
   };
 
-  // Switches to the row's project the way a click on it does (the project list's own button), and marks its runs seen.
-  function openScope(scope) {
-    const index = (MuseUI.state.projects ?? []).findIndex(p => p.id === scope);
-    if (index >= 0) {
-      const items = [...document.querySelectorAll('#projects .proj-item')];
-      items[index]?.click();
+  // The project of a scope the caller did not name one for: the run or card that holds it, else the project the id belongs to (Main's scope is
+  // its project's id).
+  function projectOfScope(scope) {
+    const hit = runs.get(scope) ?? recent.find(r => r.scope === scope) ?? [...approvals.values()].find(c => c.scope === scope);
+    if (hit?.projectId) return hit.projectId;
+    // A thread's id starts with its project's id (lib/threads.mjs: '<project>-t...').
+    return (MuseUI.state.projects ?? []).find(p => scope === p.id || scope.startsWith(`${p.id}-t`))?.id ?? scope;
+  }
+
+  // The project switch is the project list's own click, which finishes later (the server answers first), so this waits until the project is the
+  // active one. It also ends after a few seconds, so a switch that was refused does not leave it waiting.
+  function projectIsActive(projectId) {
+    if (MuseUI.state.activeProject === projectId) return Promise.resolve(true);
+    return new Promise(resolve => {
+      let off = null;
+      let poll = null;
+      let timer = null;
+      const done = ok => {
+        clearInterval(poll);
+        clearTimeout(timer);
+        if (typeof off === 'function') off();
+        resolve(ok);
+      };
+      const check = () => {
+        if (MuseUI.state.activeProject === projectId) done(true);
+      };
+      off = MuseUI.threads?.onRender?.(check);
+      poll = setInterval(check, 50);
+      timer = setTimeout(() => done(false), SWITCH_WAIT_MS);
+    });
+  }
+
+  let openTicket = 0;
+
+  // Opens a row's chat: its project (the project list's own button) and then its thread or Main, and marks its runs seen once that chat shows.
+  // target is { scope, projectId }, or a bare scope id. A run's scope is its thread's id for a thread and its project's id for Main, so the
+  // project is named on its own.
+  async function openScope(target) {
+    const given = typeof target === 'string' ? { scope: target } : target && typeof target === 'object' ? target : {};
+    const scope = typeof given.scope === 'string' ? given.scope : '';
+    if (!scope) return;
+    const projectId = typeof given.projectId === 'string' && given.projectId ? given.projectId : projectOfScope(scope);
+    const ticket = ++openTicket;
+    const index = (MuseUI.state.projects ?? []).findIndex(p => p.id === projectId);
+    if (index < 0) {
+      MuseUI.toast?.('That project is no longer in the list.', 'bad');
+      return;
+    }
+    if (MuseUI.state.activeProject !== projectId) {
+      const item = [...document.querySelectorAll('#projects .proj-item')][index];
+      // Without the project's own button (the list is not drawn) there is no switch to wait for.
+      if (!item) return;
+      item.click();
+      const switched = await projectIsActive(projectId);
+      // A newer click on another row wins; this one stops here.
+      if (ticket !== openTicket) return;
+      if (!switched) {
+        MuseUI.toast?.('The project did not open. Try again.', 'bad');
+        return;
+      }
+    }
+    // The project shows the thread it showed last, which need not be the row's: Main is switched to like any other thread (its id is the
+    // project's id).
+    if (onScreen() !== scope) {
+      // Main is always open; a thread may have been closed since its run.
+      const known = scope === projectId || !Array.isArray(MuseUI.state.threads) || MuseUI.state.threads.some(t => t && t.id === scope);
+      if (!known) {
+        MuseUI.toast?.('That thread is closed.', 'bad');
+        markSeen(scope);
+        return;
+      }
+      try {
+        await MuseUI.threads?.switchTo?.(scope);
+      } catch (err) {
+        MuseUI.toast?.(err?.message || 'The thread could not be opened.', 'bad');
+        return;
+      }
+      // A run is seen only when its own chat shows. A switch that did not land leaves the dot, and says so unless a newer click took over.
+      if (onScreen() !== scope) {
+        if (ticket === openTicket) MuseUI.toast?.('The chat did not open. Try again.', 'bad');
+        return;
+      }
     }
     markSeen(scope);
   }
@@ -215,7 +295,7 @@
     const via = row.via ? `via ${MuseUI.phoneName?.(row.via) || 'a phone'}` : '';
     if (via) b.append(el('span', 'ext-board-row-meta', via));
     b.setAttribute('aria-label', `${row.status}: ${row.projectName || 'Project'} · ${row.threadName || 'Main'}${via ? `, ${via}` : ''}`);
-    b.addEventListener('click', () => openScope(row.scope));
+    b.addEventListener('click', () => openScope({ scope: row.scope, projectId: row.projectId }));
     return b;
   }
 
@@ -284,8 +364,8 @@
       // A (re)connected window reads the whole board again.
       sync();
     } else if (ev.type === 'state') {
-      // A project that is on screen has its finished runs seen.
-      if (MuseUI.state.activeProject) markSeen(MuseUI.state.activeProject);
+      // A chat that is on screen has its finished runs seen.
+      if (onScreen()) markSeen(onScreen());
     }
   });
 
@@ -310,6 +390,10 @@
   };
 
   buildSide();
+  // A thread that is shown has its finished runs seen, however it came on screen (its tab, the Agents board, another window's change).
+  MuseUI.threads?.onRender?.(() => {
+    if (onScreen()) markSeen(onScreen());
+  });
   // The first read waits for the token (MuseUI.ready); the events channel's hello event reads it again on every connection.
   Promise.resolve(MuseUI.ready).then(() => sync());
   // The clocks and the minutes of the rows move while a run goes; the sidebar is redrawn every few seconds.

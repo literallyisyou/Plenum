@@ -5,13 +5,13 @@
 // clock and post function, so the Node suites drive it on a fake clock against a fake desktop.
 //
 // Page -> worker (op):
-//   init         { computer: { id, name, desktopPub, myPriv, carriers, lastCarrier, counter }, device, caps, hasStopKey }   Uint8Array keys
+//   init         { computer: { id, name, desktopPub, myPriv, carriers, lastCarrier, lastUrl?, counter }, device, caps, hasStopKey }   Uint8Array keys
 //   request      { sid, method, path, headers, scope?, body? } body: Uint8Array, transferred. scope 'page' (default) or 'shell': the request
 //                                                              policy below is enforced here, not in the page
 //   cancel       { sid }
 //   stop         { sid, project? }                             STOP with a 16-byte id; queued and retried for 60 s
-//   stopLocked   { sid, computer: { id, deviceId, stopKey, carriers, lastCarrier, counter } }   Stop without unlocking: one signed STOP_ONLY
-//                                                              on a fresh socket (lib/remote/stop-only.mjs); no Noise session is opened
+//   stopLocked   { sid, computer: { id, deviceId, stopKey, carriers, lastCarrier, lastUrl?, counter } }   Stop without unlocking: one signed
+//                                                              STOP_ONLY on a fresh socket (lib/remote/stop-only.mjs); no Noise session is opened
 //   reconnect    {}                                            an immediate attempt (app resume, visibility)
 //   pair         { payload, device, caps, extraUrls? }         the pairing link's payload; keys are made here
 //   pairCancel   {}                                            the codes did not match: CLOSE mismatch
@@ -28,8 +28,9 @@
 //   stopAck      { sid, ack } | { sid, error }                 ack: { id, cancelled, drivesStopped, agentsStopped, cardsDenied };
 //                                                              error: 'unreachable' | 'closed', and for stopLocked 'unknown'
 //   counter      { rid, id, minimum }                          the page must store a counter >= minimum before any handshake
-//   patch        { id, patch }                                 lastCarrier, lastSeen; stopKey and myDeviceId when HELLO said stopKeyNew; carriers when
-//                                                              HELLO lists ways the record does not hold yet (learnWays)
+//   patch        { id, patch }                                 lastCarrier, lastUrl (the address that connected), lastSeen; stopKey and myDeviceId
+//                                                              when HELLO said stopKeyNew; carriers when HELLO lists ways the record does not hold
+//                                                              yet (learnWays)
 //   pairState    { state, code?, tried?, reason? }             state: confirm | allowed | denied | expired | mismatch | failed
 //   paired       { computer }                                  pairing allowed: the new record, keys included (page store only)
 //   log          { line }
@@ -47,7 +48,11 @@
 // Rules this file keeps (MOBILE.json transport and client_model):
 //   - The counter is raised and stored BEFORE every handshake; no handshake is sent until the page confirms the store.
 //   - IK for a known computer (one round trip per connect); IKpsk2 only while pairing, with the offer's psk.
-//   - Reconnect after a drop: 1, 2, 4, 8, then 10 s, trying the carrier used last, then the others.
+//   - Reconnect after a drop: 1, 2, 4, 8, then 10 s. A round dials every address: the one that connected last first, then the rest of
+//     the carrier used last, then the others (carriers.js dialOrder). The addresses are dialled together, DIAL_STAGGER_MS apart (the next
+//     one starts at once when one fails), and the socket that opens first is the one used; the others are closed unused. Only the socket
+//     that won ever carries a handshake or a STOP_ONLY, so two sockets never send with counters that could arrive out of order. A way that
+//     opened and then failed is put aside and the rest are dialled again, so a round still ends with one answer for every address.
 //   - Three failed rounds: 'offline'. A relay close 4001 host-offline (or a CLOSE frame with that reason): 'asleep', retried on the same
 //     schedule for three rounds and then every 60 s. Revoked, update-app and update-desktop stop retries.
 //   - Three rounds in which a carrier closes with 4401 and the others close with 4401 too or cannot be reached (the computer does not
@@ -63,13 +68,18 @@ import {
 } from '../../lib/remote/noise.mjs';
 import { FrameSession, systemClock, WIRE_BUDGET_BYTES_PER_SECOND } from '../../lib/remote/frames.mjs';
 import { decodeStopAck, encodeStopOnly } from '../../lib/remote/stop-only.mjs';
-import { MAX_URLS_PER_KIND, carrierUrlOk, usableCarriers } from './carriers.js';
+import { MAX_URLS_PER_KIND, carrierUrlOk, dialOrder, isPrivateUrl, usableCarriers } from './carriers.js';
 
 export const PROTOCOL = '1.0';
 export const DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000]);
 export const RETRY_CAP_MS = 10000;
 export const OFFLINE_ROUNDS = 3;
 export const CONNECT_TIMEOUT_MS = 6000;
+// A reconnect or a Stop dials an address on a private range with this timeout: such an address answers at once or, seen from another
+// network, never (mobile-3). Pairing and renewal keep CONNECT_TIMEOUT_MS.
+export const CONNECT_TIMEOUT_PRIVATE_MS = 2000;
+// How long one address has to open before the next one is dialled beside it (RFC 8305 uses the same 250 ms).
+export const DIAL_STAGGER_MS = 250;
 export const HANDSHAKE_TIMEOUT_MS = 6000;
 export const COUNTER_TIMEOUT_MS = 10000;
 export const STOP_WINDOW_MS = 60000;
@@ -152,8 +162,11 @@ function failureName(err) {
 }
 
 // One WebSocket as a socket with a queue: messages are read with next() before the handshake ends and handed to onMessage after.
+// The promise has cancel(): it closes the socket whether or not it has opened, and an open that had not ended rejects with 'lost' (the
+// dial race uses it for the addresses that did not win).
 export function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
-  return new Promise((resolve, reject) => {
+  let cancel = () => {};
+  const opened = new Promise((resolve, reject) => {
     let settled = false;
     let openTimer = null;
     let ws = null;
@@ -194,6 +207,10 @@ export function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIME
           };
         });
       },
+    };
+    cancel = () => {
+      fail(new Error('lost'));
+      try { ws?.close(1000, 'lost'); } catch { /* already closed */ }
     };
     try {
       ws = new WebSocketImpl(url);
@@ -239,6 +256,8 @@ export function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIME
     });
     ws.addEventListener('error', () => { /* a close event follows */ });
   });
+  opened.cancel = () => cancel();
+  return opened;
 }
 
 // The request policy. Returns { path, headers } for a request the worker may send, or null when it is refused.
@@ -275,8 +294,11 @@ export function createChannelCore(options = {}) {
   const WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
   const clock = options.clock ?? systemClock();
   const random = options.random ?? defaultRandom;
+  // What the phone says its network is: 'cellular', 'wifi', ... or null when it does not say (the Network Information API, where the
+  // WebView has it). Only used to dial private addresses last on mobile data (carriers.js dialOrder); it never removes a way.
+  const getNetwork = options.getNetwork ?? (() => globalThis.navigator?.connection?.type ?? null);
 
-  let computer = null; // { id, name, desktopPub, myPriv, carriers, lastCarrier, counter, device, caps }
+  let computer = null; // { id, name, desktopPub, myPriv, carriers, lastCarrier, lastUrl, counter, device, caps }
   let phase = 'idle';
   let session = null;
   let desktopName = '';
@@ -286,6 +308,7 @@ export function createChannelCore(options = {}) {
   let retryTimer = null;
   let nextRetryAt = null;
   let attempting = false;
+  let dialing = null;           // the dial race of the attempt that is running (see raceCandidates); closeChannel ends it
   let renewTimer = null;
   let lastFailure = null;
   let closedByPage = false;
@@ -345,9 +368,9 @@ export function createChannelCore(options = {}) {
   // ----- one handshake over one socket -----
 
   // opts: { remotePub, myPriv, psk, offer, payloadFor() -> Promise<payload> }. The payload is built (and the counter stored) only
-  // after the socket is open, and before message 1 is written.
-  async function handshake(kind, url, opts) {
-    const sock = await openSocket(WebSocketImpl, url, { clock });
+  // after the socket is open, and before message 1 is written. `opened` is a socket that is open already (the one that won a dial race).
+  async function handshake(kind, url, opts, opened = null) {
+    const sock = opened ?? await openSocket(WebSocketImpl, url, { clock });
     try {
       const payload = await opts.payloadFor();
       const hs = handshakeInitiator({
@@ -566,13 +589,103 @@ export function createChannelCore(options = {}) {
 
   // ----- connecting, retrying, adopting a session -----
 
-  // The carriers of the computer, every URL, the carrier used last first.
+  // The carriers of the computer, every URL: the address that connected last first, then the carrier used last, then the others.
   function carrierCandidates(comp) {
-    const out = [];
-    for (const c of usableCarriers(comp.carriers)) {
-      for (const url of c.urls) out.push({ kind: c.kind, url });
+    let network = null;
+    try { network = getNetwork(); } catch { /* the phone does not say */ }
+    return dialOrder(comp.carriers, { lastCarrier: comp.lastCarrier, lastUrl: comp.lastUrl ?? null, network });
+  }
+
+  // Opens the candidates together, a little apart: the first starts now, the next DIAL_STAGGER_MS later, or at once when one has failed.
+  // The socket that opens first wins; the others are closed ('lost') and never used. Answers { winner: { candidate, sock } | null,
+  // failed: [{ candidate, err }], left: [candidate] }: failed ended before the winner, left had not ended (they lost, or were never
+  // started). scope.cancel() ends the race at once with no winner.
+  function raceOpen(candidates, scope) {
+    return new Promise(resolve => {
+      const running = new Map();
+      const failed = [];
+      let next = 0;
+      let timer = null;
+      let over = false;
+      const end = winner => {
+        if (over) return;
+        over = true;
+        clock.clearTimeout(timer);
+        timer = null;
+        scope.cancel = null;
+        const left = candidates.filter(c => c !== winner?.candidate && !failed.some(f => f.candidate === c));
+        for (const open of running.values()) open.cancel();
+        running.clear();
+        resolve({ winner, failed, left });
+      };
+      const start = () => {
+        clock.clearTimeout(timer);
+        timer = null;
+        if (over || next >= candidates.length) return;
+        const candidate = candidates[next++];
+        const open = openSocket(WebSocketImpl, candidate.url, {
+          clock,
+          timeoutMs: isPrivateUrl(candidate.url) ? CONNECT_TIMEOUT_PRIVATE_MS : CONNECT_TIMEOUT_MS,
+        });
+        running.set(candidate, open);
+        open.then(sock => {
+          if (over) return;   // it lost: end() closed it through cancel()
+          running.delete(candidate);
+          end({ candidate, sock });
+        }, err => {
+          if (over) return;
+          running.delete(candidate);
+          failed.push({ candidate, err });
+          if (next < candidates.length) start();
+          else if (!running.size) end(null);
+        });
+        if (next < candidates.length) timer = clock.setTimeout(start, DIAL_STAGGER_MS);
+      };
+      scope.cancel = () => end(null);
+      start();
+    });
+  }
+
+  // One round over every candidate, for attempt() and stopLocked() (mobile-3). The opens are raced (raceOpen) and tryOne(candidate, sock)
+  // runs on the socket that won, alone: it answers what the round was for (a session, a Stop ack) or throws. A candidate that opened and
+  // then failed is put aside and the rest are raced again, so the round ends with a win or with one failure for every candidate.
+  // before() runs ahead of each race (Stop raises its counter there); when it throws, the round ends 'blocked' and nothing more is dialled.
+  // scope: { stopped, cancel }; stopDial(scope) ends the round. Answers { won, fails: [{ candidate, err, code }], blocked }, code being
+  // the close code the socket had when tryOne failed (null for a socket that never opened).
+  async function raceCandidates(candidates, scope, tryOne, { before = null } = {}) {
+    const fails = [];
+    let left = candidates.slice();
+    while (left.length && !scope.stopped) {
+      if (before) {
+        try {
+          await before();
+        } catch {
+          return { won: null, fails, blocked: true };
+        }
+        if (scope.stopped) break;
+      }
+      const race = await raceOpen(left, scope);
+      for (const f of race.failed) fails.push({ candidate: f.candidate, err: f.err, code: null });
+      if (!race.winner) break;
+      left = race.left;
+      const { candidate, sock } = race.winner;
+      if (scope.stopped) {
+        sock.close(1000, 'lost');
+        break;
+      }
+      try {
+        return { won: await tryOne(candidate, sock), fails, blocked: false };
+      } catch (err) {
+        fails.push({ candidate, err, code: sock.closed?.code ?? null });
+      }
     }
-    return [...out.filter(c => c.kind === comp.lastCarrier), ...out.filter(c => c.kind !== comp.lastCarrier)];
+    return { won: null, fails, blocked: false };
+  }
+
+  function stopDial(scope) {
+    if (!scope) return;
+    scope.stopped = true;
+    scope.cancel?.();
   }
 
   function clearRetry() {
@@ -597,7 +710,7 @@ export function createChannelCore(options = {}) {
     emitState();
   }
 
-  async function connectSession(candidate, comp) {
+  async function connectSession(candidate, comp, opened = null) {
     const { sock, cs, message2 } = await handshake(candidate.kind, candidate.url, {
       remotePub: comp.desktopPub,
       myPriv: comp.myPriv,
@@ -608,7 +721,7 @@ export function createChannelCore(options = {}) {
         comp.counter = counter;
         return { v: PROTOCOL, kind: 'session', counter, device: comp.device, caps: comp.caps, ...(comp.hasStopKey ? {} : { wantStopKey: true }) };
       },
-    });
+    }, opened);
     const s = makeSession({ sock, cs, kind: candidate.kind, url: candidate.url });
     try {
       s.hello = JSON.parse(utf8Decode.decode(message2));
@@ -631,18 +744,29 @@ export function createChannelCore(options = {}) {
         scheduleRetry();
         return;
       }
+      // Every address is dialled together, a little apart, and the handshake runs on the socket that opens first, alone (raceCandidates).
+      dialing = { stopped: false, cancel: null };
+      const round = await raceCandidates(candidates, dialing, (candidate, sock) => connectSession(candidate, computer, sock));
+      dialing = null;
+      if (closedByPage || TERMINAL.includes(phase)) {
+        // The page closed the channel while the handshake ran: the session is not adopted.
+        if (round.won) {
+          round.won.retired = true;
+          round.won.frames.close('normal');
+        }
+        return;
+      }
+      if (round.won) {
+        adopt(round.won);
+        return;
+      }
+      // One reason for each address, in the order they were dialled, as when they were tried one after the other.
       const reasons = [];
       for (const candidate of candidates) {
-        if (closedByPage || TERMINAL.includes(phase)) return;
-        try {
-          const s = await connectSession(candidate, computer);
-          adopt(s);
-          return;
-        } catch (err) {
-          lastFailure = failureName(err);
-          reasons.push(lastFailure);
-        }
+        const fail = round.fails.find(f => f.candidate === candidate);
+        if (fail) reasons.push(failureName(fail.err));
       }
+      if (reasons.length) lastFailure = reasons.at(-1);
       // A carrier answered 4401 in this round and none said anything else coded: the computer does not know this phone (removed while
       // the phone was away). A carrier that only could not be reached (the LAN away from home, Tailscale not running) does not hide
       // the 4401 of another (B-121), but a host-offline, replay or rate answer does, since the computer may still know the phone.
@@ -656,6 +780,7 @@ export function createChannelCore(options = {}) {
       scheduleRetry();
     } finally {
       attempting = false;
+      dialing = null;
     }
   }
 
@@ -677,10 +802,11 @@ export function createChannelCore(options = {}) {
     }
     transition('connected');
     computer.lastCarrier = s.carrier;
+    computer.lastUrl = s.url;   // dialled first next time (carriers.js dialOrder)
     topUpStopKey(s);
     learnWays(s.hello);
     post({ op: 'hello', hello: s.hello });
-    post({ op: 'patch', id: computer.id, patch: { lastCarrier: s.carrier, lastSeen } });
+    post({ op: 'patch', id: computer.id, patch: { lastCarrier: s.carrier, lastUrl: s.url, lastSeen } });
     s.frames.startLiveness({ intervalMs: PING_INTERVAL_MS, misses: PING_MISSES });
     for (const entry of pendingStops.values()) sendStop(entry);
     scheduleRenewCheck(RENEW_CHECK_MS);
@@ -886,11 +1012,13 @@ export function createChannelCore(options = {}) {
 
   // ----- Stop without unlocking (plan C3, the phone's half) -----
 
-  // One signed STOP_ONLY per try, on a fresh socket for each carrier URL: carriers in carrierCandidates order, the counter raised and stored
-  // before every send (as for a handshake), the same stopId on every resend. A verified STOP_ONLY_ACK ends the press with the counts. A round in
-  // which every URL closed with 4401 ends it 'unknown' (the computer does not know this phone's Stop key). Any other round ends with 'queued'
-  // and the next round starts STOP_RESEND_MS later; STOP_WINDOW_MS after the press it ends 'unreachable'. No Noise session is ever opened and
-  // the Stop key is zeroed at the end.
+  // One signed STOP_ONLY per try, on a fresh socket: the carrier URLs are dialled together in carrierCandidates order (raceCandidates) and
+  // the Stop goes out on the socket that opens first, so it reaches the computer on the first way that works. The counter is raised and
+  // stored before every send (as for a handshake), and the same stopId is on every resend. A verified STOP_ONLY_ACK ends the press with the
+  // counts. A way that opened and gave no ack is put aside and the others are dialled again with a new counter. A round in which every URL
+  // closed with 4401 ends it 'unknown' (the computer does not know this phone's Stop key). Any other round ends with 'queued' and the next
+  // round starts STOP_RESEND_MS later; STOP_WINDOW_MS after the press it ends 'unreachable'. No Noise session is ever opened and the Stop
+  // key is zeroed at the end.
   async function stopLocked(msg) {
     const sid = msg.sid;
     const c = msg.computer && typeof msg.computer === 'object' ? msg.computer : {};
@@ -906,6 +1034,7 @@ export function createChannelCore(options = {}) {
       id: c.id,
       carriers: Array.isArray(c.carriers) ? c.carriers : [],
       lastCarrier: typeof c.lastCarrier === 'string' ? c.lastCarrier : null,
+      lastUrl: typeof c.lastUrl === 'string' ? c.lastUrl : null,
     };
     let counter = Number.isSafeInteger(c.counter) && c.counter >= 0 ? c.counter : 0;
     const stopId = random(16);
@@ -914,11 +1043,13 @@ export function createChannelCore(options = {}) {
     let sleepTimer = null;
     let wake = null;
     let activeSock = null;
+    let dial = null;
     const finish = detail => {
       if (done) return;
       done = true;
       clock.clearTimeout(windowTimer);
       clock.clearTimeout(sleepTimer);
+      stopDial(dial);
       try { activeSock?.close(1000, 'stopped'); } catch { /* already closed */ }
       activeSock = null;
       key.fill(0);
@@ -931,40 +1062,34 @@ export function createChannelCore(options = {}) {
     });
     windowTimer = clock.setTimeout(() => finish({ error: 'unreachable' }), STOP_WINDOW_MS);
     post({ op: 'stopState', sid, state: 'sending' });
+    // The Stop on the socket that won the dial race: sent with the counter raised just before the race, then the ack is awaited.
+    const sendOn = async (candidate, sock) => {
+      activeSock = sock;
+      try {
+        sock.send(encodeStopOnly({ stopKey: key, deviceId: c.deviceId, counter, stopId }));
+        const first = await sock.next(STOP_ONLY_WAIT_MS);
+        const ack = done ? null : decodeStopAck(key, first, stopId);
+        if (!ack) throw new Error('no ack');
+        return ack;
+      } finally {
+        sock.close(1000, 'stop');
+        if (activeSock === sock) activeSock = null;
+      }
+    };
     while (!done) {
       const candidates = carrierCandidates(comp);
-      let unknown = candidates.length > 0;
-      for (const candidate of candidates) {
-        if (done) return;
-        let sock = null;
-        try {
-          counter = await raiseCounter(comp.id, counter);
-          if (done) return;
-          sock = await openSocket(WebSocketImpl, candidate.url, { clock });
-          activeSock = sock;
-          if (done) {
-            sock.close(1000, 'stopped');
-            return;
-          }
-          sock.send(encodeStopOnly({ stopKey: key, deviceId: c.deviceId, counter, stopId }));
-          const first = await sock.next(STOP_ONLY_WAIT_MS);
-          if (done) return;
-          const ack = decodeStopAck(key, first, stopId);
-          sock.close(1000, 'done');
-          activeSock = null;
-          if (ack) {
-            finish({ ack: { id: bytesToHex(stopId), ...ack } });
-            return;
-          }
-          unknown = false;
-        } catch {
-          if (sock) sock.close(1000, 'stop');
-          activeSock = null;
-          if (done) return;
-          if (sock?.closed?.code !== 4401) unknown = false;
-        }
-      }
+      dial = { stopped: false, cancel: null };
+      const round = await raceCandidates(candidates, dial, sendOn, {
+        before: async () => { counter = await raiseCounter(comp.id, counter); },
+      });
+      dial = null;
       if (done) return;
+      if (round.won) {
+        finish({ ack: { id: bytesToHex(stopId), ...round.won } });
+        return;
+      }
+      // Every URL was dialled and every one closed with 4401: the computer does not know this phone's Stop key.
+      const unknown = candidates.length > 0 && !round.blocked && round.fails.length === candidates.length && round.fails.every(f => f.code === 4401);
       if (unknown) {
         finish({ error: 'unknown' });
         return;
@@ -1128,6 +1253,7 @@ export function createChannelCore(options = {}) {
         myPriv: asKey(c.myPriv),
         carriers: Array.isArray(c.carriers) ? c.carriers : [],
         lastCarrier: typeof c.lastCarrier === 'string' ? c.lastCarrier : null,
+        lastUrl: typeof c.lastUrl === 'string' ? c.lastUrl : null,
         counter: Number.isSafeInteger(c.counter) && c.counter >= 0 ? c.counter : 0,
         device: msg.device && typeof msg.device === 'object' ? msg.device : {},
         caps: Array.isArray(msg.caps) ? msg.caps : DEFAULT_CAPS,
@@ -1149,6 +1275,7 @@ export function createChannelCore(options = {}) {
     if (closedByPage) return;
     closedByPage = true;
     clearRetry();
+    stopDial(dialing);
     clock.clearTimeout(renewTimer);
     renewTimer = null;
     for (const entry of Array.from(pendingStops.values())) {

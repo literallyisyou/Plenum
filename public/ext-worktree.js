@@ -5,6 +5,8 @@
 // it. Three parts:
 //   1. The New thread drawer (window.MuseThreadDialogExtras, through the threadDialogExtras slot): the checkbox "Work in an isolated copy (git
 //      worktree)", shown only for a git repository, and a details section "Copy settings" (setup command, its time limit, files to copy).
+//      While the box is ticked and the project folder has uncommitted files, one line says how many and that the copy will not have them
+//      (the copy starts from the last commit); it has a Dismiss button. The same warning comes in the copy's stream and stays open in its log.
 //      The same copy settings are a section of Settings > This project (MuseUI.settings, "Isolated copies").
 //   2. The thread header row (MuseUI.threads.header): for the thread on screen, a chip "plenum/fix-login · 3 files changed" with Review diff,
 //      Keep branch, Discard and Merge into <base>. While the copy is being made it shows the progress; when it failed, Try again and Use the
@@ -216,13 +218,58 @@
     details.append(make('summary', '', 'Copy settings'));
     const form = make('div', 'ext-wt-form');
     details.append(form);
-    wrap.append(row, help, details);
+    // One line while the box is ticked and the project folder has files that are not committed: the copy starts from the last commit, so
+    // it will not have them. A notice the person can dismiss, never a block.
+    const stale = make('div', 'ext-wt-actions-row');
+    stale.setAttribute('role', 'status');
+    stale.setAttribute('data-wt-note', 'uncommitted');
+    stale.hidden = true;
+    const staleText = make('span', 'field-note ext-wt-status-line');
+    const staleDismiss = btn('ghost small', 'Dismiss', 'Hide this note');
+    stale.append(staleText, staleDismiss);
+    wrap.append(row, help, stale, details);
     container.append(wrap);
+
+    // What the server last said about the project folder's uncommitted files, and whether the person dismissed the line.
+    let uncommitted = { count: 0, names: [] };
+    let staleDismissed = false;
+    const paintStale = () => {
+      const n = uncommitted.count;
+      stale.hidden = !box.checked || staleDismissed || n <= 0;
+      if (stale.hidden) return;
+      const more = n > uncommitted.names.length ? `${uncommitted.names.length ? ' and ' : ''}${n - uncommitted.names.length} more` : '';
+      const listed = `${uncommitted.names.join(', ')}${more}`;
+      const named = listed && uncommitted.names.length ? ` (${listed.length > 200 ? `${listed.slice(0, 197)}…` : listed})` : '';
+      // A name that ends in '/' is a new folder, which git lists as one entry.
+      const folders = uncommitted.names.some(name => name.endsWith('/'));
+      staleText.textContent = n === 1
+        ? `1 ${folders ? 'folder' : 'file'} in this project is not committed${named}. The copy starts from the last commit, so it will not have it.`
+        : `${n} ${folders ? 'files or folders' : 'files'} in this project are not committed${named}. The copy starts from the last commit, so it will not have them.`;
+    };
+    const takeInfo = data => {
+      const names = Array.isArray(data?.uncommittedNames) ? data.uncommittedNames.filter(x => typeof x === 'string').slice(0, 5) : [];
+      uncommitted = { count: Number.isInteger(data?.uncommitted) && data.uncommitted > 0 ? data.uncommitted : 0, names };
+      paintStale();
+    };
+    staleDismiss.addEventListener('click', () => {
+      staleDismissed = true;
+      paintStale();
+    });
 
     // The plan box says the new thread is read-only while another thread is the writer. A thread with its own copy is not, so the box is
     // freed while this one is ticked and put back as it was when it is not.
     let saved = null;
     box.addEventListener('change', () => {
+      paintStale();
+      // The count is read again when the box is ticked, so files saved since the panel opened are counted.
+      const again = ctx?.project?.id;
+      if (box.checked && again) {
+        MU.api(`/api/worktrees/info?project=${enc(again)}`).then(data => {
+          if (container.isConnected) takeInfo(data);
+        }).catch(() => {
+          // The line keeps what it last knew.
+        });
+      }
       const plan = ctx?.plan;
       if (!plan) return;
       const note = plan.closest('form')?.querySelector('.ext-thread-note');
@@ -247,6 +294,7 @@
           if (!container.isConnected || !data.repo) return;
           wrap.hidden = false;
           settingsForm(form, pid, data.settings);
+          takeInfo(data);
         })
         .catch(() => {
           // Without the answer the box stays hidden, and threads share the folder as before.
@@ -289,7 +337,8 @@
       await readEvents(res, ev => {
         if (ev.type === 'notice' && typeof ev.text === 'string') {
           u.text = ev.text;
-          u.log.push({ text: ev.text, output: typeof ev.output === 'string' ? ev.output : '', bad: ev.kind === 'worktree-failed' || ev.kind === 'worktree-setup-failed', failure: ev.kind === 'worktree-failed' });
+          // note: a warning that is not a failure (the copy does not have the project folder's uncommitted files). It keeps the log open.
+          u.log.push({ text: ev.text, output: typeof ev.output === 'string' ? ev.output : '', bad: ev.kind === 'worktree-failed' || ev.kind === 'worktree-setup-failed', failure: ev.kind === 'worktree-failed', note: ev.kind === 'worktree-stale-base' });
           paintBar();
         } else if (ev.type === 'error') {
           u.log.push({ text: String(ev.message ?? 'The copy could not be made.'), output: '', bad: true, failure: false });
@@ -423,7 +472,8 @@
   function logEl(u, lines) {
     const d = make('details', 'ext-wt-log');
     const failed = lines.some(l => l.bad);
-    d.open = failed;
+    // Open when something failed, and when the log holds a warning the person should read before the thread starts work.
+    d.open = failed || lines.some(l => l.note);
     d.append(make('summary', failed ? 'bad' : '', 'Copy log'));
     for (const line of lines) {
       d.append(make('div', line.bad ? 'ext-wt-log-line bad' : 'ext-wt-log-line', line.text));

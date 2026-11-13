@@ -176,6 +176,7 @@
   function stateWord(r) {
     if (r.state === 'approval') return 'Waiting for your approval';
     if (r.state === 'queued') return r.why === 'scope' ? 'Waiting: another agent is editing the same files' : 'Waiting for a free slot';
+    if (r.why === 'scan') return 'Checking the project\'s files';
     if (r.inside === 'claude-cli') return 'Running inside Claude Code';
     return 'Running';
   }
@@ -518,10 +519,11 @@
   const runMetaText = (run, board) => [runStateOf(run, board), run.modelLabel, runClock(run), viaOf(run)].filter(Boolean).join(' · ');
   const titleOf = r => `${r.projectName || 'Project'} · ${r.threadName || 'Main'}`;
 
-  function openProjectButton(scope) {
+  // Opens the run's chat: its project and, for a thread's run, the thread (a thread's scope is not a project id).
+  function openProjectButton(run) {
     const open = make('button', 'ghost small ext-board-open', 'Open project');
     open.type = 'button';
-    open.addEventListener('click', () => MuseUI.board?.openScope?.(scope));
+    open.addEventListener('click', () => MuseUI.board?.openScope?.({ scope: run.scope, projectId: run.projectId }));
     return open;
   }
 
@@ -533,7 +535,7 @@
     stop.type = 'button';
     stop.setAttribute('aria-label', `Stop the run in ${titleOf(run)}`);
     stop.addEventListener('click', () => stopRun(run));
-    line.append(make('strong', 'ext-board-run-title', titleOf(run)), openProjectButton(run.scope), stop);
+    line.append(make('strong', 'ext-board-run-title', titleOf(run)), openProjectButton(run), stop);
     const meta = make('div', 'ext-board-run-meta', runMetaText(run, board));
     const step = make('div', 'ext-board-run-step', stepLine(run));
     row.append(line, meta, step);
@@ -565,7 +567,7 @@
   function runEndedRow(run) {
     const row = make('div', 'ext-board-run is-ended');
     const line = make('div', 'ext-board-run-line');
-    line.append(make('strong', 'ext-board-run-title', titleOf(run)), openProjectButton(run.scope));
+    line.append(make('strong', 'ext-board-run-title', titleOf(run)), openProjectButton(run));
     row.append(line, make('div', 'ext-board-run-meta', [RUN_WORDS[run.status] ?? 'Done', run.modelLabel, runClock(run), viaOf(run)].filter(Boolean).join(' · ')));
     if (run.error) row.append(make('div', 'ext-board-run-error', run.error));
     return row;

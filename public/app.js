@@ -117,6 +117,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // The brand loop, drawn while a reply is on its way.
 const LOOP_PATH = 'M32 32C27.5 22 23 15.5 18.5 15.5C13 15.5 10 23 10 32C10 41 13 48.5 18.5 48.5C23 48.5 27.5 42 32 32C36.5 22 41 15.5 45.5 15.5C51 15.5 54 23 54 32C54 41 51 48.5 45.5 48.5C41 48.5 36.5 42 32 32Z';
 const THINKING = `<span class="thinking"><svg class="loop" viewBox="6 12 52 40" aria-hidden="true"><path class="loop-track" d="${LOOP_PATH}"/><path class="loop-run" pathLength="100" d="${LOOP_PATH}"/></svg><span class="thinking-text">Thinking</span></span>`;
+// A reply that is arriving is drawn at most once in PAINT_MS; a drawing that is slow waits four times its own cost, up to PAINT_MAX_MS.
+const PAINT_MS = 90;
+const PAINT_MAX_MS = 1000;
 
 // Council seats, the build coders and the relay settings (see CONTRACTS.md and RELAY-CONTRACT.md).
 const SEAT_IDS = ['a', 'b', 'c', 'd'];
@@ -128,7 +131,8 @@ const ROLE_LABELS = { architect: 'Architect', engineer: 'Engineer', skeptic: 'Sk
 const DEFAULT_COUNCIL = {
   seats: [
     { ref: 'anthropic:claude-opus-5-5', effort: 'high', role: 'architect' },
-    { ref: 'muse:muse-wonder-full-1.0', effort: 'high', role: 'skeptic' },
+    // Muse Wonder 1.0, as in lib/council.mjs: Muse Code no longer offers Muse Wonder Full (DECISIONS item 91).
+    { ref: 'muse:muse-wonder-1.0', effort: 'high', role: 'skeptic' },
     { ref: 'codex:default', effort: 'high', role: 'engineer' },
     { ref: 'gemini:default', effort: 'high', role: 'generalist' },
   ],
@@ -220,6 +224,8 @@ const TOOL_NAMES = {
   Bash: 'Run command', PowerShell: 'Run command', WebFetch: 'Fetch page', WebSearch: 'Search the web',
   // An agent step: the delegate tool (lib/tools/40-delegate.mjs) and Claude Code's Agent tool both start one, and both are named Agent.
   delegate: 'Agent', Agent: 'Agent',
+  // The team's own step under an agent step (lib/team-run.mjs): which model the owner's team chose, and each move to the next one.
+  team: 'Team',
   // The steps of a computer run (lib/computer/run.mjs names them computer.<action>), and the two tools it adds.
   'computer.click': 'Click', 'computer.right_click': 'Right-click', 'computer.middle_click': 'Middle-click', 'computer.double_click': 'Double-click',
   'computer.triple_click': 'Triple-click', 'computer.drag': 'Drag', 'computer.move': 'Move pointer', 'computer.scroll': 'Scroll',
@@ -232,7 +238,7 @@ const TOOL_ICONS = {
   edit_file: 'pencil', run_command: 'terminal', propose_update: 'update',
   Read: 'file', Glob: 'folder', Grep: 'search', Write: 'file-plus', Edit: 'pencil', NotebookEdit: 'pencil',
   Bash: 'terminal', PowerShell: 'terminal', WebFetch: 'layers', WebSearch: 'search',
-  delegate: 'layers', Agent: 'layers',
+  delegate: 'layers', Agent: 'layers', team: 'layers',
   'computer.click': 'pointer', 'computer.right_click': 'pointer', 'computer.middle_click': 'pointer', 'computer.double_click': 'pointer', 'computer.triple_click': 'pointer',
   'computer.drag': 'pointer', 'computer.move': 'pointer', 'computer.scroll': 'pointer', 'computer.mouse_down': 'pointer', 'computer.mouse_up': 'pointer',
   'computer.type': 'keyboard', 'computer.key': 'keyboard', 'computer.hold': 'keyboard', 'computer.screenshot': 'monitor', 'computer.zoom': 'monitor',
@@ -280,6 +286,22 @@ function noteTo(scope, text) {
   list.push(text);
   threadNotes.set(scope, list);
 }
+// The notes to draw under a transcript. A failed send leaves its error twice: as a note (so it shows at once, and stays if the refresh
+// fails) and, once the server has stored the reply, as that reply's own error, which messageNodes draws. The note is then left out, so
+// the person sees one card with one Retry. Only the replies after the last question count, so an older reply with the same words never
+// hides a new error. The notes themselves are kept as they are: a note with no saved copy (a refused send, a dropped stream, a failed
+// hop) is still drawn, and the split view's send still reads them to tell how its run ended.
+function visibleNotes(list, messages) {
+  const saved = new Set();
+  for (let i = (messages?.length ?? 0) - 1; i >= 0 && messages[i].role !== 'user'; i--) {
+    // A reply's own error, and the error a saved council card shows (councilFromSaved).
+    for (const error of [messages[i].error, messages[i].council?.error]) if (error) saved.add(String(error).trim());
+  }
+  return saved.size ? list.filter(n => !(n.startsWith('Error: ') && saved.has(n.slice(7).trim()))) : list;
+}
+// The nodes of those notes. A 'Notice: ' line is a refusal the person can act on (the spend cap), drawn as a Plenum line, not as an
+// error (B-105).
+const noteNodes = (list, messages) => visibleNotes(list, messages).map(n => (n.startsWith('Error: ') ? errorEl(n.slice(7)) : systemTurn(n.startsWith('Notice: ') ? n.slice(8) : n)));
 // Functions that want to run after the shell or the chat has been drawn again (the thread tabs repaint through this).
 const renderHooks = new Set();
 function callRenderHooks() {
@@ -1020,18 +1042,345 @@ function imageChips(list) {
   return row;
 }
 
+// ---------- long messages, and replies that were already drawn ----------
+// Drawing a chat used to parse every reply again on every redraw (a send, the end of a run, a state change), and a reply of several
+// megabytes held the window for seconds. Two things end that. The HTML of a reply's Markdown is kept (mdOnce), so a redraw parses
+// only what is new. And a message longer than LONG_MESSAGE characters is drawn in part, its first LONG_FIRST characters, with a
+// Show all button under it. Show all parses the rest LONG_STEP characters at a time, away from the page, and puts it on the page in a
+// few large pieces (LONG_PIECE characters of the text each), with a pause after every piece and whenever the parsing has held the
+// window for LONG_SLICE_MS, so the window stays in use. Only the drawing is cut: the stored message, Copy, Insert, Edit and Send to all
+// use the whole text of the message.
+const LONG_MESSAGE = 100_000;
+const LONG_FIRST = 24_000;
+const LONG_STEP = 24_000;
+const LONG_PIECE = 200_000;
+const LONG_SLICE_MS = 12;
+// A redraw of the chat draws this much of the opened long messages at once, the newest first; what is left of them follows by itself.
+const LONG_SYNC = 300_000;
+// The kept HTML, by the text it was made from, oldest first. MD_CACHE_MAX bounds the characters held (texts and HTML together).
+const MD_CACHE_MAX = 48_000_000;
+const mdCache = new Map();
+let mdCacheSize = 0;
+
+// How many characters the first part of a long text has. It ends at a line end, so no line is cut in two, unless that would leave
+// less than half of LONG_FIRST (one very long line after a short one): then it is cut at LONG_FIRST.
+function longFirst(src) {
+  const lineEnd = src.lastIndexOf('\n', LONG_FIRST);
+  return lineEnd >= LONG_FIRST / 2 ? lineEnd + 1 : LONG_FIRST;
+}
+
+function trimMdCache() {
+  while (mdCacheSize > MD_CACHE_MAX && mdCache.size > 1) {
+    const [oldest, entry] = mdCache.entries().next().value;
+    mdCache.delete(oldest);
+    mdCacheSize -= entry.size;
+  }
+}
+
+// The HTML of a text, made once. For a text up to LONG_MESSAGE: { html }. For a longer one: { long, settled, tail, at, shown }, the
+// HTML of its first part in the two pieces mdSplit gives (the blocks that are complete, and the open end), where the complete blocks
+// end in the text (at) and how many characters the part has (shown); and, once the message was drawn whole, rest: the HTML of
+// everything after the complete blocks, in the pieces it went onto the page in.
+function mdOnce(text) {
+  const src = String(text ?? '');
+  let hit = mdCache.get(src);
+  if (hit) {
+    // Used again: it moves to the young end, so the oldest entry is the one dropped first.
+    mdCache.delete(src);
+    mdCache.set(src, hit);
+    return hit;
+  }
+  if (src.length <= LONG_MESSAGE || typeof mdSplit !== 'function') {
+    hit = { html: md(src) };
+    hit.size = src.length + hit.html.length;
+  } else {
+    const shown = longFirst(src);
+    hit = { long: true, shown, ...mdSplit(src.slice(0, shown)) };
+    hit.size = src.length + hit.settled.length + hit.tail.length;
+  }
+  mdCache.set(src, hit);
+  mdCacheSize += hit.size;
+  trimMdCache();
+  return hit;
+}
+
+// Adds Markdown HTML after what a body already holds. The HTML is md()'s or mdSplit()'s own output, the only markup this page writes
+// from a string: every character of the text was escaped there (public/markdown.js).
+function appendMarkdown(body, html) {
+  if (!html) return;
+  const holder = document.createElement('template');
+  holder.innerHTML = html;
+  body.append(holder.content);
+}
+
+// A long message that was opened stays open when the chat is drawn again (a send, the end of a run): the ones a person opened with
+// Show all (for the life of the page, until Show less), and the replies of the run that ended last in a thread, which arrived whole
+// and must not shrink under the reader. Every node on the page costs a little on each keystroke and each redraw, so the opened
+// messages are kept only while they hold LONG_OPEN_TOTAL characters or fewer together: past that the one opened longest ago folds at
+// the next redraw, and a single message longer than that is never kept (its line says so). A message is known by its length and its
+// first and last characters, so no second copy of a long text is held.
+const LONG_OPEN_TOTAL = 1_000_000;
+// key -> the length of the text, oldest first.
+const openedLong = new Map();
+// scope id -> the keys of the long replies of the run that ended last there. ranIn: the threads whose run ended and whose chat was
+// not drawn since (runStream adds, markStreamed takes).
+const streamedLong = new Map();
+const ranIn = new Set();
+const longKey = text => {
+  const s = String(text ?? '').trim();
+  return `${s.length}:${s.slice(0, 60)}:${s.slice(-60)}`;
+};
+function isOpened(key) {
+  if (openedLong.has(key)) return true;
+  for (const keys of streamedLong.values()) if (keys.has(key)) return true;
+  return false;
+}
+function setOpened(key, open, length = 0) {
+  openedLong.delete(key);
+  if (!open) {
+    for (const keys of streamedLong.values()) keys.delete(key);
+    return;
+  }
+  if (length > LONG_OPEN_TOTAL) return;
+  openedLong.set(key, length);
+  let total = 0;
+  for (const n of openedLong.values()) total += n;
+  for (const [oldest, n] of openedLong) {
+    if (total <= LONG_OPEN_TOTAL) break;
+    openedLong.delete(oldest);
+    total -= n;
+  }
+}
+// Called when a thread's chat is drawn: if a run of this window ended there since the last drawing, the long replies after the last
+// question are the ones that just arrived, and they are drawn whole.
+function markStreamed(scope, messages) {
+  if (!ranIn.delete(scope)) return;
+  const keys = new Set();
+  for (let i = messages.length - 1; i >= 0 && messages[i].role !== 'user'; i--) {
+    const m = messages[i];
+    if (m.kind !== 'council' && m.kind !== 'build' && typeof m.content === 'string' && m.content.length > LONG_MESSAGE && m.content.length <= LONG_OPEN_TOTAL) keys.add(longKey(m.content));
+  }
+  streamedLong.set(scope, keys);
+}
+
+// The whole text of a message whose turn shows only its first part, by the turn's article (MuseUI.turnText). A panel that copies or
+// sends on what a turn says reads this, never the part that is on the page.
+const partShown = new WeakMap();
+
+// The line under a long message: how long it is, and Show all (or, once all of it is on the page, Show less).
+function longRow(length, shown) {
+  const row = document.createElement('div');
+  row.className = 'long-more';
+  const text = quietNote('');
+  const more = button('ghost small long-more-btn', '');
+  row.append(text, more);
+  const ui = { row, text, more, length, shown };
+  longRowState(ui, 'part');
+  return ui;
+}
+function longRowState(ui, state, percent = 0) {
+  ui.more.disabled = state === 'drawing';
+  if (state === 'drawing') {
+    ui.text.textContent = `Drawing the whole message: ${percent}%`;
+    return;
+  }
+  const whole = state === 'whole';
+  // A message too long to be kept open says that it folds again by itself.
+  ui.text.textContent = !whole
+    ? `This message is long (${sizeText(ui.length)}). The first ${sizeText(ui.shown)} is shown.`
+    : ui.length > LONG_OPEN_TOTAL
+      ? `This message is long (${sizeText(ui.length)}). All of it is shown for now. It folds again when the chat changes, because this much text slows typing.`
+      : `This message is long (${sizeText(ui.length)}). All of it is shown.`;
+  ui.more.textContent = whole ? 'Show less' : 'Show all';
+  ui.more.title = whole
+    ? 'Show only the first part of this message again'
+    : 'Draw the whole message. A message of several MB takes a few seconds, and the chat is slower while all of it is on the page';
+}
+
+// One piece of the work of drawing a long message whole (job, made by fillMarkdown): the next LONG_STEP characters are parsed, and
+// what was parsed goes onto the page once it covers `piece` characters of the text or reaches its end. A message that was drawn
+// whole before has its HTML kept (got.rest), and then a piece of that is added instead. Returns whether the page changed.
+function longStep(job, piece = LONG_PIECE) {
+  const { t, src, got } = job;
+  if (!job.began) {
+    job.began = true;
+    // A message that was drawn whole before has its HTML kept; which of the two ways this drawing goes is settled here, once.
+    job.kept = got.rest ?? null;
+    // The open end of the first part goes: it is drawn again from where the complete blocks stop.
+    while (t.body.lastChild && t.body.lastChild !== job.settledEnd) t.body.lastChild.remove();
+  }
+  if (job.kept) {
+    const kept = job.kept[job.next++];
+    if (kept) {
+      appendMarkdown(t.body, kept.html);
+      job.at = kept.to;
+    }
+    if (!kept || job.next >= job.kept.length) job.at = src.length;
+  } else {
+    const end = Math.min(src.length, job.at + job.step);
+    const part = mdSplit(src.slice(job.at, end));
+    if (end === src.length) {
+      job.html += part.settled + part.tail;
+      job.at = end;
+    } else if (part.at > 0) {
+      job.html += part.settled;
+      job.at += part.at;
+      job.step = LONG_STEP;
+    } else {
+      // One block is longer than the step (a long code block or table): the next try takes twice as much.
+      job.step *= 2;
+      return false;
+    }
+    if (job.at < src.length && job.at - job.from < piece) return false;
+    appendMarkdown(t.body, job.html);
+    job.rest.push({ html: job.html, to: job.at });
+    job.html = '';
+    job.from = job.at;
+  }
+  if (job.at >= src.length) {
+    job.done = true;
+    longRowState(job.ui, 'whole');
+    partShown.delete(t.article);
+    // The HTML of the whole message is kept with its first part, so the next drawing of it parses nothing.
+    if (!got.rest && !job.kept) {
+      got.rest = job.rest;
+      if (mdCache.get(src) === got) {
+        const more = job.rest.reduce((n, p) => n + p.html.length, 0);
+        got.size += more;
+        mdCacheSize += more;
+        trimMdCache();
+      }
+    }
+  }
+  return true;
+}
+
+// Draws the rest of a long message with pauses, so the window answers between the pieces. It ends when the chat was drawn again
+// meanwhile: the turn is then no longer on the page, and the new drawing has its own.
+async function runLong(job) {
+  if (job.running || job.done) return;
+  job.running = true;
+  const pause = () => new Promise(resolve => setTimeout(resolve, 0));
+  const percent = () => Math.floor((job.at / job.src.length) * 100);
+  longRowState(job.ui, 'drawing', percent());
+  await pause();
+  let since = performance.now();
+  while (!job.done && job.t.body.isConnected) {
+    const drew = longStep(job);
+    if (job.done) break;
+    if (drew) longRowState(job.ui, 'drawing', percent());
+    if (drew || performance.now() - since > LONG_SLICE_MS) {
+      await pause();
+      since = performance.now();
+    }
+  }
+  job.running = false;
+  // Not finished (the turn left the page): the line offers Show all again, which goes on from here if the turn ever comes back.
+  if (!job.done) longRowState(job.ui, 'part');
+}
+
+// The opened long messages of the drawing that is being built (fillMarkdown adds them). finishReopen draws them whole: up to
+// LONG_SYNC characters at once, the newest message first because the end of the chat is where the reader is, and the rest one after
+// another with pauses. renderChat calls it before the chat goes onto the page, so the chat opens at its true end; for any other
+// drawing a timer does.
+let reopen = [];
+let reopenTimer = 0;
+function finishReopen() {
+  clearTimeout(reopenTimer);
+  reopenTimer = 0;
+  const jobs = reopen.reverse();
+  reopen = [];
+  let budget = LONG_SYNC;
+  const later = [];
+  for (const job of jobs) {
+    const allow = budget;
+    while (!job.done && budget > 0) {
+      const from = job.at;
+      longStep(job, allow);
+      budget -= job.at - from;
+    }
+    if (!job.done) later.push(job);
+  }
+  if (later.length) (async () => { for (const job of later) await runLong(job); })();
+}
+
+// Fills a turn's body with a text as Markdown. A long text gets its first part and the Show all line under the body; one that was
+// opened before is drawn whole again (finishReopen).
+function fillMarkdown(t, text) {
+  const src = String(text ?? '');
+  const got = mdOnce(src);
+  if (!got.long) {
+    t.body.innerHTML = got.html;
+    return;
+  }
+  const key = longKey(src);
+  t.body.replaceChildren();
+  appendMarkdown(t.body, got.settled);
+  // The nodes of the complete blocks stay when the rest is drawn; the open end after them is drawn again from where they stop.
+  const settledEnd = t.body.lastChild;
+  appendMarkdown(t.body, got.tail);
+  const ui = longRow(src.length, got.shown);
+  t.body.after(ui.row);
+  partShown.set(t.article, src);
+  // at: how far the text is on the page as complete blocks. html and from: what is parsed and not yet on the page, and where it starts.
+  const job = { t, src, got, ui, settledEnd, at: got.at, step: LONG_STEP, html: '', from: got.at, rest: [], kept: null, next: 0, began: false, running: false, done: false };
+  ui.more.addEventListener('click', () => {
+    if (job.done) {
+      // Show less: the first part again, and the message is no longer drawn whole on a redraw.
+      setOpened(key, false);
+      ui.row.remove();
+      fillMarkdown(t, src);
+      return;
+    }
+    if (job.running) return;
+    setOpened(key, true, src.length);
+    runLong(job);
+  });
+  if (isOpened(key)) {
+    reopen.push(job);
+    reopenTimer ||= setTimeout(finishReopen, 0);
+  }
+}
+
+// A question's text, as plain text. A long one gets its first part and Show all, like a long reply.
+function fillPlain(t, text) {
+  const src = String(text ?? '');
+  if (src.length <= LONG_MESSAGE) {
+    t.body.textContent = src;
+    return;
+  }
+  const key = longKey(src);
+  const shown = longFirst(src);
+  const node = document.createTextNode('');
+  t.body.replaceChildren(node);
+  const ui = longRow(src.length, shown);
+  t.body.after(ui.row);
+  const show = whole => {
+    node.data = whole ? src : src.slice(0, shown);
+    longRowState(ui, whole ? 'whole' : 'part');
+    if (whole) partShown.delete(t.article);
+    else partShown.set(t.article, src);
+  };
+  show(isOpened(key));
+  ui.more.addEventListener('click', () => {
+    const whole = partShown.has(t.article);
+    setOpened(key, whole, src.length);
+    show(whole);
+  });
+}
+
 function messageNodes(m) {
   if (m.compact) {
     const t = makeTurn('summary', { label: 'Conversation summary', when: m.ts });
     t.article.querySelector('.turn-head').prepend(icon('layers'));
-    t.body.innerHTML = md(m.content.replace(/^Summary of the conversation so far[^\n]*\n+/, ''));
+    fillMarkdown(t, m.content.replace(/^Summary of the conversation so far[^\n]*\n+/, ''));
     return [t.article];
   }
   // The build's own note ("Build: goal") is bookkeeping; the build card says the same thing.
   if (m.role === 'user' && m.kind === 'build') return [];
   if (m.role === 'user') {
     const t = makeTurn('user', { label: 'You', when: m.ts });
-    t.body.textContent = m.content;
+    fillPlain(t, m.content);
     if (m.images?.length) t.body.append(imageChips(m.images));
     // A message that started a computer run says so under its text: the apps the model may use.
     if (m.computer) {
@@ -1047,7 +1396,7 @@ function messageNodes(m) {
   }
   if (m.kind === 'advisor') {
     const t = makeTurn('advisor', { label: `Advisor · ${modelName(m.model)}`, provider: 'advisor', when: m.ts });
-    t.body.innerHTML = md(m.content);
+    fillMarkdown(t, m.content);
     return [t.article];
   }
   if (m.kind === 'council') return [councilEl(councilFromSaved(m))];
@@ -1081,7 +1430,7 @@ function messageNodes(m) {
   // ext-turns.js (repliesOf) and ext-history.js (turnKind) mirror this: a reply with no text, no steps and an error or a stop draws no turn.
   if (text || (!nodes.length && !m.error && !m.aborted && !m.interrupted)) {
     const t = makeTurn('assistant', { label: modelName(m.model) || 'Assistant', provider: providerOf(m.model), when: m.ts });
-    t.body.innerHTML = md(m.content ?? '');
+    fillMarkdown(t, m.content ?? '');
     if (m.relay) t.article.insertBefore(relayLine(m.relay.fromLabel ?? seatLabelById(m.relay.from)), t.body);
     const seat = seatOfReply(m);
     if (seat && text) t.article.append(replyActions(m, seat));
@@ -1095,7 +1444,7 @@ function messageNodes(m) {
   return nodes;
 }
 
-// Under a reply from a seat: send it on to other seats, or put it in the composer to edit.
+// Under a reply from a seat: send it on to other seats.
 function replyActions(m, seat) {
   const row = document.createElement('div');
   row.className = 'reply-actions';
@@ -1134,25 +1483,15 @@ function replyActions(m, seat) {
     // m.ts names the reply that was clicked: the server relays that exact reply, not the seat's newest council answer (B-12).
     relayReply(seat.id, item.dataset.target === 'all' ? ['all'] : [item.dataset.target], m.ts);
   });
-  const insertBtn = button('ghost small', 'Insert into composer');
-  insertBtn.title = 'Put this reply in the composer to edit. It never overwrites text you have typed';
-  insertBtn.addEventListener('click', () => insertReply(m.content ?? ''));
-  row.append(sendBtn, insertBtn, menu);
+  // Insert is not here: every reply has one Insert in the row under it (public/ext-turns.js), and a second one beside Send to said the
+  // same thing twice.
+  row.append(sendBtn, menu);
   return row;
 }
 
 function closeRelayMenus() {
   for (const menu of document.querySelectorAll('.relay-menu')) menu.hidden = true;
   for (const b of document.querySelectorAll('.reply-send[aria-expanded="true"]')) b.setAttribute('aria-expanded', 'false');
-}
-
-// Puts a reply in the composer for editing. A non-empty composer is never overwritten.
-function insertReply(text) {
-  if (el.input.value.trim()) return toast('The composer already has text. Clear it first, then insert the reply.', 'bad');
-  el.input.value = text;
-  autosize();
-  el.input.focus();
-  toast('Reply inserted. Edit it, then send.');
 }
 
 // ---------- welcome screens ----------
@@ -1421,6 +1760,8 @@ function renderChat() {
   else if (!S.messages.length && !notes.length) streamEl.append(welcomeProject(S.projects.find(p => p.id === S.activeProject)));
   // The live run of this thread, if it has one, goes back under the saved messages (B-9, B-10).
   const live = S.activeProject ? runBoxes.get(activeScope()) : null;
+  // A long reply of the run that just ended here arrived whole, and stays whole (markStreamed).
+  if (S.activeProject) markStreamed(activeScope(), S.messages);
   // A build belongs to the council card just above it, so its plan, run and review sit together.
   let host = null;
   for (const m of S.messages) {
@@ -1435,9 +1776,11 @@ function renderChat() {
     for (const node of nodes) streamEl.append(node);
     host = m.kind === 'council' && m.role === 'assistant' ? nodes[0] : null;
   }
-  // A 'Notice: ' line is a refusal the person can act on (the spend cap), drawn as a Plenum line, not as an error (B-105).
-  for (const n of notes) streamEl.append(n.startsWith('Error: ') ? errorEl(n.slice(7)) : systemTurn(n.startsWith('Notice: ') ? n.slice(8) : n));
+  // An error the saved reply already shows is not drawn a second time (visibleNotes).
+  streamEl.append(...noteNodes(notes, S.messages));
   if (live) streamEl.append(live);
+  // The long messages that were opened are drawn whole again before the chat goes onto the page, so it opens at its true end.
+  finishReopen();
   el.chat.replaceChildren(streamEl);
   el.chat.scrollTop = el.chat.scrollHeight;
 }
@@ -1498,12 +1841,25 @@ function idleHint() {
 
 // ---------- palette ----------
 
+// The message box is as tall as its text, up to 224 px. To find out whether it can be smaller it has to be let go to its natural height
+// first, and that makes the page lay out the chat above it again, twice for every keystroke, which is what made typing slow under a
+// long chat. Text that only grew (more characters and no fewer lines) cannot need a smaller box, so then the box is measured as it
+// stands, and its height is written only when it changes.
+const sized = { length: -1, lines: 0 };
 function autosize() {
-  el.input.style.height = 'auto';
+  const value = el.input.value;
+  let lines = 0;
+  for (let at = value.indexOf('\n'); at !== -1; at = value.indexOf('\n', at + 1)) lines++;
+  const grew = sized.length >= 0 && el.input.style.height.endsWith('px') && value.length >= sized.length && lines >= sized.lines;
+  sized.length = value.length;
+  sized.lines = lines;
+  if (!grew) el.input.style.height = 'auto';
   const full = el.input.scrollHeight;
-  el.input.style.height = `${Math.min(full, 224)}px`;
+  const height = `${Math.min(full, 224)}px`;
+  if (el.input.style.height !== height) el.input.style.height = height;
   // The box scrolls only once it has reached its full height.
-  el.input.style.overflowY = full > 224 ? 'auto' : 'hidden';
+  const overflow = full > 224 ? 'auto' : 'hidden';
+  if (el.input.style.overflowY !== overflow) el.input.style.overflowY = overflow;
 }
 
 function hidePalette() {
@@ -1601,24 +1957,56 @@ function movePalette(delta) {
 
 // ---------- streaming ----------
 
+// Reads a stream of events to its end and hands each one to onEvent. One event that cannot be read (bad JSON), or that onEvent cannot
+// draw (it throws), is logged and skipped, and the reading goes on: one odd event never ends the view of a run that is still going.
+// Resolves to the number of events skipped that way. A stream that breaks (the connection dropped) rejects, and the reader is let go.
 function readSSE(res, onEvent) {
   return (async () => {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-      let end;
-      while ((end = buffer.indexOf('\n\n')) !== -1) {
-        const block = buffer.slice(0, end);
-        buffer = buffer.slice(end + 2);
-        const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
-        if (data) onEvent(JSON.parse(data));
+    let faults = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let end;
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+          const block = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
+          if (!data) continue;
+          try {
+            onEvent(JSON.parse(data));
+          } catch (err) {
+            faults++;
+            console.error('An event of the stream could not be drawn:', err);
+          }
+        }
       }
+    } catch (err) {
+      // The stream broke or was stopped: the connection is released, so the server sees the stream close.
+      reader.cancel().catch(() => {});
+      throw err;
     }
+    return faults;
   })();
+}
+
+// What a failed stream says. The browser's own words for a dropped connection ('Failed to fetch', 'network error', 'Load failed') tell
+// a person nothing, so they become the cause and the next step; any other message is the server's own and is kept.
+// began says whether the reply had started to arrive when the connection went. Returns the error to report: a new one with the plain
+// words for a dropped connection, else the error it was given (a stop and a refusal are untouched).
+function streamError(err, began) {
+  if (err?.name === 'AbortError' || err?.policy === true) return err;
+  const text = String(err?.message ?? err ?? '');
+  if (err instanceof TypeError || /^(failed to fetch|network ?error|load failed|networkerror)/i.test(text.trim())) {
+    return new Error(began
+      ? 'The connection to Plenum was lost while the reply was coming in. What had arrived is kept in the chat. Press Retry to put your message back, then send it again.'
+      : 'Your message was not sent, because Plenum could not be reached. When the connection is back, press Retry to put your message back, then send it again.');
+  }
+  return text ? err : new Error('The run ended before it finished. Try again.');
 }
 
 // Remembers the id of a run this window started, so the events channel does not draw it a second time. Every own event is announced as
@@ -1667,6 +2055,8 @@ async function runStream(url, body, onEvent, { tick } = {}) {
   let reported = false;
   // Set when the run failed (a refused send, a dropped stream or an error event), so its text stays in lastSent for Retry (B-5).
   let failed = false;
+  // Set once the server has answered and the stream is being read (streamError words a lost connection by it).
+  let reading = false;
   let liveRunId = '';
   refusedBy = null;
   // Every event of the stream carries the run's id. The first one tells which run is ours, so the events channel (which carries
@@ -1690,9 +2080,15 @@ async function runStream(url, body, onEvent, { tick } = {}) {
       refusedBy = e.policy ? 'policy' : 'other';
       throw e;
     }
-    await readSSE(res, watch);
+    reading = true;
+    const faults = await readSSE(res, watch);
+    // Part of the reply could not be drawn (readSSE skipped an event). The run went on and its reply is stored, so this is a plain
+    // line, said once, with no Retry.
+    if (faults > 0) noteTo(scope, 'Plenum could not draw part of this reply as it came in. The reply is saved, and the chat now shows it as it was saved.');
     if (!reported) throw new Error('The run ended before it finished. Try again.');
-  } catch (err) {
+  } catch (cause) {
+    // A dropped connection is said in plain words (streamError); a refusal keeps the server's own words.
+    const err = streamError(cause, reading);
     ok = false;
     if (err.name !== 'AbortError' && err.policy === true) {
       // B-105: the spend cap refused the send. A notice, not a failure, so there is no Retry; the text goes back to the composer.
@@ -1709,6 +2105,7 @@ async function runStream(url, body, onEvent, { tick } = {}) {
     // B-5: a run that finished without failing lets its send's text go, so Retry never offers an old message. A failed one keeps it.
     if (!failed && lastSent?.scope === scope) lastSent = null;
     dropRunBox(scope);
+    ranIn.add(scope);
     routeRuns.delete(scope);
     renderRouteBar();
     // Only this thread's run has ended. Another thread's Stop stays as it is (B-8).
@@ -1765,17 +2162,43 @@ function turnRenderer(scope = activeScope()) {
     t.body.innerHTML = html;
     t.article.classList.add('fresh');
     box.append(t.article);
-    return { article: t.article, body: t.body, text: '', queued: false };
+    // text: the reply so far. at and kept: how much of it is settled (mdSplit), in characters and in nodes of the body. timer and nextAt:
+    // the drawing that is waiting, and the earliest time of the next one.
+    return { article: t.article, body: t.body, text: '', at: 0, kept: 0, timer: 0, nextAt: 0 };
   };
-  // Text arrives in many small pieces; the reply is redrawn at most once per frame.
+  // Text arrives in many small pieces. Each drawing parses only the end of the reply, the part more text can still change: the blocks
+  // before it were drawn once and stay on the page as they are (mdSplit), so the work of a drawing does not grow with the reply, and a
+  // selection in the finished part survives. What the body holds after a drawing is exactly md(text).
+  const draw = turn => {
+    const began = performance.now();
+    // Everything behind the settled nodes goes: the last drawing's open end, or the Thinking placeholder before the first one.
+    while (turn.body.childNodes.length > turn.kept) turn.body.lastChild.remove();
+    const rest = turn.text.slice(turn.at);
+    const part = typeof mdSplit === 'function' ? mdSplit(rest) : { at: 0, settled: '', tail: md(rest) };
+    if (part.settled) {
+      appendMarkdown(turn.body, part.settled);
+      turn.kept = turn.body.childNodes.length;
+      turn.at += part.at;
+    }
+    appendMarkdown(turn.body, part.tail);
+    bottom();
+    // A slow drawing waits longer for the next one, so typing, scrolling and Stop keep most of the window's time.
+    turn.nextAt = performance.now() + Math.min(PAINT_MAX_MS, Math.max(PAINT_MS, 4 * (performance.now() - began)));
+  };
+  // The reply is drawn at most once in PAINT_MS (the first text of a turn at once). A run whose box is gone has nothing left to draw.
   const paint = turn => {
-    if (turn.queued) return;
-    turn.queued = true;
-    requestAnimationFrame(() => {
-      turn.queued = false;
-      turn.body.innerHTML = md(turn.text);
-      bottom();
-    });
+    if (turn.timer) return;
+    turn.timer = setTimeout(() => {
+      turn.timer = 0;
+      if (runBoxes.get(scope) === box) draw(turn);
+    }, Math.max(0, turn.nextAt - performance.now()));
+  };
+  // A turn that closes (the reply ended, or a tool step or a card follows it) is drawn to its last character at once.
+  const flush = turn => {
+    if (!turn?.timer) return;
+    clearTimeout(turn.timer);
+    turn.timer = 0;
+    draw(turn);
   };
   // One line for the hop in progress; it is kept as a record once the hop is done.
   const step = text => {
@@ -1799,7 +2222,8 @@ function turnRenderer(scope = activeScope()) {
       case 'delta':
         // Text that follows tool steps gets a turn of its own, under those steps.
         ln.current ??= openTurn(ln, '');
-        ln.current.text += ev.text;
+        // A delta with no text adds nothing (never the word "undefined").
+        ln.current.text += String(ev.text ?? '');
         paint(ln.current);
         break;
       case 'thought': {
@@ -1824,6 +2248,7 @@ function turnRenderer(scope = activeScope()) {
       case 'tool': {
         thought = null;
         if (ln.current && !ln.current.text) ln.current.article.remove();
+        flush(ln.current);
         ln.current = null;
         const d = toolEl(ev.name, ev.summary, 'running');
         d.classList.add('fresh');
@@ -1839,6 +2264,7 @@ function turnRenderer(scope = activeScope()) {
       }
       case 'approval':
         if (ln.current && !ln.current.text) ln.current.article.remove();
+        flush(ln.current);
         ln.current = null;
         box.append(approvalEl(ev));
         cue('approval');
@@ -1849,6 +2275,7 @@ function turnRenderer(scope = activeScope()) {
         break;
       case 'error':
         if (ln.current && !ln.current.text) ln.current.article.remove();
+        flush(ln.current);
         ln.current = null;
         // Kept in the notes so the end-of-turn refresh does not wipe it.
         noteTo(scope, `Error: ${ev.message}`);
@@ -1914,6 +2341,10 @@ function turnRenderer(scope = activeScope()) {
         stepNote = null;
         routeRuns.delete(scope);
         renderRouteBar();
+        break;
+      case 'done':
+        // The run is over: every reply shows its last character before the saved chat takes the box's place.
+        for (const open of lanes.values()) flush(open.current);
         break;
       default:
         break;
@@ -2152,11 +2583,12 @@ function syncQueue() {
 
 // The transcript of that thread as a .stream element, built the way renderChat builds the one on screen: the saved messages (a reply still
 // being written is drawn by its live box instead), the notes this page keeps for the thread, and its live run box last. The reply buttons
-// that act on the thread on screen (Send to, Insert into composer, Build this) are left out. messages is GET /api/threads/chat's list.
+// that act on the thread on screen (Send to, Build this) are left out. messages is GET /api/threads/chat's list.
 function threadStream(scope, messages) {
   const s = document.createElement('div');
   s.className = 'stream';
   const live = runBoxes.get(scope) ?? null;
+  if (Array.isArray(messages)) markStreamed(scope, messages);
   let host = null;
   for (const m of Array.isArray(messages) ? messages : []) {
     if (m.kind === 'build' && m.role === 'user') continue;
@@ -2170,7 +2602,7 @@ function threadStream(scope, messages) {
     host = m.kind === 'council' && m.role === 'assistant' ? nodes[0] : null;
   }
   for (const node of s.querySelectorAll('.reply-actions, .build-this')) node.remove();
-  for (const n of threadNotes.get(scope) ?? []) s.append(n.startsWith('Error: ') ? errorEl(n.slice(7)) : systemTurn(n.startsWith('Notice: ') ? n.slice(8) : n));
+  s.append(...noteNodes(threadNotes.get(scope) ?? [], Array.isArray(messages) ? messages : []));
   if (live) s.append(live);
   return s;
 }
@@ -2566,7 +2998,7 @@ function notRunWords(cd, s, r) {
   return { label: 'Waiting', text: `Waiting for round ${r - 1} to finish` };
 }
 
-const NOT_OFFERED_ERROR = /^.{1,60}? does not offer\b/;
+const NOT_OFFERED_ERROR = /(?:^|\. ).{1,60}? does not offer\b/;
 
 // Takes the person to a seat's model menu: the board scrolls into view and the menu takes focus. Where the board is not on screen (chat
 // mode, or a narrow window where it is a single line) the Council panel opens and its menu takes focus.
@@ -3168,6 +3600,11 @@ function buildHandler(run, paint) {
         noteTo(scope, `Error: ${ev.message}`);
         cue('error');
         break;
+      case 'notice':
+        // A note about the build itself, not about one task (a task's note has a parent and reaches the person in that task's summary):
+        // for example that only some of the project's files could be checked for changes. It is drawn under the card's head.
+        if (!ev.parent && typeof ev.text === 'string' && ev.text) run.notes = [...(run.notes ?? []), ev.text];
+        break;
       case 'done':
         if (ev.timedOut) noteTo(scope, 'The build ran out of time and was stopped.');
         break;
@@ -3191,6 +3628,7 @@ function buildEl(run, fresh = false) {
   head.append(span('build-goal', run.goal || 'the agreed plan'));
   if (!run.done) head.append(span('build-timer', run.clock ? `Working · ${run.clock}` : 'Working'));
   box.append(head);
+  for (const note of run.notes ?? []) box.append(quietNote(note));
   const list = document.createElement('ol');
   list.className = 'build-tasks';
   for (const t of run.tasks) list.append(taskRowEl(run, t));
@@ -3570,7 +4008,9 @@ async function editSeat(index, field, value) {
 // DECISIONS item 91: Google no longer serves Gemini CLI on a Google AI Pro plan and Antigravity does, so the Gemini seat takes Gemini 4
 // Hydrogen through Antigravity when Antigravity is signed in and lists it, and Gemini CLI otherwise (it stays in every menu). A
 // candidate the CLI's own list says it no longer offers (offered: false in the catalog) is skipped, so a retired model is never added.
-const NEW_SEAT_MODELS = [['gemini', 'gemini:default'], ['codex', 'codex:default'], ['muse', 'muse:muse-wonder-full-1.0'], ['anthropic', 'anthropic:claude-opus-5-5']];
+// The Muse seat is Muse Wonder 1.0 (Muse Code no longer offers Muse Wonder Full); if Muse Code's own list ever drops that too, the seat
+// takes the first Muse model the list does offer (newSeat). A saved council keeps the model it names: only a new seat is chosen here.
+const NEW_SEAT_MODELS = [['gemini', 'gemini:default'], ['codex', 'codex:default'], ['muse', 'muse:muse-wonder-1.0'], ['anthropic', 'anthropic:claude-opus-5-5']];
 const HYDROGEN_HIGH = 'antigravity:gemini-4-hydrogen-high';
 const catalogRef = c => `${c.provider}:${c.id}`;
 const retiredRef = ref => catalog.some(c => catalogRef(c) === ref && c.offered === false);
@@ -3598,8 +4038,13 @@ function newSeat(seats) {
   const seated = new Set(seats.map(s => providerOf(s.ref)));
   // A seat that already runs a Gemini model through Antigravity is the council's Gemini seat.
   if (seats.some(s => typeof s.ref === 'string' && s.ref.startsWith('antigravity:gemini'))) seated.add('gemini');
+  // The Muse seat: its model while Muse Code offers it, else the first Muse model that Muse Code's own list does offer.
+  const museSeatModel = model => {
+    const other = retiredRef(model) ? catalog.find(c => c.provider === 'muse' && c.offered !== false) : null;
+    return other ? catalogRef(other) : model;
+  };
   const ref = NEW_SEAT_MODELS
-    .map(([p, model]) => [p, p === 'gemini' ? geminiSeatModel(model) : model])
+    .map(([p, model]) => [p, p === 'gemini' ? geminiSeatModel(model) : p === 'muse' ? museSeatModel(model) : model])
     .find(([p, model]) => !seated.has(p) && !retiredRef(model))?.[1] ?? seats.at(-1)?.ref ?? 'gemini:default';
   return { ref, effort: 'high', role };
 }
@@ -4672,20 +5117,61 @@ function cardShell(mark, key, title, sub, pillText, ok) {
   return c;
 }
 
+// A sign-in happens outside Plenum, in a terminal and then the browser. public/ext-accounts-cli.js watches for it to finish
+// (MuseUI.watchSignIn: it reads the accounts every few seconds for three minutes), so the card shows the sign-in by itself and nobody
+// has to press Refresh. That panel loads after this file, so it is looked up when the button is pressed; without it the toast's
+// "press Refresh" still holds. done(accounts) says whether the accounts show the sign-in. A card that is already signed in is not
+// watched (Sign in again): the accounts would say "signed in" before the new sign-in had begun.
+function watchCardSignIn(card, id, name, done) {
+  window.MuseUI?.watchSignIn?.({
+    id: `card-${id}`,
+    read: () => api('/api/accounts'),
+    done,
+    alive: () => card.isConnected && !card.closest('[hidden]'),
+    onWait: () => {
+      const pill = card.querySelector('.pill');
+      if (pill) pill.textContent = 'Waiting for sign-in';
+    },
+    onDone: async () => {
+      toast(`Signed in to ${name}.`);
+      await loadProviders().catch(() => {});
+      refreshDrawer();
+    },
+    onGiveUp: () => {
+      toast('Plenum has not seen the sign-in yet. Press Refresh to check again, or sign in again.');
+      refreshDrawer();
+    },
+  });
+}
+
+// The install steps for a CLI that is not installed, with a Copy button for each command (MuseUI.cliInstallBlock, the block the setup
+// guide shows), or null when that panel is not loaded.
+const installSteps = (id, info) => {
+  // The cards here have a Refresh button (the setup guide's reads Check again), and the block names the one that is on screen.
+  const block = window.MuseUI?.cliInstallBlock?.(id, info, { button: 'Refresh' });
+  return block instanceof Node ? block : null;
+};
+
 // Claude through the Claude CLI: sign in with the Claude account, no key involved.
 function claudeCliCard(c) {
-  const card = cardShell('C', 'claude', 'Claude', c.plan ? `Claude account · ${c.plan} plan` : 'Claude account', c.connected ? 'Signed in' : 'Not signed in', c.connected);
-  card.append(para(c.connected
-    ? `Claude runs through the Claude CLI on this computer${c.email ? `, signed in as ${c.email}` : ''}. It uses your Claude plan, not an API key.`
-    : 'Sign in to your Claude account. A sign-in window opens; finish in your browser, then press Refresh here.'));
+  // connected is null when the check of the Claude CLI did not answer in time (server.mjs sends the status sentence with it): the card
+  // then says that it does not know, and never "Not signed in" to a person who is signed in.
+  const unknown = c.connected === null;
+  const card = cardShell('C', 'claude', 'Claude', c.plan ? `Claude account · ${c.plan} plan` : 'Claude account', unknown ? 'Sign-in unknown' : c.connected ? 'Signed in' : 'Not signed in', c.connected === true);
+  card.append(para(unknown
+    ? (c.status || 'Plenum could not check Claude Code just now. Press Refresh.')
+    : c.connected
+      ? `Claude runs through the Claude CLI on this computer${c.email ? `, signed in as ${c.email}` : ''}. It uses your Claude plan, not an API key.`
+      : 'Sign in to your Claude account. A sign-in window opens; finish in your browser, then press Refresh here.'));
   const actions = document.createElement('div');
   actions.className = 'actions';
   // The button names the product, not the provider's own sign-in button (LEGAL provider_risks, Trademarks).
-  const signIn = button('primary small', c.connected ? 'Sign in again' : 'Sign in to Claude Code');
+  const signIn = button('primary small', c.connected === true ? 'Sign in again' : 'Sign in to Claude Code');
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/claude/login', {});
       toast('Sign-in window opened. Finish in your browser, then press Refresh.');
+      if (c.connected !== true) watchCardSignIn(card, 'claude', 'Claude Code', a => a?.claude?.connected === true);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -4693,6 +5179,8 @@ function claudeCliCard(c) {
   const refreshBtn = button('ghost small', 'Refresh');
   refreshBtn.addEventListener('click', async () => {
     await loadProviders().catch(() => {});
+    // Refresh asks the Claude CLI again, whatever answer the server still holds (see renderAccounts).
+    renderAccounts.fresh = true;
     refreshDrawer();
   });
   actions.append(signIn, refreshBtn);
@@ -4810,11 +5298,14 @@ function claudeCard(c) {
 function museCard(m) {
   const pill = !m.installed ? 'Not installed' : m.signedIn ? 'Signed in' : 'Not signed in';
   const card = cardShell('M', 'muse', 'Muse Code', 'Meta account', pill, m.installed && m.signedIn);
+  // A CLI that is missing gets the install steps (an installed app shows no README to point at).
+  const steps = m.installed ? null : installSteps('muse', m);
   card.append(para(!m.installed
-    ? 'Install Muse Code first (see the README), then come back here.'
+    ? (steps ? 'Muse Code is not installed.' : 'Muse Code is not installed. Install it from its publisher, then press Refresh.')
     : m.signedIn
       ? 'Muse Code has a saved sign-in on this computer.'
       : 'Sign in to your Meta account. A sign-in window opens; approve the code in your browser, then press Refresh here.'));
+  if (steps) card.append(steps);
   if (m.metaApiKey) card.append(para('META_API_KEY is set on this computer. It overrides the Meta account sign-in and decides which account is billed.'));
   const actions = document.createElement('div');
   actions.className = 'actions';
@@ -4824,6 +5315,7 @@ function museCard(m) {
     try {
       await api('/api/accounts/muse/login', {});
       toast('Sign-in window opened. Approve the code in your browser, then press Refresh.');
+      if (!m.signedIn) watchCardSignIn(card, 'muse', 'Muse Code', a => a?.muse?.signedIn === true);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -4838,19 +5330,25 @@ function museCard(m) {
 }
 
 function codexCard(c) {
-  const pill = !c.installed ? 'Not installed' : c.loggedIn ? 'Signed in' : 'Not signed in';
-  const card = cardShell('X', 'codex', 'Codex', 'ChatGPT account', pill, c.installed && c.loggedIn);
+  // loggedIn is null when the check of the Codex CLI did not answer in time (lib/accounts.mjs): the card then says that it does not know,
+  // with the server's sentence under it ("Plenum could not check Codex just now. Press Refresh."), and never "Not signed in".
+  const unknown = c.installed && c.loggedIn === null;
+  const pill = !c.installed ? 'Not installed' : unknown ? 'Sign-in unknown' : c.loggedIn ? 'Signed in' : 'Not signed in';
+  const card = cardShell('X', 'codex', 'Codex', 'ChatGPT account', pill, c.installed && c.loggedIn === true);
+  const steps = c.installed ? null : installSteps('codex', c);
   card.append(para(!c.installed
-    ? 'Install the Codex CLI with npm install -g @openai/codex, then come back here.'
+    ? (steps ? 'The Codex CLI is not installed.' : 'Install the Codex CLI with npm install -g @openai/codex, then come back here.')
     : c.status || 'Sign in to your ChatGPT account. A sign-in window opens in your browser.'));
+  if (steps) card.append(steps);
   const actions = document.createElement('div');
   actions.className = 'actions';
-  const signIn = button('primary small', c.loggedIn ? 'Sign in again' : 'Sign in to Codex');
+  const signIn = button('primary small', c.loggedIn === true ? 'Sign in again' : 'Sign in to Codex');
   signIn.disabled = !c.installed;
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/codex/login', {});
       toast('Sign-in window opened. Finish in your browser, then press Refresh.');
+      if (c.loggedIn !== true) watchCardSignIn(card, 'codex', 'Codex', a => a?.codex?.loggedIn === true);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -4859,6 +5357,7 @@ function codexCard(c) {
   // Refresh also reads the Codex model list again, so a model added to the account (or a new sign-in) reaches the menu.
   refreshBtn.addEventListener('click', async () => {
     if (c.installed) await loadProviders({ refreshCodex: true }).catch(() => {});
+    renderAccounts.fresh = true;
     refreshDrawer();
   });
   actions.append(signIn, refreshBtn);
@@ -4874,13 +5373,15 @@ function geminiCard(g) {
   const pill = !g ? 'Unknown' : !g.installed ? 'Not installed' : g.signedIn ? 'Signed in' : 'Not signed in';
   const card = cardShell('G', 'gemini', 'Gemini', 'Google account', pill, ok);
   card.dataset.card = 'gemini';
+  const steps = g && !g.installed ? installSteps('gemini', g) : null;
   card.append(para(!g
     ? 'Gemini status is not available yet. Press Refresh.'
     : !g.installed
-      ? geminiInstall(g.installCommand || 'npm install --prefix "<your Muse Console tools folder>" @google/gemini-cli')
+      ? (steps ? 'Gemini CLI is not installed.' : geminiInstall(g.installCommand || 'npm install --prefix "<your Muse Console tools folder>" @google/gemini-cli'))
       : g.signedIn
         ? `Gemini has a saved sign-in${g.email ? ` for ${g.email}` : ''}.`
         : 'Sign in to your Google account. A sign-in window opens; choose "Sign in with Google" there, as Google shows it, then press Refresh here.'));
+  if (steps) card.append(steps);
   card.append(para('Gemini runs headless, so it edits files only when Auto-approve or Approve all is on.'));
   const actions = document.createElement('div');
   actions.className = 'actions';
@@ -4890,6 +5391,7 @@ function geminiCard(g) {
     try {
       await api('/api/accounts/gemini/login', {});
       toast('Sign-in window opened. Choose Sign in with Google there, then press Refresh.');
+      if (!g?.signedIn) watchCardSignIn(card, 'gemini', 'Gemini CLI', a => a?.gemini?.signedIn === true);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -4949,14 +5451,19 @@ function codingAgentsGroup(ctx) {
   return group;
 }
 
+// renderAccounts.fresh is set by the Refresh of the Codex and Claude Code cards: the next reading of the accounts asks those two CLIs
+// again (?fresh=1), where a plain reading may answer from what the server checked a few seconds ago. "Press Refresh" under "Sign-in
+// unknown" then really checks. (Kept on the function, so the function stands alone.)
 async function renderAccounts(body) {
   const gen = drawerGen;
   body.append(para('Checking your accounts…'));
+  const accountsPath = renderAccounts.fresh === true ? '/api/accounts?fresh=1' : '/api/accounts';
+  renderAccounts.fresh = false;
   let a;
   let cli = null;
   try {
     // GET /api/accounts/cli is the coding agents added after the first four (Cursor now). A failed read leaves cli null, and its cards say so.
-    [a, cli] = await Promise.all([api('/api/accounts'), api('/api/accounts/cli').catch(() => null)]);
+    [a, cli] = await Promise.all([api(accountsPath), api('/api/accounts/cli').catch(() => null)]);
   } catch (err) {
     if (gen === drawerGen) body.replaceChildren(para(err.message));
     return;
@@ -5634,6 +6141,15 @@ function paneSelectTab(id) {
   }
   paneActive = paneInstances.has(id) ? id : null;
   paneSyncChrome();
+  // In a narrow pane the tab strip scrolls sideways and shows no scrollbar (style.css): the selected tab is brought into view, once
+  // the column is laid out.
+  const tab = paneInstances.get(id)?.tab;
+  if (tab) requestAnimationFrame(() => {
+    const a = tab.getBoundingClientRect(); const b = el.paneTabs.getBoundingClientRect();
+    if (!a.width || !b.width) return;
+    if (a.left < b.left) el.paneTabs.scrollLeft -= b.left - a.left;
+    else if (a.right > b.right) el.paneTabs.scrollLeft += a.right - b.right;
+  });
 }
 
 // The column shows only while there is a tab to show.
@@ -5945,8 +6461,38 @@ function settingsRegister(def) {
   if (typeof render !== 'function') throw new Error(`Settings ${id} needs a render(body, ctx) function.`);
   if (typeof order !== 'number' || !Number.isFinite(order)) throw new Error(`Settings ${id}: order must be a number.`);
   const next = { id, scope, title: title.trim(), order, render, group: typeof d.group === 'string' ? d.group : null };
+  const isNew = !settingsDefs.has(id);
   settingsDefs.set(id, next);
+  // A new section that registers while the page is open (a panel that loaded a moment after the page was opened) joins the page now,
+  // not at its next opening. A fault in drawing it never fails the panel's registration.
+  if (isNew && scope === 'app' && settingsShown) {
+    try {
+      settingsAddLate(id);
+    } catch (err) {
+      console.error('A settings section could not be added to the open page:', err);
+    }
+  }
   return next;
+}
+
+// Puts one section's card onto the Settings page that is open, at its place in its group. The other sections are not drawn again:
+// one of them may hold an open row or the text a person is typing. A section whose group is not on the page (it would be the group's
+// first) waits for the next opening of the page, as every late section did before.
+function settingsAddLate(id) {
+  const sections = settingsSections('app');
+  const def = sections.find(d => d.id === id);
+  if (!def || el.settingsContent.querySelector(`.settings-card[data-section="${id}"]`)) return;
+  const key = groupOfSection(def);
+  const g = settingsGroupEls.find(x => x.key === key);
+  const holder = g?.group.querySelector('.settings-group-body');
+  if (!holder) return;
+  // The card goes before the first card on the page that comes after it in the group's order.
+  const after = sections.slice(sections.indexOf(def) + 1).filter(d => groupOfSection(d) === key).map(d => d.id);
+  const next = g.cards.find(card => after.includes(card.dataset.section)) ?? null;
+  const card = settingsCard(def, def.title !== g.label);
+  holder.insertBefore(card, next && next.parentNode === holder ? next : null);
+  g.cards.splice(next ? g.cards.indexOf(next) : g.cards.length, 0, card);
+  settingsApplySearch();
 }
 
 // Copies of the sections for one scope, in order. Equal orders keep the order they were registered in.
@@ -6084,8 +6630,9 @@ function settingsDraw() {
     group.setAttribute('aria-labelledby', heading.id);
     const holder = document.createElement('div');
     holder.className = 'settings-group-body';
-    // A group with one section that has the group's own name does not repeat the name on the card.
-    const cards = g.key === 'project' ? [projectCard()] : defs.map(def => settingsCard(def, !(defs.length === 1 && def.title === g.label)));
+    // A section that has the group's own name (Accounts under Accounts, Updates under Updates) does not repeat the name on its card,
+    // whether it is the group's only section or the first of several.
+    const cards = g.key === 'project' ? [projectCard()] : defs.map(def => settingsCard(def, def.title !== g.label));
     holder.append(...cards);
     group.append(heading, holder);
     const nav = document.createElement('button');
@@ -6724,6 +7271,8 @@ function confirmBox({ title = '', body = '', action = 'OK', cancel = 'Cancel', t
     dlg.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // The question is answered here. The same Escape must not reach the document's handler, which would close the Settings page under it.
+        e.stopPropagation();
         finish(false);
         return;
       }
@@ -7437,6 +7986,9 @@ window.MuseUI = {
   approvalModes: APPROVAL_MODES,
   dialogOpen,
   el, span, button, para, icon, cardShell, modelName, notOfferedWords, stream: () => streamEl ?? el.chat,
+  // The whole text of a message whose turn (its article, or a node inside it) shows only its first part; undefined for any other
+  // turn, whose text is all on the page. A panel that copies or sends on what a turn says reads this first.
+  turnText: node => partShown.get(node instanceof Element ? node.closest('.turn') ?? node : node),
   // The approval card (see approvalEl): the Agents board builds its waiting cards with it, so the keys, the countdown and Show all are the chat's own.
   approvalEl,
   // Stops a run (POST /api/cancel), as the Stop button does. The Agents pane stops a run through this. Pass a project id to stop that
@@ -7478,12 +8030,35 @@ window.MuseUI = {
 // is left alone. Measured after each change of the bar, the window's size or the fonts, once per frame.
 const FIT_LAST = 5;
 let fitFrame = 0;
+// Whether a shown element's words are cut by its own edge. A button does not report its cut text in scrollWidth or in the boxes of
+// its words (the ellipsis shortens them), so a button's words are measured as they would be drawn in its font. A fifth of a pixel
+// too little already shows the ellipsis.
+let fitMeasure = null;
+function cutShort(n) {
+  if (!n.getClientRects().length) return false;
+  if (n.scrollWidth > n.clientWidth + 1) return true;
+  const words = n.tagName === 'BUTTON' ? n.innerText : '';
+  if (!words) return false;
+  const cs = getComputedStyle(n);
+  fitMeasure ??= document.createElement('canvas').getContext('2d');
+  fitMeasure.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  if ('letterSpacing' in fitMeasure) fitMeasure.letterSpacing = cs.letterSpacing === 'normal' ? '0px' : cs.letterSpacing;
+  const room = n.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
+  return fitMeasure.measureText(words).width > room + 0.05;
+}
 function titlebarTight(bar, step) {
   const end = bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight);
   const rects = [...bar.children].filter(n => n.getClientRects().length > 0).map(n => n.getBoundingClientRect());
   if (rects.some(r => r.right > end + 1)) return true;
   const title = bar.querySelector('.proj-title');
   if (title && title.scrollWidth > title.clientWidth + 1) return true;
+  // A project name, cost line or chip in the title that is cut short ("field-not...", "Spen...") is tight too, at the first two steps
+  // only: dropping the pane labels (step 1) and the chips' long words (step 2) gives them room, and a name too long for any bar stops
+  // there. The path is not counted: it is made to give way first. Only a full bar cuts them (its empty space is down to its least
+  // width), so a bar with room is never taken for a tight one.
+  const space = bar.querySelector('.titlebar-space');
+  const full = !space || space.getBoundingClientRect().width <= (parseFloat(getComputedStyle(space).minWidth) || 0) + 1;
+  if (step < 2 && full && title && [...title.querySelectorAll(':scope > .proj-name, :scope > .cost-line, :scope > button')].some(cutShort)) return true;
   if (step < 3) return false;
   const mids = rects.map(r => r.top + r.height / 2).sort((a, b) => a - b);
   let lines = 0; let last = -Infinity;
@@ -7498,6 +8073,9 @@ function fitTitlebar() {
   let step = 0;
   bar.dataset.fit = '0';
   while (step < FIT_LAST && titlebarTight(bar, step)) { step += 1; bar.dataset.fit = String(step); }
+  // A path with room for only a letter or two ("D...") says nothing, so it is not shown then. It keeps its place: nothing moves.
+  const path = bar.querySelector('.proj-path');
+  if (path) path.toggleAttribute('data-sliver', path.getClientRects().length > 0 && path.getBoundingClientRect().width < 64);
   document.documentElement.style.setProperty('--bar-now', `${Math.ceil(bar.getBoundingClientRect().height)}px`);
 }
 const queueFit = () => { if (!fitFrame) fitFrame = requestAnimationFrame(fitTitlebar); };

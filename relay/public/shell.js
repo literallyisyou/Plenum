@@ -1297,6 +1297,7 @@ function workerComputer(record, carriers = null) {
     myPriv: b64uToBytes(typeof record.myPriv == "string" ? record.myPriv : fail("locked")),
     carriers: carriers ?? record.carriers ?? [],
     lastCarrier: record.lastCarrier ?? null,
+    lastUrl: typeof record.lastUrl == "string" ? record.lastUrl : null,
     counter: Number.isSafeInteger(record.counter) ? record.counter : 0
   };
 }
@@ -1349,6 +1350,7 @@ function sendLockedStop({ record, store = null, createWorker = defaultCreateWork
         stopKey: b64uToBytes(record.stopKey),
         carriers: Array.isArray(record.carriers) ? record.carriers : [],
         lastCarrier: record.lastCarrier ?? null,
+        lastUrl: typeof record.lastUrl == "string" ? record.lastUrl : null,
         counter: Number.isSafeInteger(record.counter) ? record.counter : 0
       }
     });
@@ -1627,6 +1629,7 @@ function cardOf(record, counter = 0) {
     stopKey: record.stopKey,
     carriers,
     lastCarrier: typeof record.lastCarrier == "string" ? record.lastCarrier : null,
+    ...typeof record.lastUrl == "string" ? { lastUrl: record.lastUrl } : {},
     counter: Math.max(Number.isSafeInteger(record.counter) ? record.counter : 0, counter)
   };
 }

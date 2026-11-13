@@ -1,7 +1,9 @@
 // ext-accounts-api. Owned by its panel builder. Builds on window.MuseUI (see app.js).
 // The model-provider key panel, a section of Settings > Accounts (MuseUI.settings.register, scope 'app', group 'accounts'). A key goes
 // to the server in one request, which tests it and then saves it. This file keeps no copy of a key: the input is cleared after a
-// save, and the panel shows only a provider's status and the server's plain messages.
+// save, and the panel shows only a provider's status and the server's plain messages. When the provider's check could not run (no
+// internet, a limit, a busy provider), the server does not save the key and says so; the key stays in the box and Save anyway sends it
+// again with force, which saves it as "not checked yet" until a Test passes.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -352,31 +354,58 @@
     };
 
     const save = MuseUI.button('primary small', 'Save key');
+    // Shown only after a save the provider's check could not settle. It sends the key still in the box once more, with force.
+    const anyway = MuseUI.button('ghost small', 'Save anyway');
+    anyway.hidden = true;
+    // Takes Save anyway away. A hidden button cannot hold the focus, so the focus goes to the key box first and the keyboard stays in the card.
+    const hideAnyway = () => {
+      if (document.activeElement === anyway) input.focus();
+      anyway.hidden = true;
+    };
     const test = MuseUI.button('ghost small', 'Test saved key');
     const remove = MuseUI.button('ghost small', 'Remove key');
     let configured = false;
+    let notChecked = false;
     let busy = false;
     const paint = () => {
       save.disabled = busy;
+      anyway.disabled = busy;
       // Testing and removing need a saved key, so those buttons wait until one exists.
       test.disabled = busy || !configured;
       remove.disabled = busy || !configured;
     };
     const apply = status => {
       configured = Boolean(status.configured);
-      pill.textContent = configured ? `Saved from ${status.source || 'this computer'}` : 'Not set';
-      pill.className = configured ? 'pill ok' : 'pill';
+      // A key kept without the provider's check says so until a Test passes (the server sends checked: false for it).
+      notChecked = configured && status.checked === false;
+      pill.textContent = configured ? `Saved from ${status.source || 'this computer'}${notChecked ? ', not checked yet' : ''}` : 'Not set';
+      pill.className = configured && !notChecked ? 'pill ok' : 'pill';
       paint();
     };
 
-    save.addEventListener('click', async () => {
+    // Sends the key in the box. force is true only from Save anyway. A key the provider's check could not settle is not saved; the box
+    // keeps it and Save anyway is offered, so the person decides without pasting it again.
+    const send = async force => {
       const key = input.value.trim();
       if (!key) return show('Paste a key first.', 'bad');
       busy = true;
+      hideAnyway();
       paint();
-      show('Checking the key…', '');
+      show(force ? 'Saving the key…' : 'Checking the key…', '');
       try {
-        const r = await MuseUI.api('/api/keys', { provider: p.id, key });
+        const r = await MuseUI.api('/api/keys', force ? { provider: p.id, key, force: true } : { provider: p.id, key });
+        if (r.canSaveAnyway) {
+          // The box can be edited while the check runs. The answer is about the text that was sent, so Save anyway is offered only
+          // while the box still holds that text; otherwise the person checks the new text with Save key.
+          if (input.value.trim() !== key) {
+            show('The key in the box changed while it was being checked. Press Save key to check it.', '');
+            return;
+          }
+          // The reason alone (the message also points to Accounts, which is where this button is), then what the button does.
+          show(`${scrub(r.reason || r.message, key)} Save anyway keeps this key without the check.`, '');
+          anyway.hidden = false;
+          return;
+        }
         const text = scrub(r.message || (r.saved ? 'Saved.' : 'The key was not saved.'), key);
         show(text, r.saved ? 'ok' : 'bad');
         if (r.saved) {
@@ -391,7 +420,11 @@
         busy = false;
         paint();
       }
-    });
+    };
+    save.addEventListener('click', () => send(false));
+    anyway.addEventListener('click', () => send(true));
+    // Changing the key makes the last answer about the old text, so Save anyway goes away until the new text is checked.
+    input.addEventListener('input', hideAnyway);
     // Enter in the box saves, the same as the button. A disabled button ignores the click.
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') save.click();
@@ -403,7 +436,12 @@
       show('Checking the saved key…', '');
       try {
         const r = await MuseUI.api('/api/keys/test', { provider: p.id });
-        show(r.message || (r.ok ? 'The saved key works.' : 'The saved key did not work.'), r.ok ? 'ok' : 'bad');
+        // A check that could not run (verdict 'unchecked') is not a refusal: the key may be fine, so it is not shown in the failure style.
+        const unsettled = !r.ok && r.verdict === 'unchecked';
+        const said = r.message || (r.ok ? 'The saved key works.' : 'The saved key did not work.');
+        show(unsettled ? `Could not be confirmed. ${said}` : said, r.ok ? 'ok' : unsettled ? '' : 'bad');
+        // A passed check clears "not checked yet" on the card.
+        if (r.ok && notChecked) await refreshStatus(panel);
       } catch (err) {
         show(err.message, 'bad');
       } finally {
@@ -435,7 +473,7 @@
 
     const actions = document.createElement('div');
     actions.className = 'actions';
-    actions.append(save, test, remove);
+    actions.append(save, anyway, test, remove);
     const link = keyPageLink(p);
     if (link) actions.append(link);
     card.append(input, actions, result);

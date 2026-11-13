@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { createFakeClock } from './helpers/fake-clock.mjs';
 import { createFakeIndexedDB } from './fixtures/shell-core/fake-idb.mjs';
 import { createFakeNet, createFakeDesktop } from './fixtures/shell-core/fake-desktop.mjs';
-import { createChannelCore, DELAYS_MS, STOP_WINDOW_MS, STOP_RESEND_MS, RENEW_AFTER_MS, RENEW_DRAIN_MS, NOT_KNOWN_RETRY_MS, ASLEEP_RETRY_MS, ASLEEP_SLOW_AFTER_ROUNDS, openSocket, requestPolicy } from '../shell/channel.worker.js';
+import { createChannelCore, DELAYS_MS, STOP_WINDOW_MS, STOP_RESEND_MS, RENEW_AFTER_MS, RENEW_DRAIN_MS, NOT_KNOWN_RETRY_MS, ASLEEP_RETRY_MS, ASLEEP_SLOW_AFTER_ROUNDS, CONNECT_TIMEOUT_MS, CONNECT_TIMEOUT_PRIVATE_MS, DIAL_STAGGER_MS, openSocket, requestPolicy } from '../shell/channel.worker.js';
 import { openChannel, bytesToB64u, b64uToBytes, workerComputer, sendLockedStop } from '../shell/channel.js';
-import { carrierUrlOk, hostLabel, usableCarriers } from '../shell/carriers.js';
+import { carrierUrlOk, dialOrder, hostLabel, isPrivateUrl, usableCarriers } from '../shell/carriers.js';
 import { createIdbKv, createSecureKv, createStore, publicComputer, createPlatformStore, createStopCards, STOP_CARDS_KEY } from '../shell/store.js';
 import { createLock, createPasskeyGate, pinWaitSeconds, isValidPin, wrapKey, unwrapKey, derivePinKey, PIN_ITERATIONS, BACKGROUND_LOCK_MS } from '../shell/lock.js';
 import { parsePairingText, pageCandidates, PairingError, describeTried, startPairing, validatePayload } from '../shell/pairing.js';
@@ -739,7 +739,8 @@ describe('Stop cards: Stop without the store (MOBILE.json floor)', () => {
     const raw = storage.raw.get(STOP_CARDS_KEY);
     for (const secret of ['SECRET', 'PUSH', 'PSK', 'PUB']) assert.equal(raw.includes(secret), false, `${secret} is not on the card`);
     const [card] = store.stopCards.read();
-    assert.deepEqual(Object.keys(card).sort(), ['carriers', 'counter', 'id', 'lastCarrier', 'myDeviceId', 'name', 'stopKey']);
+    // lastUrl (mobile-3: the address that connected last, one of the addresses in carriers) may be on a card; nothing else may.
+    assert.deepEqual(Object.keys(card).filter(k => k !== 'lastUrl').sort(), ['carriers', 'counter', 'id', 'lastCarrier', 'myDeviceId', 'name', 'stopKey']);
     assert.equal(card.stopKey, STOP);
     await store.put(record({ id: 'e'.repeat(64), stopKey: undefined }));
     assert.equal(store.stopCards.read().length, 1, 'a computer without a Stop key has no card');
@@ -3800,6 +3801,158 @@ describe('B-118: reconnect and Stop check a session that is up', () => {
     assert.equal(rig.dials.length, dialled, 'no new dial');
     assert.equal(rig.core.session, session, 'the same session');
     assert.equal(rig.core.phase, 'connected');
+  });
+});
+
+// mobile-3: the ways are dialled together, 250 ms apart, and the first socket that opens is the one used. Before, each address had 6 s
+// to itself, so three home addresses seen from mobile data put the relay (and a Stop) 18 s away.
+describe('mobile-3: the phone dials its ways together, so a reconnect and a Stop are fast away from home', () => {
+  const HOME = ['ws://192.168.1.20:4400/b/k', 'ws://10.0.75.1:4400/b/k', 'ws://172.28.0.1:4400/b/k'];
+  const RELAY = `wss://plenum-relay.example.workers.dev/room/${'a'.repeat(32)}`;
+  // The fake net with addresses that say nothing at all (packets dropped, as a private address seen from another network): the socket
+  // never opens and never refuses. Closes asked for by the phone are kept.
+  const quietNet = (net, quiet) => {
+    const closes = [];
+    const Quiet = class extends net.WebSocket {
+      constructor(url) {
+        super(url);
+        // Nobody listens on a quiet address, and the fake net's refusal is swallowed: nothing is ever emitted.
+        if (quiet.includes(url)) this.emit = () => {};
+      }
+      close(code, reason) {
+        closes.push({ url: this.url, code, reason });
+        super.close(code, reason);
+      }
+    };
+    return { WebSocket: Quiet, closes };
+  };
+  const away = (options = {}) => {
+    const net = createFakeNet();
+    const clock = createFakeClock(0);
+    const desktop = createFakeDesktop({ net, url: RELAY, carrier: 'relay', ...options });
+    const phone = generateKeyPair();
+    const phoneId = deviceId(phone.publicKey);
+    desktop.counters.set(phoneId, 0);
+    const carriers = [{ kind: 'lan', urls: HOME }, { kind: 'relay', urls: [RELAY] }];
+    const computer = coreComputer(desktop, phone, { carriers, lastCarrier: 'lan' });
+    const quiet = quietNet(net, HOME);
+    const rig = coreRig({ net: quiet, clock, computer });
+    return { net, clock, desktop, phoneId, carriers, computer, rig, closes: quiet.closes };
+  };
+
+  it('carriers.js: isPrivateUrl and dialOrder (the address that connected last, the way used last, the rest; private ws:// last on mobile data)', () => {
+    assert.equal(isPrivateUrl(HOME[0]), true);
+    assert.equal(isPrivateUrl('ws://100.64.0.1/x'), true);
+    assert.equal(isPrivateUrl('ws://[fe80::1]/x'), true);
+    assert.equal(isPrivateUrl(RELAY), false);
+    assert.equal(isPrivateUrl('ws://pc.local/b/k'), false, 'a name is looked up first: it keeps the long timeout');
+    assert.equal(isPrivateUrl('nonsense'), false);
+    const carriers = [{ kind: 'lan', urls: HOME }, { kind: 'relay', urls: [RELAY] }];
+    const urls = options => dialOrder(carriers, options).map(c => c.url);
+    assert.deepEqual(urls({}), [...HOME, RELAY]);
+    assert.deepEqual(urls({ lastCarrier: 'relay' }), [RELAY, ...HOME]);
+    assert.deepEqual(urls({ lastCarrier: 'lan', lastUrl: HOME[2] }), [HOME[2], HOME[0], HOME[1], RELAY]);
+    assert.deepEqual(urls({ lastCarrier: 'lan', lastUrl: 'ws://192.168.7.7/not-held' }), [...HOME, RELAY], 'an address the record does not hold is not dialled');
+    assert.deepEqual(urls({ lastCarrier: 'lan', lastUrl: HOME[0], network: 'cellular' }), [RELAY, ...HOME], 'demoted, never removed');
+    assert.deepEqual(urls({ lastCarrier: 'lan', lastUrl: HOME[0], network: 'wifi' }), [...HOME, RELAY]);
+  });
+
+  it('the address that connected last reaches the worker from the saved record (workerComputer, sendLockedStop) and survives on the Stop card', async () => {
+    const record = { id: 'c'.repeat(64), name: 'Home PC', desktopPub: bytesToB64u(new Uint8Array(32).fill(1)), myPriv: bytesToB64u(new Uint8Array(32).fill(2)), carriers: [{ kind: 'lan', urls: HOME }], lastCarrier: 'lan', lastUrl: HOME[1], counter: 3 };
+    assert.equal(workerComputer(record).lastUrl, HOME[1], 'a restarted app hands the worker the address that worked');
+    assert.equal(workerComputer({ ...record, lastUrl: 5 }).lastUrl, null, 'only a string is handed on');
+    assert.equal(workerComputer({ ...record, lastUrl: undefined }).lastUrl, null);
+    // Stop without unlocking: the message to the Stop worker names the address too.
+    const stopRecord = { ...record, stopKey: 'S'.repeat(43), myDeviceId: 'd'.repeat(64) };
+    const posted = [];
+    const worker = { postMessage: m => posted.push(m), terminate() {}, onmessage: null, onerror: null };
+    const pending = sendLockedStop({ record: stopRecord, createWorker: () => worker });
+    assert.equal(posted[0].op, 'stopLocked');
+    assert.equal(posted[0].computer.lastUrl, HOME[1]);
+    worker.onmessage({ data: { op: 'stopAck', sid: 1, ack: { id: stopRecord.id } } });
+    await pending;
+    const noUrl = [];
+    const w2 = { postMessage: m => noUrl.push(m), terminate() {}, onmessage: null, onerror: null };
+    const p2 = sendLockedStop({ record: { ...stopRecord, lastUrl: undefined }, createWorker: () => w2 });
+    assert.equal(noUrl[0].computer.lastUrl, null);
+    w2.onmessage({ data: { op: 'stopAck', sid: 1, ack: { id: stopRecord.id } } });
+    await p2;
+    // The Stop card keeps it (a locked phone dials the right address first) and a value that is not a string is dropped.
+    const m = new Map();
+    const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) };
+    const data = new Map();
+    const kv = { kind: 'web', get: async k => (data.has(k) ? structuredClone(data.get(k)) : undefined), put: async (k, v) => { data.set(k, structuredClone(v)); }, delete: async k => { data.delete(k); }, keys: async () => [...data.keys()] };
+    const store = createStore({ kv, stopCards: createStopCards({ storage }) });
+    await store.put(stopRecord);
+    assert.equal(store.stopCards.read()[0].lastUrl, HOME[1]);
+    await store.put({ ...stopRecord, lastUrl: 7 });
+    assert.equal('lastUrl' in store.stopCards.read()[0], false);
+  });
+
+  it('Stop without unlocking: three home addresses that never answer, then the relay: the Stop is sent within one second, once', async () => {
+    const k = away({ stopCounts: { agentsStopped: 1 } });
+    const stop = new Uint8Array(32).fill(7);
+    k.desktop.stopKeys.set(k.phoneId, stop);
+    k.rig.core.handle({ op: 'stopLocked', sid: 1, computer: { id: k.computer.id, deviceId: k.phoneId, stopKey: stop, carriers: k.carriers, lastCarrier: 'lan', counter: 0 } });
+    await settle();
+    await walk(k.clock, 1000, 50);
+    assert.deepEqual(k.rig.dials, [
+      { at: 0, url: HOME[0] }, { at: DIAL_STAGGER_MS, url: HOME[1] }, { at: 2 * DIAL_STAGGER_MS, url: HOME[2] }, { at: 3 * DIAL_STAGGER_MS, url: RELAY },
+    ]);
+    assert.equal(k.desktop.stats.stopOnly.length, 1, 'the computer saw one Stop');
+    assert.equal(k.rig.last('stopAck')?.ack?.agentsStopped, 1);
+    assert.equal(k.rig.counters.get(k.computer.id), 1, 'one counter for the one Stop');
+    assert.deepEqual(k.closes.filter(c => HOME.includes(c.url)).map(c => c.reason), ['lost', 'lost', 'lost'], 'the sockets that did not win are closed');
+    k.clock.advance(STOP_WINDOW_MS);
+    await settle();
+    assert.equal(k.rig.dials.length, 4);
+    assert.equal(k.clock.pending, 0, 'no timer is left');
+  });
+
+  it('reconnect: connected over the relay within one second with one handshake; lastUrl is stored and that address is dialled first next time', async () => {
+    const k = away();
+    k.rig.init();
+    await walk(k.clock, 1000, 50);
+    assert.equal(k.rig.core.phase, 'connected');
+    assert.equal(k.rig.last('state').state.carrier, 'relay');
+    assert.equal(k.desktop.stats.handshakes, 1);
+    assert.equal(k.rig.counters.get(k.computer.id), 1, 'only the socket that won carried a handshake');
+    const patch = k.rig.messages.filter(m => m.op === 'patch').map(m => m.patch).find(p => 'lastCarrier' in p);
+    assert.deepEqual({ lastCarrier: patch.lastCarrier, lastUrl: patch.lastUrl }, { lastCarrier: 'relay', lastUrl: RELAY });
+    const before = k.rig.dials.length;
+    k.net.dropAll('restarted');
+    await walk(k.clock, 1500, 50);
+    assert.equal(k.rig.core.phase, 'connected');
+    assert.deepEqual(k.rig.dials.slice(before).map(d => d.url), [RELAY], 'the home addresses are not dialled again');
+  });
+
+  it('a private address has 2 s to open and a name 6 s; a round with nobody there ends when the last one has, and close stops the dialling', async () => {
+    const net = createFakeNet();
+    const clock = createFakeClock(0);
+    const desktop = createFakeDesktop({ net, url: RELAY, carrier: 'relay' });
+    net.unlisten(RELAY);
+    const phone = generateKeyPair();
+    const computer = coreComputer(desktop, phone, { carriers: [{ kind: 'lan', urls: [HOME[0]] }, { kind: 'relay', urls: [RELAY] }], lastCarrier: 'lan' });
+    const quiet = quietNet(net, [HOME[0], RELAY]);
+    const rig = coreRig({ net: quiet, clock, computer });
+    rig.init();
+    await walk(clock, CONNECT_TIMEOUT_PRIVATE_MS, 250);
+    assert.deepEqual(quiet.closes.map(c => c.url), [HOME[0]], 'the home address gave up at 2 s');
+    assert.equal(rig.last('state').state.failedRounds, 0);
+    await walk(clock, DIAL_STAGGER_MS + CONNECT_TIMEOUT_MS - CONNECT_TIMEOUT_PRIVATE_MS, 250);
+    assert.deepEqual(quiet.closes.map(c => c.url), [HOME[0], RELAY]);
+    assert.equal(rig.last('state').state.failedRounds, 1);
+    assert.equal(rig.last('state').state.failure, 'timeout');
+    // The next round starts DELAYS_MS[1] later; the page closes the channel while it dials.
+    await walk(clock, DELAYS_MS[1] + DIAL_STAGGER_MS, 250);
+    assert.equal(rig.dials.length, 4);
+    rig.core.handle({ op: 'close' });
+    await settle();
+    assert.deepEqual(quiet.closes.slice(2).map(c => c.reason), ['lost', 'lost']);
+    clock.advance(60_000);
+    await settle();
+    assert.equal(rig.dials.length, 4);
+    assert.equal(clock.pending, 0);
   });
 });
 

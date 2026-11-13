@@ -4,6 +4,9 @@
 // the sign-in routes). POST /api/keys takes only the providers in lib/api-providers.mjs, so Anthropic's key goes through the
 // Claude key routes. A key is typed into a password box, sent once and cleared; the wizard keeps no copy of it. Text is set
 // with textContent only.
+// A row whose CLI is missing shows how to install it (MuseUI.cliInstallBlock), and after Sign in the wizard reads the sign-ins
+// by itself until the sign-in shows (MuseUI.watchSignIn). Both helpers are in ext-accounts-cli.js and are looked up when they
+// are used, so the wizard still works, with its older plain sentences, when that panel did not load.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -22,7 +25,13 @@
   // The CLI is installed, but its sign-in could not be read (Cursor's status command timed out or was not read).
   const UNKNOWN = 'unknown';
   const STATE_TEXT = { in: 'Signed in', out: 'Not signed in', none: 'Not installed', unknown: 'Sign-in unknown' };
+  // Shown only when the install steps cannot be drawn (ext-accounts-cli.js did not load).
   const MISSING = 'Not installed. Install it, then press Check again.';
+  // While a row waits for its sign-in, one read in this many milliseconds asks the server to look again (?refresh=1) instead of
+  // answering from what it last saw. Only GET /api/accounts/cli keeps such an answer.
+  const FORCE_EVERY_MS = 8000;
+  // A status older than this is read again when the wizard is opened or drawn again.
+  const STALE_MS = 10000;
 
   // Step 3, in order. Each label and variable name matches lib/api-providers.mjs (Anthropic: lib/keys.mjs). GET /api/keys
   // gives each provider's key page; a provider that list leaves out is hidden.
@@ -38,7 +47,8 @@
 
   // Claude's key is in use only when Claude runs through the API, which is when the Claude CLI is not installed.
   const claudeUsesKey = a => a?.claude?.route === 'api';
-  const cliState = (c, signedInKey) => (!c?.installed ? NONE : c[signedInKey] ? IN : OUT);
+  // A sign-in the server could not read is null: it shows as unknown, not as signed out (as Cursor's and Grok Build's do).
+  const cliState = (c, signedInKey) => (!c?.installed ? NONE : c[signedInKey] === null ? UNKNOWN : c[signedInKey] ? IN : OUT);
   // Cursor's status comes from GET /api/accounts/cli (see withCli). It is null when that read failed, and its sign-in may be unknown.
   const cursorState = c => (!c ? UNKNOWN : !c.installed ? NONE : c.signedIn === true ? IN : c.signedIn === false ? OUT : UNKNOWN);
   // Grok Build reads the same way: its status comes from GET /api/accounts/cli as accounts.grok (lib/grok.mjs grokStatus).
@@ -49,20 +59,24 @@
     {
       id: 'claude', name: 'Claude Code', account: 'Claude account', mark: 'C', path: '/api/accounts/claude/login',
       // Claude runs through the Claude CLI only when the CLI is installed; otherwise it uses the Anthropic key from step 3.
-      state: a => (a?.claude?.route === 'cli' ? (a.claude.connected ? IN : OUT) : NONE),
+      state: a => (a?.claude?.route === 'cli' ? (a.claude.connected === null ? UNKNOWN : a.claude.connected ? IN : OUT) : NONE),
       missing: 'Not installed. Claude runs on an Anthropic API key instead, which step 3 sets up.',
     },
     { id: 'codex', name: 'Codex', account: 'ChatGPT account', mark: 'X', path: '/api/accounts/codex/login', state: a => cliState(a?.codex, 'loggedIn'), missing: MISSING },
     { id: 'gemini', name: 'Gemini CLI', account: 'Google account', mark: 'G', path: '/api/accounts/gemini/login', state: a => cliState(a?.gemini, 'signedIn'), missing: MISSING },
     { id: 'muse', name: 'Muse Code', account: 'Meta account', mark: 'M', path: '/api/accounts/muse/login', state: a => cliState(a?.muse, 'signedIn'), missing: MISSING },
-    { id: 'cursor', name: 'Cursor', account: 'Cursor account', mark: 'U', path: '/api/accounts/cursor/login', state: a => cursorState(a?.cursor), missing: MISSING },
-    { id: 'grok', name: 'Grok Build', account: 'xAI account', mark: 'K', path: '/api/accounts/grok/login', state: a => grokState(a?.grok), missing: MISSING },
+    // side: the status comes from GET /api/accounts/cli, not GET /api/accounts (the sign-in watch reads only the route it needs).
+    { id: 'cursor', name: 'Cursor', account: 'Cursor account', mark: 'U', path: '/api/accounts/cursor/login', state: a => cursorState(a?.cursor), missing: MISSING, side: true },
+    { id: 'grok', name: 'Grok Build', account: 'xAI account', mark: 'K', path: '/api/accounts/grok/login', state: a => grokState(a?.grok), missing: MISSING, side: true },
     // Antigravity (DECISIONS item 89) reads like Grok Build: its status comes from GET /api/accounts/cli as accounts.antigravity.
-    { id: 'antigravity', name: 'Antigravity', account: 'Google AI Pro, Ultra or Plus', mark: 'A', path: '/api/accounts/antigravity/login', state: a => grokState(a?.antigravity), missing: MISSING },
+    { id: 'antigravity', name: 'Antigravity', account: 'Google AI Pro, Ultra or Plus', mark: 'A', path: '/api/accounts/antigravity/login', state: a => grokState(a?.antigravity), missing: MISSING, side: true },
   ];
 
   // GET /api/accounts/cli: the coding agents added after the first four (Cursor and Grok Build). A failed read is null, and its row says it is unknown.
-  const cliStatus = () => MuseUI.api('/api/accounts/cli').catch(() => null);
+  // fresh asks the server to look again and wait for it, a few seconds at most (lib/routes/cli-accounts.mjs), instead of answering from what it last saw.
+  const CLI_ROUTE = '/api/accounts/cli';
+  const cliStatus = fresh => MuseUI.api(fresh ? `${CLI_ROUTE}?refresh=1` : CLI_ROUTE).catch(() => null);
+  const isSide = id => CLIS.some(c => c.id === id && c.side === true);
   // The sign-ins the rows read: GET /api/accounts, with Cursor's and Grok Build's status from GET /api/accounts/cli added as accounts.cursor and accounts.grok.
   const withCli = (accounts, cli) => ({ ...accounts, cursor: cli?.cursor ?? null, grok: cli?.grok ?? null, antigravity: cli?.antigravity ?? null });
 
@@ -107,6 +121,13 @@
   // ---------- state ----------
 
   let status = null;   // { keys, accounts }, as the server last sent them
+  let statusAt = 0;    // when status was last read in full
+  // The sign-in watch. waiting holds the ids of the rows whose sign-in window was opened and whose sign-in has not shown yet;
+  // gaveUp holds the ids whose three minutes ran out, until the next full read. Both are kept by id, so they survive a redraw.
+  const waiting = new Set();
+  const gaveUp = new Set();
+  let watch = null;    // the running watch (MuseUI.watchSignIn), or null
+  let forcedAt = 0;    // when the watch last asked the server to look again
   let ui = null;       // the wizard's elements from the last draw
   let step = 1;
   let current = false; // true while the wizard is the drawer's content
@@ -131,8 +152,10 @@
   function draw(body) {
     body.append(build());
     showStep(false);
-    if (status) paintAll();
-    else loadStatus();
+    if (!status) return void loadStatus();
+    paintAll();
+    // A wizard that is opened again later shows what was read before, then reads again, so an old sign-in state does not stay.
+    if (Date.now() - statusAt > STALE_MS) loadStatus();
   }
 
   function build() {
@@ -212,7 +235,7 @@
       make('li', '', 'Nothing goes to Plenum’s developer.'),
       make('li', '', 'The license agreement and privacy notice are under Legal in Settings.'),
     );
-    const lead = make('p', 'setup-lead', 'Plenum is a local console for working with Claude, Codex, Gemini, Muse Code, Cursor, Grok Build and per-token API models in your own project folders.');
+    const lead = make('p', 'setup-lead', 'Plenum is a local console for working with Claude, Codex, Gemini, Muse Code, Cursor, Grok Build, Antigravity and per-token API models in your own project folders.');
     // Opens the Legal section. The wizard is the drawer's content, so the Legal page takes its place; Setup in the menu brings it back.
     const terms = make('button', 'ghost small', 'Read the terms');
     terms.type = 'button';
@@ -226,12 +249,12 @@
   function signInPane() {
     const pane = make('section', 'setup-pane');
     const heading = stepHeading('Sign in to your CLIs');
-    const lead = make('p', 'setup-lead', 'Sign in opens a window. You finish the sign-in in that window, and the credentials stay with that tool. Then press Check again here.');
+    const lead = make('p', 'setup-lead', 'Sign in opens a window. You finish the sign-in in that window, and the credentials stay with that tool. Plenum checks every few seconds and shows the sign-in here when it is done.');
     ui.clis = CLIS.map(c => cliRow(c));
     const rows = make('div', 'setup-rows');
     rows.append(...ui.clis.map(r => r.card));
     const again = MuseUI.button('ghost small', 'Check again');
-    again.addEventListener('click', () => loadStatus());
+    again.addEventListener('click', () => loadStatus(true));
     const actions = make('div', 'actions');
     actions.append(again);
     pane.append(heading, lead, rows, actions);
@@ -245,39 +268,158 @@
     const row = { c, card, pill: card.querySelector('.pill'), note: make('p', '', 'Checking your accounts…'), button: MuseUI.button('primary small', 'Sign in'), busy: false };
     row.button.disabled = true;
     row.button.addEventListener('click', () => signIn(row));
+    // The install steps of a missing CLI go here. The class is the Accounts group's, so the commands look as they do there.
+    row.install = make('div', 'coding-agents');
+    row.install.hidden = true;
+    row.installKey = '';
     const actions = make('div', 'actions');
     actions.append(row.button);
-    card.append(row.note, actions);
+    if (c.id === 'claude') {
+      // Claude without its CLI runs on a key, so its row leads to the step that takes the key.
+      row.toKeys = MuseUI.button('ghost small', 'Add an Anthropic key');
+      row.toKeys.hidden = true;
+      row.toKeys.addEventListener('click', () => showKeys());
+      actions.append(row.toKeys);
+    }
+    card.append(row.note, row.install, actions);
     return row;
   }
 
-  // Starts the CLI's own sign-in window through its route, then reads the status again. The person finishes the sign-in there.
+  // Opens step 3, the API keys.
+  function showKeys() {
+    step = 3;
+    showStep(true);
+  }
+
+  // Starts the CLI's own sign-in window through its route. The person finishes the sign-in there, and the wizard watches for it:
+  // the row says Waiting for sign-in and the status is read again every few seconds until the sign-in shows. Nothing is read
+  // straight after the click: the sign-in cannot be there yet, and that read would only fix the old answer in place. A CLI that is
+  // already signed in is not watched (there would be nothing to see), and without the watch helper the person presses Check again.
   async function signIn(row) {
+    const id = row.c.id;
     row.busy = true;
     paintCli(row);
+    let opened = false;
     try {
       await MuseUI.api(row.c.path, {});
-      MuseUI.toast('Sign-in window opened. Finish it there, then press Check again.');
+      opened = true;
     } catch (err) {
       MuseUI.toast(err.message, 'bad');
     } finally {
       row.busy = false;
     }
-    await loadStatus();
-    paintCli(row);
+    if (!opened) {
+      // No window opened. The status is read again, since the reason may be on it (a CLI that is gone, for one).
+      await loadStatus();
+      return paintClis();
+    }
+    const signedIn = status ? row.c.state(status.accounts) === IN : false;
+    if (signedIn || typeof MuseUI.watchSignIn !== 'function') {
+      MuseUI.toast('Sign-in window opened. Finish it there, then press Check again.');
+    } else {
+      MuseUI.toast('Sign-in window opened. Finish it there. Plenum shows the sign-in here when it is done.');
+      gaveUp.delete(id);
+      waiting.add(id);
+      startWatch();
+    }
+    paintClis();
+  }
+
+  // One watch for every waiting row: a second Sign in starts it again, so the rows share one timer and one read at a time.
+  function startWatch() {
+    forcedAt = Date.now();
+    watch = MuseUI.watchSignIn({
+      id: 'setup',
+      read: readWaiting,
+      done: () => waiting.size === 0,
+      alive: onScreen,
+      onProgress: () => {
+        noticed();
+        paintAll();
+      },
+      onGiveUp: () => {
+        for (const id of waiting) gaveUp.add(id);
+        waiting.clear();
+        watch = null;
+        paintClis();
+      },
+      // The wizard was closed. It reads the status again when it is next opened.
+      onClosed: () => {
+        waiting.clear();
+        watch = null;
+      },
+    });
+    // No timers on this page: nothing watches, and the rows keep their plain state.
+    if (!watch) waiting.clear();
+  }
+
+  // The watch's read: only the routes the waiting rows need, with no message on a failure (a read that fails saw nothing).
+  async function readWaiting() {
+    const ids = [...waiting];
+    const main = ids.some(id => !isSide(id));
+    const side = ids.some(isSide);
+    const fresh = side && Date.now() - forcedAt >= FORCE_EVERY_MS;
+    if (fresh) forcedAt = Date.now();
+    const [accounts, cli] = await Promise.all([main ? MuseUI.api('/api/accounts') : null, side ? cliStatus(fresh) : null]);
+    if (!status) return;
+    if (main && !accounts?.claude) throw new Error('The status did not come back.');
+    const had = status.accounts;
+    status = { keys: status.keys, accounts: withCli(accounts ?? had, cli ?? had) };
+  }
+
+  // After a read: a waiting row that is now signed in says so once and stops waiting. With no row left, the watch ends.
+  function noticed() {
+    if (!status) return;
+    for (const c of CLIS) {
+      if (!waiting.has(c.id)) continue;
+      const state = c.state(status.accounts);
+      if (state === IN) MuseUI.toast(`Signed in to ${c.name}.`);
+      if (state === IN || state === NONE) waiting.delete(c.id);
+    }
+    if (!waiting.size && watch) {
+      watch.stop();
+      watch = null;
+    }
+  }
+
+  // The rows of the last draw. A row object from before a redraw is no longer on screen, so painting goes through these.
+  function paintClis() {
+    ui?.clis.forEach(paintCli);
+  }
+
+  // The install steps under a row whose CLI is missing (MuseUI.cliInstallBlock, ext-accounts-cli.js). They are built again only
+  // when they change, so a repaint neither stacks a second block nor takes the focus off a Copy button. Returns whether steps show.
+  function paintInstall(row, state) {
+    const info = status?.accounts?.[row.c.id];
+    const build = state === NONE && row.c.id !== 'claude' ? MuseUI.cliInstallBlock : null;
+    const key = typeof build === 'function' ? `${row.c.id} ${info?.installCommand ?? ''}` : '';
+    if (key !== row.installKey) {
+      const block = key ? build(row.c.id, info) : null;
+      row.installKey = block ? key : '';
+      row.install.replaceChildren(...(block ? [block] : []));
+    }
+    row.install.hidden = !row.installKey;
+    return Boolean(row.installKey);
   }
 
   function paintCli(row) {
+    const id = row.c.id;
     const state = status ? row.c.state(status.accounts) : null;
-    row.pill.textContent = state ? STATE_TEXT[state] : 'Checking…';
+    // Waiting: the sign-in window was opened from this row and the sign-in has not shown yet.
+    const wait = waiting.has(id) && (state === OUT || state === UNKNOWN);
+    const steps = paintInstall(row, state);
+    row.pill.textContent = !state ? 'Checking…' : wait ? 'Waiting for sign-in' : STATE_TEXT[state];
     row.pill.className = state === IN ? 'pill ok' : 'pill';
     row.note.textContent = !state ? 'Checking your accounts…'
       : state === IN ? 'Signed in on this computer.'
-        : state === NONE ? row.c.missing
-          : state === UNKNOWN ? 'Plenum could not read this sign-in. Sign in opens a window that you complete there, or press Check again.'
-            : 'Not signed in. Sign in opens a window that you complete there.';
-    row.button.textContent = state === IN ? 'Sign in again' : 'Sign in';
+        : state === NONE ? (steps ? 'Not installed.' : row.c.missing)
+          : wait ? 'Finish the sign-in in the window that opened. Plenum checks every few seconds and shows it here.'
+            : gaveUp.has(id) ? 'Plenum has not seen a sign-in yet. Press Sign in to try again, or Check again if you have finished.'
+              : state === UNKNOWN ? 'Plenum could not read this sign-in. Sign in opens a window that you complete there, or press Check again.'
+                : 'Not signed in. Sign in opens a window that you complete there.';
+    row.button.textContent = state === IN || wait ? 'Sign in again' : 'Sign in';
     row.button.disabled = row.busy || state === null || state === NONE;
+    if (row.toKeys) row.toKeys.hidden = state !== NONE;
   }
 
   // ---------- step 3: API keys ----------
@@ -346,7 +488,8 @@
       const r = row.id === 'anthropic'
         ? await MuseUI.api('/api/accounts/claude/key', { key })
         : await MuseUI.api('/api/keys', { provider: row.id, key });
-      show(row, scrub(r.message || (r.saved ? 'Saved.' : 'The key was not saved.'), key), r.saved === true);
+      // A check that could not run is not a refusal: the message says how to save the key anyway (in Accounts).
+      show(row, scrub(r.message || (r.saved ? 'Saved.' : 'The key was not saved.'), key), r.saved === true ? true : r.canSaveAnyway === true ? null : false);
       if (r.saved === true) {
         MuseUI.toast(`${row.label} key saved`);
         await loadStatus();
@@ -369,7 +512,9 @@
       const r = row.id === 'anthropic'
         ? await MuseUI.api('/api/accounts/claude/test', {})
         : await MuseUI.api('/api/keys/test', { provider: row.id });
-      show(row, `${r.ok ? 'Accepted.' : 'Refused.'} ${r.message ?? ''}`.trim(), r.ok === true);
+      // A busy provider is not a refusal: the key could not be confirmed either way.
+      const unsettled = r.ok !== true && r.verdict === 'unchecked';
+      show(row, `${r.ok ? 'Accepted.' : unsettled ? 'Could not be confirmed.' : 'Refused.'} ${r.message ?? ''}`.trim(), r.ok === true ? true : unsettled ? null : false);
     } catch (err) {
       show(row, err.message, false);
     } finally {
@@ -412,7 +557,15 @@
     const heading = stepHeading('Here is what is set up');
     const lead = make('p', 'setup-lead', 'You can change any of this later in Accounts.');
     ui.summary = make('ul', 'setup-list');
-    ui.summaryNone = make('p', 'setup-lead', 'Nothing is set up yet. You can sign in or add a key later from Accounts.');
+    // With nothing set up, the summary leads to the two ways forward instead of ending there.
+    ui.summaryNone = make('div');
+    const addKey = MuseUI.button('primary small', 'Add an API key');
+    addKey.addEventListener('click', () => showKeys());
+    const accounts = MuseUI.button('ghost small', 'Open Accounts');
+    accounts.addEventListener('click', () => MuseUI.el.accountsBtn.click());
+    const ways = make('div', 'actions');
+    ways.append(addKey, accounts);
+    ui.summaryNone.append(make('p', 'setup-lead', 'Nothing is set up yet. You can sign in or add a key later from Accounts.'), ways);
     pane.append(heading, lead, ui.summary, ui.summaryNone);
     return { pane, heading };
   }
@@ -442,19 +595,28 @@
   }
 
   // Reads the keys and the sign-ins again and paints them. A failed read leaves the last status on screen and says so.
-  async function loadStatus() {
+  // After a sign-in was started from a Cursor, Grok Build or Antigravity row, the server is asked to look again, not to answer
+  // from what it last saw; that can take a few seconds, so the line says what is happening.
+  // again is a press of Check again: the server looks at the accounts again instead of answering from what it kept (Claude Code's answer is kept
+  // for 20 seconds).
+  async function loadStatus(again = false) {
+    const fresh = [...waiting, ...gaveUp].some(isSide);
+    if (fresh) showLine('Checking your sign-ins…', false);
     try {
-      const [keys, accounts, cli] = await Promise.all([MuseUI.api('/api/keys'), MuseUI.api('/api/accounts'), cliStatus()]);
+      const [keys, accounts, cli] = await Promise.all([MuseUI.api('/api/keys'), MuseUI.api(again ? '/api/accounts?fresh=1' : '/api/accounts'), cliStatus(fresh)]);
       if (!Array.isArray(keys?.providers) || !accounts?.claude) {
         showLine('The status did not come back. Try again.', true);
         return;
       }
       status = { keys, accounts: withCli(accounts, cli) };
+      statusAt = Date.now();
     } catch (err) {
       showLine(err.message, true);
       return;
     }
     showLine('', false);
+    gaveUp.clear();
+    noticed();
     paintAll();
   }
 
@@ -482,6 +644,7 @@
     }
     if (!Array.isArray(keys?.providers) || !accounts?.claude) return;
     status = { keys, accounts: withCli(accounts, cli) };
+    statusAt = Date.now();
     if (KEYS.some(k => keyConfigured(status, k.id)) || CLIS.some(c => c.state(status.accounts) === IN)) return;
     // The person may have opened another panel while the check ran. The wizard waits for an empty drawer and never replaces one.
     if (!MuseUI.el.drawer.hidden) return;

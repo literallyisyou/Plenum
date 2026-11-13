@@ -83,3 +83,33 @@ export function usableCarriers(carriers) {
   }
   return out;
 }
+
+// True for an address that answers at once or not at all: an IPv4 or IPv6 literal on a private, link-local or loopback range (the same
+// ranges as the lan rule above). A name (.local, .ts.net, the relay) is false: looking a name up can take a while. The worker gives such
+// an address a short connect timeout (channel.worker.js CONNECT_TIMEOUT_PRIVATE_MS).
+export function isPrivateUrl(url) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  const v4 = ipv4Of(host);
+  if (v4) return v4[0] === 127 || isPrivateV4(v4);
+  return host === '[::1]' || isPrivateV6(host);
+}
+
+// The order the phone dials in, as [{ kind, url }] (channel.worker.js races them a little apart, so the order is who starts first): the
+// address that connected last (lastUrl), then the other addresses of the way used last (lastCarrier), then the other ways as the record
+// lists them. When the phone says it is on mobile data (network 'cellular'), plain ws:// addresses on a private range go to the end: they
+// cannot answer from there. They are still dialled, because the phone can be wrong about its network (a hotspot, a VPN).
+export function dialOrder(carriers, { lastCarrier = null, lastUrl = null, network = null } = {}) {
+  const all = [];
+  for (const c of usableCarriers(carriers)) {
+    for (const url of c.urls) all.push({ kind: c.kind, url });
+  }
+  const rank = c => (c.url === lastUrl ? 0 : c.kind === lastCarrier ? 1 : 2);
+  const away = c => (network === 'cellular' && c.url.startsWith('ws:') && isPrivateUrl(c.url) ? 1 : 0);
+  // Array.prototype.sort is stable: candidates of the same rank keep the record's order.
+  return all.sort((a, b) => away(a) - away(b) || rank(a) - rank(b));
+}

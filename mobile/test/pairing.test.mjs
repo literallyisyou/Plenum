@@ -818,7 +818,7 @@ describe('the registry', () => {
     assert.ok(list.every(d => d.tier === 'read'), 'an unknown tier is the least a phone can have');
   });
 
-  test('handshake counters only rise, a failed save puts everything back, and the limit is 32 phones', async () => {
+  test('handshake counters only rise and stay raised when a save fails, a failed change is put back, and the limit is 32 phones', async () => {
     const storage = createMemoryStorage();
     const registry = createRegistry({ storage });
     await registry.ready();
@@ -830,8 +830,10 @@ describe('the registry', () => {
     assert.equal(registry.counterOf(key(9)), 6);
     assert.equal(registry.get(device.id).lastCarrier, 'tailscale');
     storage.failNext = true;
-    await assert.rejects(() => registry.recordHandshake(device.id, 9, 'lan'), error => error.status === 503);
-    assert.equal(registry.counterOf(key(9)), 6, 'the counter that was not saved is not kept');
+    const taken = await registry.recordHandshake(device.id, 9, 'lan');
+    assert.equal(registry.counterOf(key(9)), 9, 'the counter stays raised in memory when the save fails, so a copy of the message is a replay');
+    assert.equal(await taken.saved, false);
+    await assert.rejects(() => registry.recordHandshake(device.id, 9, 'lan'), error => error.status === 409);
     storage.failNext = true;
     await assert.rejects(() => registry.update(device.id, { tier: 'read' }), error => error.status === 503);
     assert.equal(registry.get(device.id).tier, 'full');

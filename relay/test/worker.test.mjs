@@ -93,7 +93,7 @@ test('the README gives the deploy button URL and how to run the tests', () => {
   const readme = read('README.md');
   assert.ok(
     readme.includes(
-      'https://deploy.workers.cloudflare.com/?url=https://github.com/RealAlcibiades/Plenum/tree/main/relay',
+      'https://deploy.workers.cloudflare.com/?url=https://github.com/literallyisyou/Plenum/tree/main/relay',
     ),
     'the README must carry the Deploy to Cloudflare URL',
   );

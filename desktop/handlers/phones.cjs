@@ -4,8 +4,9 @@
 //  - phones-store-load / phones-store-save: the server's phone registry and keys as one opaque JSON text, kept in phones.json in the
 //    desktop user-data folder and encrypted with Electron safeStorage, as desktop/keyvault.cjs does for API keys. Written through a
 //    temporary file and a rename, one write at a time, mode 0600 where the system has modes. A file that cannot be parsed or decrypted
-//    is damaged: it is set aside the next time phone data is saved (phones.json.damaged, then -2, -3 ...). A file another program holds
-//    open is locked: nothing is answered as an empty registry and nothing is written over it.
+//    is damaged: it is set aside the next time phone data is saved (phones.json.damaged, then -2, -3 ...), and a save that cannot set
+//    it aside fails, so it is never written over. A file another program holds open is locked: nothing is answered as an empty
+//    registry and nothing is written over it.
 //  - phones-pair-show / phones-pair-close: the pairing window (desktop/phones-pair.html), 420 x 640, capture-protected, one at a time.
 //    The main process draws the QR code as a PNG (qrcode-generator, required here and nowhere else, so this file loads without it) and
 //    sends the window a payload that holds the picture and no text of the code. The window answers through phones-pair-preload.cjs;
@@ -27,9 +28,12 @@ const nodeFs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const zlib = require('node:zlib');
+const crypto = require('node:crypto');
 
 const STORE_FILE = 'phones.json';
 const STORE_VERSION = 1;
+const RENAME_RETRY_CODES = ['EPERM', 'EBUSY', 'EACCES'];
+const RENAME_WAITS_MS = [50, 100, 200, 300, 400, 500];
 // The largest registry text the store takes. A registry with dozens of phones is a few kilobytes.
 const MAX_STORE_TEXT = 1024 * 1024;
 const MAX_LINK = 1200;
@@ -81,6 +85,18 @@ const UNAVAILABLE_NOTES = {
 const LOCKED = 'The phones file is open in another program, so it cannot be read or changed. Close that program and try again.';
 const DAMAGED = 'The saved phones file could not be read, so it is set aside the next time phone data is saved.';
 const BAD_TEXT = 'That phone data cannot be saved.';
+// True for both ways it is shown: at start (the Bridge reads again by itself while the switch is on) and after a press of "Let phones
+// connect" (a failed start switches it off, so nothing reads again until the person turns it on).
+const OPEN_LATER = 'The saved phones could not be opened just now, and the paired phones are kept. Plenum tries again by itself while Let phones connect is on. If it switched itself off, turn it on again in a minute.';
+// When a file the system keeps failing to decrypt is called damaged: after this many failed reads of the same contents AND at least a
+// minute since the first of them. One failure can be the system's key store not being ready yet, and a person who presses "Let phones
+// connect" a few times makes a few reads within a second, so a count alone proves nothing. The server reads again after 2, 5, 15, then
+// every 60 seconds, so with phones on that is the read about 82 seconds after the first.
+const DECRYPT_TRIES = 4;
+const DECRYPT_MIN_MS = 60_000;
+// A temporary file a save left behind because Plenum ended in the middle of it: its name, and how old it must be before it is removed.
+const TEMP_TAIL = /^\.\d+(\.[0-9a-f]{8})?\.tmp$/;
+const TEMP_OLD_MS = 60_000;
 const SAVE_FAILED = 'The phone data could not be saved.';
 const NO_WINDOW = 'Pairing needs the Plenum desktop app.';
 const NEEDS_BUILD = 'Pairing needs a newer build of Plenum. Update Plenum, then try again.';
@@ -186,9 +202,17 @@ function drawQr(link, loadQr) {
 // ---------- the encrypted store (phones.json) ----------
 
 // A store for one file. getSafeStorage returns Electron's safeStorage (or undefined when there is none); io is the file system.
-// Every read and write runs one at a time. load() -> { ok, storage, text, damaged, message }; save(text) -> { ok, storage, message }.
-function createStore({ file, getSafeStorage, platform, fs: io, log }) {
+// Every read and write runs one at a time. load() -> { ok, storage, text, damaged, message }; save(text, { setAside }) -> { ok, storage,
+// message }. setAside is the server saying that it could not use what the last load gave it (lib/remote/registry.mjs): the file that
+// load read is then kept under another name before the new one is written. monotonic is a clock that never goes back, in milliseconds.
+function createStore({ file, getSafeStorage, platform, fs: io, log, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), monotonic = () => performance.now(), wallNow = Date.now }) {
   let queue = Promise.resolve();
+  let decryptFailures = 0; // reads in a row whose decryption threw, for the contents in failedData
+  let failedData = null;
+  let failedSince = 0; // when the first of those reads was, on the monotonic clock
+  let undecryptable = ''; // the contents load() reported as damaged because they could not be decrypted: save() sets that file aside
+  let loadedData = null; // the contents the last good load() read: save(text, { setAside: true }) sets exactly that file aside
+  let swept = false;
   const serial = task => {
     const run = queue.then(task);
     queue = run.catch(() => {});
@@ -242,13 +266,52 @@ function createStore({ file, getSafeStorage, platform, fs: io, log }) {
     return aside;
   }
 
-  // Writes the file through a temporary file and a rename, so a crash cannot leave half a file.
-  function writeRaw(data) {
+  // A rename that the system refuses because a scanner, an indexer or another program has the file open for a moment (EPERM, EBUSY,
+  // EACCES) is tried again, six times over about 1.5 seconds; any other error, or the last of these, is thrown.
+  async function renameRetrying(from, to) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        io.renameSync(from, to);
+        return;
+      } catch (err) {
+        if (attempt >= RENAME_WAITS_MS.length || !RENAME_RETRY_CODES.includes(err?.code)) throw err;
+        await sleep(RENAME_WAITS_MS[attempt]);
+      }
+    }
+  }
+
+  // Temporary files that a save left behind because Plenum ended in the middle of it are removed, once, after the first good read. Only
+  // names this store makes (phones.json.<pid>.<8 hex>.tmp, and the older phones.json.<pid>.tmp) and only files older than a minute, so
+  // a write that another Plenum is doing right now is never touched. A failure changes nothing.
+  function sweepTemps() {
+    if (swept) return;
+    swept = true;
+    try {
+      const dir = path.dirname(file);
+      const base = path.basename(file);
+      for (const name of io.readdirSync(dir)) {
+        if (!name.startsWith(base) || !TEMP_TAIL.test(name.slice(base.length))) continue;
+        try {
+          const full = path.join(dir, name);
+          if (wallNow() - io.statSync(full).mtimeMs > TEMP_OLD_MS) io.unlinkSync(full);
+        } catch {
+          // It stays; nothing reads it.
+        }
+      }
+    } catch {
+      // The folder could not be listed.
+    }
+  }
+
+  // Writes the file through a temporary file and a rename, so a crash cannot leave half a file. The temporary name is new for every write.
+  // A refused rename is tried again (renameRetrying); when it never works the write ends and the temporary file is removed. The old
+  // file stays as it was.
+  async function writeRaw(data) {
     io.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     try {
       io.writeFileSync(tmp, JSON.stringify({ version: STORE_VERSION, data }), { mode: 0o600 });
-      io.renameSync(tmp, file);
+      await renameRetrying(tmp, file);
     } catch (err) {
       try {
         io.unlinkSync(tmp);
@@ -271,28 +334,58 @@ function createStore({ file, getSafeStorage, platform, fs: io, log }) {
     const safe = await available();
     if (!safe) return { ok: false, storage: 'unavailable', message: unavailableNote(platform) };
     const raw = readRaw();
-    if (raw.state === 'missing') return { ok: true, storage: 'keychain', text: '', damaged: false };
+    if (raw.state === 'missing') {
+      sweepTemps();
+      return { ok: true, storage: 'keychain', text: '', damaged: false };
+    }
     if (raw.state === 'locked') return { ok: false, storage: 'locked', message: LOCKED };
     if (raw.state === 'damaged') return damagedAnswer();
     let got = null;
+    let threw = false;
     try {
       got = await decrypt(safe, raw.data);
     } catch {
-      got = null;
+      threw = true;
     }
-    if (!got) return damagedAnswer();
+    // A decryption that throws is not proof of a damaged file: the system's key store may not be ready, or busy. The file is left alone
+    // and the answer is "not now", so the registry reads again and nothing is replaced. Only when the same contents have failed
+    // DECRYPT_TRIES reads in a row over at least DECRYPT_MIN_MS (reads inside that minute, however many, are never proof), or decrypt
+    // to something that is not the phone data, is the file called damaged.
+    if (threw) {
+      const now = monotonic();
+      if (raw.data !== failedData) {
+        decryptFailures = 0;
+        failedSince = now;
+      }
+      decryptFailures += 1;
+      failedData = raw.data;
+      if (decryptFailures < DECRYPT_TRIES || now - failedSince < DECRYPT_MIN_MS) return { ok: false, storage: 'unavailable', message: OPEN_LATER };
+    } else {
+      decryptFailures = 0;
+      failedData = null;
+    }
+    if (!got) {
+      undecryptable = raw.data;
+      loadedData = null;
+      return damagedAnswer();
+    }
+    undecryptable = '';
+    loadedData = raw.data;
     // The system rotated its key: the same text is encrypted again with the new one. A failure changes nothing.
     if (got.shouldReEncrypt) {
       try {
-        writeRaw(Buffer.from(await safe.encryptStringAsync(got.text)).toString('base64'));
+        const again = Buffer.from(await safe.encryptStringAsync(got.text)).toString('base64');
+        await writeRaw(again);
+        loadedData = again;
       } catch {
         // The old ciphertext still reads; it is tried again at the next start.
       }
     }
+    sweepTemps();
     return { ok: true, storage: 'keychain', text: got.text, damaged: false };
   }
 
-  async function save(value) {
+  async function save(value, { setAside = false } = {}) {
     if (typeof value !== 'string' || value.length === 0 || value.length > MAX_STORE_TEXT || !isJsonObject(value)) {
       return { ok: false, message: BAD_TEXT };
     }
@@ -306,27 +399,38 @@ function createStore({ file, getSafeStorage, platform, fs: io, log }) {
     }
     const raw = readRaw();
     if (raw.state === 'locked') return { ok: false, storage: 'locked', message: LOCKED };
-    if (raw.state === 'damaged') {
+    // A file that is damaged, whose contents load() could not decrypt, or that the server could not use (setAside: it decrypts, but to
+    // phone data this build does not read, for example after going back to an older build) is kept under another name before the new
+    // one is written. When it cannot be moved the save fails and the file stays: a file nobody could read is never written over, and
+    // the server saves again by itself.
+    const unreadable = raw.state === 'damaged'
+      || (raw.state === 'ok' && undecryptable !== '' && raw.data === undecryptable)
+      || (raw.state === 'ok' && setAside === true && loadedData !== null && raw.data === loadedData);
+    if (unreadable) {
+      const aside = setAsideName();
       try {
-        const aside = setAsideName();
-        io.renameSync(file, aside);
+        await renameRetrying(file, aside);
         if (log) log(`phones file set aside as ${path.basename(aside)}`);
-      } catch {
-        // If it cannot be set aside, the new file replaces it.
+      } catch (err) {
+        // A file that went away in between leaves nothing to keep.
+        if (err?.code !== 'ENOENT') return { ok: false, message: SAVE_FAILED };
       }
     }
     try {
-      writeRaw(Buffer.from(encrypted).toString('base64'));
+      await writeRaw(Buffer.from(encrypted).toString('base64'));
     } catch {
       return { ok: false, message: SAVE_FAILED };
     }
+    // What is in the file now is this save's, not something a load could not use.
+    undecryptable = '';
+    loadedData = null;
     return { ok: true, storage: 'keychain' };
   }
 
   return {
     file,
     load: () => serial(load),
-    save: value => serial(() => save(value)),
+    save: (value, options) => serial(() => save(value, options)),
   };
 }
 
@@ -990,8 +1094,9 @@ function createPhones(options = {}) {
   const messages = {
     // -> phones-store-load-result: { ok, storage, text, damaged, message }. The text is the server's own registry, read back as it was saved.
     'phones-store-load': (message, shell) => storeFor(shell, path.join(String(shell.userData), STORE_FILE)).load(),
-    // -> phones-store-save-result: { ok, storage, message }. The text is never echoed.
-    'phones-store-save': (message, shell) => storeFor(shell, path.join(String(shell.userData), STORE_FILE)).save(message.text),
+    // -> phones-store-save-result: { ok, storage, message }. The text is never echoed. setAside: true comes with the first save after a
+    // load whose text the server could not use; the file that load read is then kept under another name first.
+    'phones-store-save': (message, shell) => storeFor(shell, path.join(String(shell.userData), STORE_FILE)).save(message.text, { setAside: message.setAside === true }),
     'phones-pair-show': (message, shell) => showPairing(message, shell),
     'phones-pair-close': () => {
       closePairing(false);

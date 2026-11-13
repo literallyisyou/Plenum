@@ -517,7 +517,7 @@ async function forgetFlow(core, id) {
     return { ok: !1, reason: "failed" };
   }
 }
-var REPO = "https://github.com/RealAlcibiades/Plenum", LEGAL_LINKS = Object.freeze({
+var REPO = "https://github.com/literallyisyou/Plenum", LEGAL_LINKS = Object.freeze({
   privacy: `${REPO}/blob/main/legal/PRIVACY.md`,
   "third-party": `${REPO}/blob/main/legal/THIRD-PARTY-SERVICES.md`,
   license: `${REPO}/blob/main/legal/EULA.md`,

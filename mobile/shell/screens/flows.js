@@ -60,7 +60,7 @@ export async function forgetFlow(core, id) {
 // license, privacy and third). The Apple privacy rule (5.1.2(i)) needs the Privacy Notice link to open from the consent screen. The store
 // buttons: the web page and the Android app come from the repository's releases; the iPhone app has no store page yet, so it stays null and
 // the screen says so until the app is published.
-const REPO = 'https://github.com/RealAlcibiades/Plenum';
+const REPO = 'https://github.com/literallyisyou/Plenum';
 export const LEGAL_LINKS = Object.freeze({
   privacy: `${REPO}/blob/main/legal/PRIVACY.md`,
   'third-party': `${REPO}/blob/main/legal/THIRD-PARTY-SERVICES.md`,

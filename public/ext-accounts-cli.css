@@ -6,3 +6,6 @@
   font: 12.5px/1.45 var(--mono); color: var(--text); background: var(--code-bg);
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: all;
 }
+/* A command with its Copy button: the button sits beside the command, not under it (the setup guide's install steps). */
+.coding-agents .cli-cmd-row { display: flex; align-items: flex-start; gap: 8px; }
+.coding-agents .cli-cmd-row .cli-cmd { flex: 1; min-width: 0; }

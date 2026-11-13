@@ -857,7 +857,7 @@
           label: 'Copy reply',
           iconName: 'file',
           onPick: () => {
-            const text = String((turn.querySelector('.turn-body') || turn).textContent || '').trim();
+            const text = String(MuseUI.turnText?.(turn) ?? ((turn.querySelector('.turn-body') || turn).textContent || '')).trim();
             api.close();
             MuseUI.copyText(text);
           },
@@ -2233,12 +2233,12 @@
     const value = typeof raw === 'string' ? raw.trim() : '';
     return /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(value) ? value : '';
   }
-  const ISSUES_URL = 'https://github.com/RealAlcibiades/Plenum/issues/new';
+  const ISSUES_URL = 'https://github.com/literallyisyou/Plenum/issues/new';
 
   function openReportSheet(turn, opener) {
     const who = txt(turn.querySelector('.turn-head .who')) || 'the model';
     const when = txt(turn.querySelector('.turn-head .when'));
-    const reply = String((turn.querySelector('.turn-body') || turn).textContent || '').trim();
+    const reply = String(MuseUI.turnText?.(turn) ?? ((turn.querySelector('.turn-body') || turn).textContent || '')).trim();
     let reason = '';
     let note = '';
     openSheet({

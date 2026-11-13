@@ -28,7 +28,7 @@
   const CHIP_ID = 'phones';
   const CHIP_ORDER = 40;
   const NOT_BUILT = 'Phones need a newer Plenum build.';
-  const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/RealAlcibiades/Plenum/tree/main/relay';
+  const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/literallyisyou/Plenum/tree/main/relay';
   const TIER_LABELS = [['full', 'Full control'], ['approve', 'Approve and watch'], ['read', 'Read only']];
   const TIER_WORDS = { full: 'Full control', approve: 'Approve and watch', read: 'Read only' };
   const CARRIER_WORDS = { lan: 'Same network', tailscale: 'Tailscale', relay: 'your relay' };
@@ -58,6 +58,11 @@
   ];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const TERMINAL = ['allowed', 'denied', 'expired', 'failed3'];
+  // A row that says something went wrong. Inside a Settings card the page's own rule for paragraphs (.card p) wins over .remote-error
+  // and would paint the row grey, so it also carries the status classes that are red there (as the lines of statusEl are).
+  const ERROR_ROW = 'remote-error setting-status bad';
+  // How long a row about the phones file waits before the state is read again.
+  const HEAL_MS = 6000;
   // The notices' texts, copied from MOBILE.json notices. The notices module draws them once it knows the ids (lib/notices.mjs, wave 119).
   // Until then this panel draws them, with an OK that dismisses them for this page only.
   const NOTES = {
@@ -132,6 +137,8 @@
   let chipEl = null;           // the title-bar chip while it is shown
   let page = null;             // the open section's parts, or null before it has been drawn
   let countTimer = null;       // the pairing countdown while an offer waits
+  let healTimer = null;        // the next read of the state while a phones-file problem is on show
+  let healBound = false;       // true once the section listens for the window coming back into view
   let uid = 0;
   const dismissed = new Set(); // local notices the person dismissed with OK (this page only)
 
@@ -721,6 +728,25 @@
 
   // ---------- painting the section from the last state ----------
 
+  // The next read while a phones-file problem is on show. A window that is hidden (minimised, covered, another tab) is not read for,
+  // but the timer waits on, so the reads start again by themselves when the window is back. It ends when the section left the page;
+  // the read it starts paints again, and the paint sets the next timer while a row still shows.
+  function healTick() {
+    healTimer = null;
+    if (!page || page.root?.isConnected === false) return;
+    if (document.hidden) {
+      healTimer = setTimeout(healTick, HEAL_MS);
+      return;
+    }
+    refreshState();
+  }
+
+  // The window is back in view while a row shows: read now, not at the next tick. Bound once, when the section is first drawn (render).
+  function healOnShow() {
+    if (document.hidden || !page || page.root?.isConnected === false) return;
+    if (page.saveNote.textContent || page.storageNote.textContent) refreshState();
+  }
+
   function paintAll() {
     const p = page;
     if (!p) return;
@@ -742,6 +768,13 @@
     p.portHelp.hidden = v.enabled !== true;
     p.storageNote.textContent = textOf(v.storageNote);
     p.storageNote.hidden = !p.storageNote.textContent;
+    // The last save of the phones file failed: what happened and what to do. Stop from a phone does not depend on it.
+    const saveProblem = textOf(v.saveProblem);
+    p.saveNote.textContent = saveProblem ? `${saveProblem} Paired phones keep working and Stop from a phone still works. Plenum tries again by itself. If this stays, close any program that may be holding the phones file and free some disk space.` : '';
+    p.saveNote.hidden = !saveProblem;
+    // Plenum reads and saves the file again by itself, so while either row shows, the state is read again a little later (healTick)
+    // and the row goes when the problem has gone. One timer at a time, and only while the section is on the page.
+    if ((saveProblem || p.storageNote.textContent) && healTimer === null) healTimer = setTimeout(healTick, HEAL_MS);
     if (v.plainNode === true) showNote('phone-plain-node', p.plainNotes);
     else p.plainNotes.hidden = true;
 
@@ -832,10 +865,12 @@
     const root = make('div', 'remote-root');
     p.root = root;
     p.plain = make('p', 'remote-plain');
-    p.error = make('p', 'remote-error');
+    p.error = make('p', ERROR_ROW);
     p.main = make('div', 'remote-main');
     p.plainNotes = notesWrap();
     p.storageNote = make('p', 'remote-quiet');
+    p.saveNote = make('p', ERROR_ROW);
+    p.saveNote.hidden = true;
     p.intro = make('p', 'remote-intro', 'Phones reach this computer through the ways below. A paired phone can do everything this window can, so pair only phones you hold, and remove a lost one here at once. Pairing starts here and is finished in the window on this computer.');
 
     // Turn phones on.
@@ -846,7 +881,7 @@
     p.portText = make('span', 'remote-port');
     p.portBtn = button('ghost small', 'Change port', () => changePort(p.portBtn, p.powerStatus));
     p.portHelp = make('p', 'remote-help', 'Changing the port closes the phones connected now.');
-    powerBlock.append(p.intro, p.storageNote, p.plainNotes, enabled.label, p.powerStatus, line(p.portText, p.portBtn), p.portHelp);
+    powerBlock.append(p.intro, p.storageNote, p.saveNote, p.plainNotes, enabled.label, p.powerStatus, line(p.portText, p.portBtn), p.portHelp);
     enabled.input.addEventListener('change', () => togglePhones(enabled.input, p.powerStatus));
 
     // Ways to reach this computer.
@@ -859,7 +894,7 @@
     const any = switchRow('Any address', 'Accepts phones from any address, not only the private networks. Leave this off unless you need it.');
     p.lanAny = any.input;
     p.lanText = make('p', 'remote-help');
-    p.lanError = make('p', 'remote-error');
+    p.lanError = make('p', ERROR_ROW);
     p.lanFirewall = make('p', 'remote-help');
     p.lanStatus = statusEl();
     lanBlock.append(lan.label, p.lanNotes, p.lanText, p.lanError, p.lanFirewall, any.label, p.lanStatus);
@@ -947,7 +982,7 @@
     p.offerLeft = make('p', 'remote-offer-text');
     p.offerCode = make('p', 'remote-offer-code');
     p.offerCount = make('p', 'remote-offer-text');
-    p.offerError = make('p', 'remote-error');
+    p.offerError = make('p', ERROR_ROW);
     p.offerError.setAttribute('role', 'status');
     p.offerDeny = button('ghost', 'Deny', () => answerPhone(false));
     p.offerAllow = button('primary', 'Allow', () => answerPhone(true));
@@ -1033,6 +1068,10 @@
   function render(body) {
     page = build();
     body.append(page.root);
+    if (!healBound) {
+      healBound = true;
+      document.addEventListener('visibilitychange', healOnShow);
+    }
     paintAll();
     refreshState();
     refreshActivity();

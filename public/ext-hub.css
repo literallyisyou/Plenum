@@ -1,0 +1,82 @@
+/* Settings > Agents > Plenum Hub (public/ext-hub.js). Every colour is a token from style.css, so both themes follow; nothing is set
+   inline. One calm card on a 16 px rhythm: no box inside a box, rules and spacing do the grouping. Motion is a 150 ms fade of opacity
+   only, and none under reduced motion. */
+
+.hub-root { display: grid; gap: 16px; min-width: 0; }
+.hub-root [hidden] { display: none !important; }
+.hub-slot:empty, .hub-save:empty, .hub-note:empty, .hub-why:empty { display: none; }
+
+/* Header: the health dot with its word, Check now, and the link at the right end. */
+.hub-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.hub-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.hub-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.hub-dot[data-state="up"] { background: var(--ok); }
+.hub-dot[data-state="odd"], .hub-dot[data-state="paused"] { background: var(--warn); }
+.hub-dot[data-state="down"] { background: var(--bad); }
+.hub-open { margin-left: auto; font-size: 13px; }
+.hub-link { color: var(--accent); text-decoration: none; border-radius: 6px; }
+.hub-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.hub-link:focus-visible, .hub-input:focus-visible, .hub-addr summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.hub-line, .hub-note, .hub-why, .hub-foot { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.hub-line { color: var(--text-2); }
+.hub-bad { color: var(--bad) !important; }
+.hub-save { font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.hub-why { margin-top: -8px; }
+.hub-root .switch-row + .hub-save { margin-top: -8px; }
+.hub-root .switch-row small { display: block; color: var(--muted); font-size: 12px; }
+
+/* A field: label, input and its buttons on one line that wraps at narrow widths. */
+.hub-field { display: grid; gap: 6px; min-width: 0; }
+.hub-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.hub-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.hub-input {
+  flex: 1 1 180px; min-width: 0; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line-2);
+  background: var(--bg); color: var(--text); font: 13px var(--ui); outline: none;
+}
+.hub-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.hub-field > .hub-input { flex: none; width: 100%; }
+/* Keys and addresses are read character by character, so they are set in the code face on purpose. */
+.hub-root .hub-input { font-family: var(--mono); font-size: 12.5px; }
+
+/* The sections below the controls are set off by a single rule, not a box. */
+.hub-wait, .hub-used { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); min-width: 0; }
+.hub-sub { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+
+/* Waiting for you: a large light number, then four quiet rows. */
+.hub-big { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.hub-num { font-size: 44px; line-height: 1.1; font-weight: 300; letter-spacing: -0.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+.hub-numtext { font-size: 13px; color: var(--muted); }
+.hub-rows, .hub-agents, .hub-steps { list-style: none; margin: 0; padding: 0; display: grid; min-width: 0; }
+.hub-row, .hub-agent { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; min-width: 0; }
+.hub-row:first-child, .hub-agent:first-child { border-top: 0; }
+.hub-rowname { color: var(--text-2); flex: 1 1 auto; }
+.hub-rowcount { color: var(--text); font-variant-numeric: tabular-nums; min-width: 2.5ch; text-align: right; }
+.hub-row .hub-link { flex: none; min-width: 44px; text-align: right; }
+
+/* Agents used. */
+.hub-agent-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; overflow-wrap: anywhere; }
+.hub-agent-name { color: var(--text); font-weight: 600; }
+.hub-agent-model { color: var(--muted); font-size: 12px; }
+.hub-agent-meta { display: flex; flex: none; gap: 10px; color: var(--muted); font-size: 12px; text-align: right; }
+.hub-agent { flex-wrap: wrap; }
+.hub-agent-note { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.hub-agent-state[data-state="ok"] { color: var(--ok); }
+.hub-agent-state[data-state="paused"] { color: var(--warn); }
+.hub-agent-state[data-state="killed"], .hub-agent-state[data-state="failed"] { color: var(--bad); }
+.hub-empty { font-size: 13px; color: var(--muted); }
+.hub-used > .ghost, .hub-wait .ghost { justify-self: start; }
+
+/* Addresses. A details element does not lay its content out as a grid, so the 12 px rhythm is set on the children. */
+.hub-addr { padding-top: 16px; border-top: 1px solid var(--line); min-width: 0; }
+.hub-addr > :not(summary) { margin: 12px 0 0; }
+.hub-addr > .hub-save:empty { margin: 0; }
+.hub-addr summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-2); border-radius: 6px; width: fit-content; }
+.hub-step { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.hub-step-mark { flex: none; min-width: 3.5em; font-weight: 600; color: var(--ok); }
+.hub-step[data-ok="no"] .hub-step-mark { color: var(--bad); }
+
+/* The part that changed fades in over 150 ms; opacity only. */
+.hub-fade { animation: hub-fade 150ms ease-out; }
+@keyframes hub-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .hub-fade { animation: none; } }

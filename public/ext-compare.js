@@ -298,6 +298,9 @@
 
   // ---------- running a compare ----------
 
+  // The thread of a run, as ext-pipelines.js sends it: nothing when the page had no thread yet.
+  const threadPart = r => (r.thread ? { thread: r.thread } : {});
+
   async function startRun() {
     if (run?.active) return;
     const project = MuseUI.state.activeProject;
@@ -312,6 +315,8 @@
     const pictures = withImages !== false ? composerPictures() : [];
     const current = {
       project,
+      // The thread on screen when the compare starts (Main's is the project's id). Keep writes to this one, whichever thread is on screen later.
+      thread: MuseUI.state.activeThread || null,
       prompt,
       seats: chosen.map((ref, i) => ({ id: SEAT_IDS[i], ref, label: labelFor(ref), status: 'waiting', text: '', error: '' })),
       images: pictures.map(({ name, size }) => ({ name, size })),
@@ -328,6 +333,7 @@
         method: 'POST',
         body: {
           project,
+          ...threadPart(current),
           prompt,
           seats: chosen,
           effort,
@@ -415,15 +421,15 @@
   async function keepReply(seat) {
     const current = run;
     if (!current || current.active || current.kept || seat.status !== 'done' || !current.seats.includes(seat)) return;
-    if (current.project !== MuseUI.state.activeProject) {
-      flash = { text: 'Switch back to the project this compare ran in, then keep the reply.', bad: true };
+    if (current.project !== MuseUI.state.activeProject || (current.thread || null) !== (MuseUI.state.activeThread || null)) {
+      flash = { text: 'Switch back to the project and thread this compare ran in, then keep the reply.', bad: true };
       return paint();
     }
     current.kept = true;
     flash = null;
     paint();
     try {
-      await MuseUI.api('/api/compare/keep', { project: current.project, prompt: current.prompt, seat: seat.ref, text: seat.text, images: current.images ?? [] });
+      await MuseUI.api('/api/compare/keep', { project: current.project, ...threadPart(current), prompt: current.prompt, seat: seat.ref, text: seat.text, images: current.images ?? [] });
       MuseUI.toast(`Kept the ${seat.label} reply. It is in the chat.`);
       run = null;
       draft = '';

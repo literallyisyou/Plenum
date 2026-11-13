@@ -69,13 +69,19 @@
   }
 
   // What a code block holds, or null when it is not an artifact. Reads the block's own text, so it is correct for any block.
+  // A block is read once: the chat never changes a code block in place (a reply that is still arriving draws its open end as new
+  // nodes, and its finished blocks stay as they are), and a pass runs on every change of the chat, so reading every block's text
+  // again each time made each pass cost as much as the whole chat.
+  const described = new WeakMap();
   function describe(block) {
+    if (described.has(block)) return described.get(block);
     const lang = (block.querySelector('.cb-head span')?.textContent ?? '').trim().toLowerCase();
     const code = block.querySelector('code')?.textContent ?? '';
     const lines = countLines(code);
     const kind = kindOf(lang, lines);
-    if (!kind) return null;
-    return { el: block, kind, lang, code, lines, title: titleOf(kind, lang, code, lines) };
+    const rec = kind ? { el: block, kind, lang, code, lines, title: titleOf(kind, lang, code, lines) } : null;
+    described.set(block, rec);
+    return rec;
   }
 
   // A stable key for an artifact's content, used to remember its web access switch for this page's life.

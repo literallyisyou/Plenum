@@ -15,15 +15,14 @@
 //    the very one the model's screenshot uses, made again as a JPEG for a phone that has taken a run over (lib/routes/computer.mjs). It answers
 //    { ok: true, jpeg (base64), width, height, physical, scale }, or { ok: false } when there is no image encoder here (the server then asks
 //    for the PNG). The picture is not kept.
-const { createComputerBackend } = require('../computer/index.cjs');
+const { createComputerBackend, METHODS } = require('../computer/index.cjs');
 const { isLoopbackHttp } = require('../computer/overlay.cjs');
 
-// The message types the server may send: <method> in kebab case. computer-secure-field is the short spelling of the same request.
-const TYPES = Object.freeze([
-  'computer-probe', 'computer-windows', 'computer-foreground', 'computer-capture', 'computer-input', 'computer-cursor',
-  'computer-user-input', 'computer-focus', 'computer-is-secure-field', 'computer-secure-field', 'computer-release',
-  'computer-overlay', 'computer-request-access',
-]);
+// The message types the server may send: computer-<method> in kebab case for every method of the backend (METHODS lists them, the
+// short spelling computer-secure-field among them), so a method the backend answers cannot be left without a handler: the server's
+// request would get no reply and wait the full 20 seconds (computer-focused-label was once missing and every typed piece stalled).
+const kebab = text => text.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`);
+const TYPES = Object.freeze(Object.keys(METHODS).map(method => `computer-${kebab(method)}`));
 
 // The message that makes a JPEG of what a run sees, for a phone.
 const LIVE_TYPE = 'computer-live-frame';

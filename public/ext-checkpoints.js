@@ -3,6 +3,8 @@
 // and restores one. A restore overwrites files, so the server asks first: its answer is a stream that carries the approval
 // card, which this panel draws in the drawer, and then the result. Every piece of text is set with textContent.
 // Show changes reads GET /api/checkpoints/diff, which only compares; viewing a diff writes nothing.
+// A restore can be undone: the server first keeps the files as they are now as one more checkpoint and names it in its answer
+// (undoId). "Undo this restore" under the status line restores that checkpoint through the same flow, card included.
 // window.MuseRestore.run({ title, url, payload, diffUrl, approveText, onEnd }) runs any other approval-gated write the same way in a
 // drawer of its own: a rewind of the code (public/ext-turns.js) uses it. The stream, the card, Deny's focus, Show changes and the
 // drawer closing (which cancels a card nobody can see) are the same for every flow.
@@ -13,7 +15,8 @@
 
   const TITLE = 'Checkpoints';
   const BUTTON_ID = 'checkpointsBtn';
-  const INTRO = 'Plenum keeps a copy of a file just before the agent changes it. Restore puts that copy back, after you approve.';
+  const INTRO = 'Plenum keeps a copy of a file just before the agent changes it. Restore puts that copy back, after you approve. The file as it is now is kept first, so a restore can be undone.';
+  const UNDO = 'Undo this restore';
   const LOADING = 'Loading checkpoints…';
   const EMPTY = 'No checkpoints yet. One is kept each time the agent changes an existing file.';
   const GROUP = 'Group by file';
@@ -92,14 +95,21 @@
     toggle.setAttribute('aria-pressed', String(grouped));
     const view = {
       project,
+      // The thread the list was read for (Main is named by the project's id). The list, the comparison and the restore all name it,
+      // so another window changing the project's active thread cannot turn them to other files.
+      thread: threadNow(project),
       root,
       status: make('div', 'ext-checkpoints-status'),
+      // The row under the status line for "Undo this restore". It is hidden while it is empty.
+      undo: make('div', 'actions'),
+      undoBtn: null,
       ask: make('div', 'ext-checkpoints-ask'),
       list: make('div', 'ext-checkpoints-list'),
       buttons: [],
       items: null,
     };
     view.status.setAttribute('role', 'status');
+    view.undo.hidden = true;
     toggle.addEventListener('click', () => {
       grouped = !grouped;
       toggle.setAttribute('aria-pressed', String(grouped));
@@ -107,24 +117,50 @@
     });
     const head = make('div', 'ext-checkpoints-head');
     head.append(make('p', 'ext-checkpoints-note', INTRO), toggle);
-    root.append(head, view.status, view.ask, view.list);
+    root.append(head, view.status, view.undo, view.ask, view.list);
     body.append(root);
+    shown = view;
     load(view, ++loadSeq);
   }
 
-  async function load(view, seq) {
-    setStatus(view, LOADING, '');
+  function threadNow(project) {
+    const t = MuseUI.state.activeThread;
+    return typeof t === 'string' && t ? t : project.id;
+  }
+
+  // The drawer that is open (the last one drawn). When the thread on screen changes, its list is read again for the new thread, unless a
+  // restore is waiting or running in it: that one belongs to the thread it was started for.
+  let shown = null;
+  MuseUI.threads?.onRender?.(() => {
+    const view = shown;
+    if (!view || !view.root.isConnected || MuseUI.el.drawer.hidden || pending) return;
+    // A project switch while the drawer is open leaves it on the project it was read for: the new project's thread is not this one's.
+    if (MuseUI.state.activeProject !== view.project.id) return;
+    const thread = threadNow(view.project);
+    if (thread === view.thread) return;
+    view.thread = thread;
+    clearUndo(view);
+    load(view, ++loadSeq);
+  });
+
+  // Fetches the list and draws it. quiet is set for the reload after a restore: the status line then keeps what the restore said,
+  // and a list that does not come back leaves the old one in place.
+  async function load(view, seq, quiet = false) {
+    if (!quiet) setStatus(view, LOADING, '');
     let data;
     try {
-      data = await MuseUI.api(`/api/checkpoints?project=${encodeURIComponent(view.project.id)}`);
+      data = await MuseUI.api(`/api/checkpoints?project=${encodeURIComponent(view.project.id)}&thread=${encodeURIComponent(view.thread)}`);
     } catch (err) {
-      if (seq === loadSeq) setStatus(view, err.message, 'bad');
+      if (seq === loadSeq && !quiet) setStatus(view, err.message, 'bad');
       return;
     }
     if (seq !== loadSeq) return;
     const items = Array.isArray(data?.checkpoints) ? data.checkpoints : null;
-    if (!items) return setStatus(view, 'The checkpoints did not come back. Try again.', 'bad');
-    setStatus(view, items.length ? '' : EMPTY, '');
+    if (!items) {
+      if (!quiet) setStatus(view, 'The checkpoints did not come back. Try again.', 'bad');
+      return;
+    }
+    if (!quiet) setStatus(view, items.length ? '' : EMPTY, '');
     view.items = items;
     paint(view);
   }
@@ -166,7 +202,7 @@
 
   // The address of the comparison for one checkpoint: what its restore would change. It is a path under /api/ (see changesToggle).
   function checkpointDiffUrl(view, item) {
-    return `checkpoints/diff?project=${encodeURIComponent(view.project.id)}&id=${encodeURIComponent(item.id)}`;
+    return `checkpoints/diff?project=${encodeURIComponent(view.project.id)}&thread=${encodeURIComponent(view.thread)}&id=${encodeURIComponent(item.id)}`;
   }
 
   // A comparison address a caller gives as /api/<route>?query. Anything else is no address at all, so the page reads nothing it did not name.
@@ -291,6 +327,7 @@
 
   function lock(view, on) {
     for (const b of view.buttons) b.disabled = on;
+    if (view.undoBtn) view.undoBtn.disabled = on;
   }
 
   // The status line after a write. A rewind's answer has removed as well as restored files; a restore's has only the files.
@@ -369,17 +406,54 @@
     return true;
   }
 
-  // A restore of one checkpoint, from the list.
+  // A restore of one checkpoint, from the list or from "Undo this restore" (item is then { id } of the checkpoint the server kept).
   function restore(view, item) {
     runFlow(view, {
       route: 'checkpoints/restore',
-      payload: { project: view.project.id, id: item.id },
+      payload: { project: view.project.id, thread: view.thread, id: item.id },
       diffUrl: checkpointDiffUrl(view, item),
       approveText: 'Approve restore',
       busyText: 'Restoring…',
       planNote: true,
       nothing: 'Nothing was restored.',
+      restoredText: restoreSummary,
+      onEnd: afterRestore,
     });
+  }
+
+  // The status line after a checkpoint restore: the files, what was kept so that it can be undone, and what was not kept.
+  function restoreSummary(ev) {
+    const notKept = Array.isArray(ev.notKept) ? ev.notKept.filter(p => typeof p === 'string') : [];
+    const kept = typeof ev.undoId === 'string' && ev.undoId
+      ? ' The files as they were are kept as a new checkpoint, so you can undo this.'
+      : '';
+    const lost = notKept.length ? ` Not kept (over 5 MB): ${notKept.join(', ')}.` : '';
+    return `${restoredText(ev)}${kept}${lost}`;
+  }
+
+  function clearUndo(view) {
+    if (!view.undo) return;
+    view.undoBtn = null;
+    view.undo.replaceChildren();
+    view.undo.hidden = true;
+  }
+
+  // After a restore ends (restored, or an error part way): the list is read again, so the checkpoint the server kept shows at the top,
+  // and "Undo this restore" is offered for it. The undo is a restore of that checkpoint, so it shows the same card and can itself be undone.
+  function afterRestore(ev, view) {
+    if (!view.undo || !view.root.isConnected) return;
+    const undoId = typeof ev.undoId === 'string' ? ev.undoId : '';
+    // A declined card changed nothing, so an undo that was on offer stays as it was.
+    if (ev.type !== 'restored' && ev.type !== 'error') return;
+    load(view, ++loadSeq, true);
+    clearUndo(view);
+    if (!undoId) return;
+    const btn = MuseUI.button('ghost small', UNDO);
+    btn.title = 'Put the files back as they were just before this restore';
+    btn.addEventListener('click', () => restore(view, { id: undoId }));
+    view.undoBtn = btn;
+    view.undo.replaceChildren(btn);
+    view.undo.hidden = false;
   }
 
   // The approval card the server asked for. It uses the look of the approval card in the chat. Approve and Deny answer

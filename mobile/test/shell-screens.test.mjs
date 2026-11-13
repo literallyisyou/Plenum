@@ -365,13 +365,13 @@ describe('the core calls behind the screens (Node, fake core)', () => {
   });
 
   test('the legal and store links are https, and the Legal screen rows, the consent buttons and the store buttons all have one', async () => {
-    const repo = 'https://github.com/RealAlcibiades/Plenum';
+    const repo = 'https://github.com/literallyisyou/Plenum';
     assert.equal(flows.LEGAL_LINKS.privacy, `${repo}/blob/main/legal/PRIVACY.md`);
     assert.equal(flows.LEGAL_LINKS['third-party'], `${repo}/blob/main/legal/THIRD-PARTY-SERVICES.md`);
     assert.equal(flows.STORE_LINKS.web, `${repo}/releases`);
     assert.equal(flows.STORE_LINKS.android, `${repo}/releases`);
     for (const link of [...Object.values(flows.LEGAL_LINKS), flows.STORE_LINKS.web, flows.STORE_LINKS.android]) {
-      assert.match(link, /^https:\/\/github\.com\/RealAlcibiades\/Plenum\//);
+      assert.match(link, /^https:\/\/github\.com\/literallyisyou\/Plenum\//);
       const opened = [];
       assert.deepEqual(flows.openLinkFlow({ open: (...args) => opened.push(args) }, link), { ok: true, reason: null });
       assert.equal(opened[0][0], link);

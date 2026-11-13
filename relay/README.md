@@ -6,7 +6,7 @@ Everything between a phone and your computer is encrypted end to end with Noise.
 
 ## Deploy it
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/RealAlcibiades/Plenum/tree/main/relay)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/literallyisyou/Plenum/tree/main/relay)
 
 1. You need a free Cloudflare account and a free GitHub account. The button clones this folder into your GitHub and deploys it with Workers Builds.
 2. Copy the Worker URL, for example `https://plenum-relay.<your-account>.workers.dev`.

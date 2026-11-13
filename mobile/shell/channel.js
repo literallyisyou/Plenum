@@ -54,6 +54,7 @@ export function workerComputer(record, carriers = null) {
     myPriv: b64uToBytes(typeof record.myPriv === 'string' ? record.myPriv : fail('locked')),
     carriers: carriers ?? record.carriers ?? [],
     lastCarrier: record.lastCarrier ?? null,
+    lastUrl: typeof record.lastUrl === 'string' ? record.lastUrl : null,
     counter: Number.isSafeInteger(record.counter) ? record.counter : 0,
   };
 }
@@ -118,6 +119,7 @@ export function sendLockedStop({ record, store = null, createWorker = defaultCre
         stopKey: b64uToBytes(record.stopKey),
         carriers: Array.isArray(record.carriers) ? record.carriers : [],
         lastCarrier: record.lastCarrier ?? null,
+        lastUrl: typeof record.lastUrl === 'string' ? record.lastUrl : null,
         counter: Number.isSafeInteger(record.counter) ? record.counter : 0,
       },
     });

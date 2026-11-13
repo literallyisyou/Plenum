@@ -897,16 +897,62 @@
     return section;
   }
 
-  // Export and import of the project's threads (GET /api/project/export, POST /api/project/import).
+  // What a project file leaves out, as one plain line, or '' when it leaves nothing out. notes is the server's count
+  // ({ messagesClipped, messagesDropped, cardsFlattened } from lib/routes/transfer.mjs).
+  function leftOutLine(notes) {
+    const n = key => {
+      const v = Number(notes?.[key]);
+      return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+    };
+    const cut = n('messagesClipped');
+    const dropped = n('messagesDropped');
+    const cards = n('cardsFlattened');
+    const parts = [];
+    if (cut) parts.push(`${cut} long ${cut === 1 ? 'message was' : 'messages were'} cut short`);
+    if (dropped) parts.push(`${dropped} older ${dropped === 1 ? 'message was' : 'messages were'} left out`);
+    if (cards) parts.push(`${cards} council or build ${cards === 1 ? 'card was' : 'cards were'} saved as plain text`);
+    if (!parts.length) return '';
+    const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+    const full = cut ? ' Export as Markdown in Chat history keeps the full text of a chat.' : '';
+    return `In this file, ${list}.${full}`;
+  }
+
+  // The last line about a project file, kept while the page is open: an import redraws the drawer, and the line must still be there.
+  // { project, text }, or null.
+  let moveNote = null;
+
+  // Export and import of the project's threads (GET /api/project/export, POST /api/project/import). With the download the page asks the
+  // server what the file leaves out (the same address with &notes=1), so a file that cuts something says so in one line under the
+  // buttons. An import says the same from the counts the file carries.
   function moveSection(p) {
     const section = make('section', 'ext-thread-section');
     section.append(make('h3', 'ext-thread-h', 'Move chats'));
-    section.append(make('p', 'ext-thread-note', 'Export saves every thread of this project and its chat in one file. Import adds the threads of such a file to this project as new threads; nothing here is replaced.'));
+    section.append(make('p', 'ext-thread-note', 'Export saves the threads of this project and their chats in one file. Council and build cards are saved as the text of their reply, and rewind points stay on this PC. Import adds the threads of such a file to this project as new threads; nothing here is replaced.'));
     const row = make('div', 'actions');
+    const said = make('p', 'ext-thread-note');
+    said.setAttribute('role', 'status');
+    const say = text => {
+      moveNote = text ? { project: p.id, text } : null;
+      said.textContent = text;
+      said.hidden = !text;
+    };
+    said.textContent = moveNote?.project === p.id ? moveNote.text : '';
+    said.hidden = !said.textContent;
     const exportLink = make('a', 'ghost small ext-thread-export', 'Export threads');
     exportLink.href = `/api/project/export?project=${encodeURIComponent(p.id)}`;
     exportLink.download = '';
     exportLink.setAttribute('role', 'button');
+    // The click itself is the download, as before (app.js saves a download link into /api/ with the token, and toasts a refusal such
+    // as a file over 64 MB). Beside it the page asks what the file leaves out and says it under the buttons. A refusal is not said
+    // twice: the download's own toast gives the reason.
+    exportLink.addEventListener('click', async () => {
+      try {
+        const answer = await MU.api(`/api/project/export?project=${encodeURIComponent(p.id)}&notes=1`);
+        say(leftOutLine(answer?.notes));
+      } catch {
+        say('');
+      }
+    });
     const pick = make('button', 'ghost small', 'Import threads…');
     pick.type = 'button';
     const file = make('input', 'ext-thread-file');
@@ -931,6 +977,8 @@
         T.adopt(answer);
         const n = Array.isArray(answer.imported) ? answer.imported.length : 0;
         MU.toast(`Imported ${n} ${n === 1 ? 'thread' : 'threads'}.`);
+        // What the file left out when it was made, or what this import cut. The line is kept for the redraw below.
+        say(leftOutLine(answer.truncated));
         MU.refreshDrawer();
       } catch (err) {
         MU.toast(err.message, 'bad');
@@ -938,7 +986,7 @@
       pick.disabled = false;
     });
     row.append(exportLink, pick, file);
-    section.append(row);
+    section.append(row, said);
     return section;
   }
 

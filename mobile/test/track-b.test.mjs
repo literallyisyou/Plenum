@@ -330,7 +330,8 @@ describe('the wiring in the files (source checks)', () => {
 
   test('server.mjs starts the Bridge after listen, with the running map and publicState, through import()', () => {
     const text = read('server.mjs');
-    assert.match(text, /await listen\(\);\nawait startPhones\(\);/);
+    // Other start-up lines (the provider status prewarm) may sit between the two calls; the Bridge still starts after listen.
+    assert.match(text, /await listen\(\);\r?\n(?:.*\r?\n){0,3}await startPhones\(\);/);
     assert.match(text, /import\('\.\/lib\/remote\/index\.mjs'\)/);
     assert.match(text, /startRemote\(\{ running, publicState, port: PORT/);
   });

@@ -2,7 +2,9 @@
 // A small button beside the project name shows the branch and how many files are changed or untracked, so you know what state
 // the project is in before and after a run. The server reads git (GET /api/git, lib/git-status.mjs) and this file only words
 // what it sends. Clicking the chip opens a drawer that lists the changed and untracked paths. It refreshes when the project
-// changes, when a run ends, and every 30 seconds while the page is visible. Every piece of text is set with textContent.
+// changes, when the thread on screen changes to or from one that works in an isolated copy, when a run ends, and every 30
+// seconds while the page is visible. The request names the thread on screen, so a thread that works in an isolated copy shows
+// its copy's branch and files, not the project folder's. Every piece of text is set with textContent.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -20,7 +22,8 @@
   chip.hidden = true;
   chip.dataset.state = 'clean';
 
-  // The last answer from the server, and the project it is for. The chip shows it only while that project is the active one.
+  // The last answer from the server, and the folder it is for (scopeKey: the project, or a thread's isolated copy). The chip
+  // shows it only while that folder is the one the thread on screen works in.
   let status = null;
   let statusFor = null;
   // Counts the requests, so a late answer never paints over a newer one.
@@ -37,6 +40,24 @@
 
   function projectId() {
     return MuseUI.state.activeProject ?? null;
+  }
+
+  // The thread on screen. Main is named too, by its own id (the project's id): a request with no thread would be answered for
+  // the project folder even while a thread with an isolated copy is on screen.
+  function threadId() {
+    const t = MuseUI.state.activeThread;
+    return typeof t === 'string' && t ? t : projectId();
+  }
+
+  // The folder the chip is about, as one key: the project, and the thread too when the thread on screen works in an isolated copy
+  // of its own (a ready one). Main and the threads that share the project folder have the same key, so a switch between them
+  // changes nothing on the chip and asks the server nothing. null with no project.
+  function scopeKey() {
+    const id = projectId();
+    if (!id) return null;
+    const thread = threadId();
+    const entry = (Array.isArray(MuseUI.state.threads) ? MuseUI.state.threads : []).find(t => t?.id === thread);
+    return entry?.worktree?.state === 'ready' ? `${id}\n${thread}` : id;
   }
 
   // The chip goes after the cost line or the budget chip when the page has one, else straight after the project name. It is
@@ -98,7 +119,7 @@
     const id = projectId();
     // Hidden with no project, before the first answer, and when the server could not be reached. A missing git shows the chip
     // with its reason, so the drawer message (fillDrawer) can be reached.
-    if (!id || !status || statusFor !== id || status.unreachable) {
+    if (!id || !status || statusFor !== scopeKey() || status.unreachable) {
       chip.hidden = true;
     } else {
       chip.hidden = false;
@@ -114,9 +135,12 @@
     }
   }
 
-  // Reads the status of the active project. fresh asks the server to look again unless it looked within the last second.
+  // Reads the status of the thread on screen in the active project. fresh asks the server to look again unless it looked
+  // within the last second.
   async function refresh(fresh = false) {
     const id = projectId();
+    const thread = threadId();
+    const key = scopeKey();
     const mine = ++seq;
     if (!id) {
       status = null;
@@ -124,16 +148,26 @@
       paint();
       return;
     }
+    const base = `/api/git?project=${encodeURIComponent(id)}`;
+    const tail = fresh ? '&fresh=1' : '';
     let answer;
     try {
-      answer = await MuseUI.api(`/api/git?project=${encodeURIComponent(id)}${fresh ? '&fresh=1' : ''}`);
+      answer = await MuseUI.api(`${base}&thread=${encodeURIComponent(thread)}${tail}`);
     } catch {
-      answer = { repo: false, unreachable: true };
+      // The server refuses a thread it no longer has open (one closed in another window, before this page's state caught up). While the
+      // thread on screen works in the project folder, the project folder's answer is the right one, so it is asked for once more without
+      // the thread. A thread with a copy of its own is not answered that way: the project folder's branch would be the wrong one.
+      try {
+        if (key !== id) throw new Error('the thread has a folder of its own');
+        answer = await MuseUI.api(`${base}${tail}`);
+      } catch {
+        answer = { repo: false, unreachable: true };
+      }
     }
-    // A newer request, or another project, has taken over since this one was sent.
-    if (mine !== seq || projectId() !== id) return;
+    // A newer request, another project or a thread with another folder has taken over since this one was sent.
+    if (mine !== seq || scopeKey() !== key) return;
     status = answer && typeof answer === 'object' ? answer : null;
-    statusFor = id;
+    statusFor = key;
     paint();
   }
 
@@ -152,7 +186,7 @@
   // Fills the drawer from the last answer. openDrawer and every new answer call it.
   function fillDrawer(root) {
     root.replaceChildren();
-    const s = statusFor === projectId() ? status : null;
+    const s = statusFor === scopeKey() ? status : null;
     if (!s) {
       root.append(make('p', 'ext-git-note', 'Reading the working tree…'));
       return;
@@ -191,16 +225,29 @@
 
   // A project switch redraws the project name. A different project clears the chip until its own answer arrives, so the old
   // project’s branch is never shown under the new name. A redraw for the same project changes nothing.
-  let seen = projectId();
-  new MutationObserver(() => {
-    const id = projectId();
-    if (id === seen) return;
-    seen = id;
+  // The same holds for a thread that works in an isolated copy: a switch to or from it redraws the shell (MuseUI.threads.onRender),
+  // and the chip is cleared until the answer for that folder arrives. Threads that share the project folder share its answer.
+  // One more case: the last read failed (the chip is hidden) and the thread on screen has changed since. The folder may be the same,
+  // but the failure may have been about the thread that was on screen, so the chip reads again and does not wait for the timer.
+  let seen = scopeKey();
+  let seenThread = threadId();
+  function follow() {
+    const key = scopeKey();
+    const thread = threadId();
+    const moved = thread !== seenThread;
+    seenThread = thread;
+    if (key === seen) {
+      if (moved && status?.unreachable) refresh();
+      return;
+    }
+    seen = key;
     status = null;
     statusFor = null;
     paint();
     refresh();
-  }).observe(MuseUI.el.projName, { childList: true, characterData: true, subtree: true });
+  }
+  new MutationObserver(follow).observe(MuseUI.el.projName, { childList: true, characterData: true, subtree: true });
+  MuseUI.threads?.onRender?.(follow);
 
   // The send button carries the class "stop" while a run is on. When the class goes, the run has ended and files may have changed.
   let wasRunning = MuseUI.el.send.classList.contains('stop');

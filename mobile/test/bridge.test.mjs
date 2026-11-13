@@ -338,7 +338,7 @@ describe('handshake controls', () => {
     d.hs.shutdown();
   });
 
-  test('the counter is saved before message 2 is sent, and a save that fails stops the handshake', async () => {
+  test('the counter is saved before message 2 is sent; a save that fails does not keep the phone out, and the same message 1 again is a replay', async () => {
     const d = await makeDesk();
     const phone = await d.addPhone();
     const savesBefore = d.storage.saves;
@@ -350,9 +350,15 @@ describe('handshake controls', () => {
     d.storage.failNext = true;
     const b = d.open();
     b.conn.receive(d.message1(phone, { counter: 8 }).wire);
-    await until(() => b.t.closed !== null);
-    assert.equal(b.t.closed.code, CLOSE_CODES.storage);
-    assert.equal(b.t.sent.length, 0);
+    await until(() => b.t.sent.length >= 1 || b.t.closed !== null);
+    assert.equal(b.t.closed, null, 'a phones file that cannot be saved does not keep a phone out');
+    assert.ok(b.t.sent.length >= 1, 'message 2 went out');
+    assert.equal(d.registry.counterOf(phone.keys.publicKey), 8, 'the counter is raised in memory');
+    const c = d.open('10.0.0.6');
+    c.conn.receive(d.message1(phone, { counter: 8 }).wire);
+    await until(() => c.t.closed !== null);
+    assert.deepEqual(c.t.closed, { code: CLOSE_CODES.protocol, reason: 'replay' });
+    assert.equal(c.t.sent.length, 0);
     d.hs.shutdown();
   });
 
@@ -574,14 +580,15 @@ describe('STOP_ONLY at the handshaker', () => {
     bent.fill(0, 34, 42);
     assert.deepEqual(await settled(send(bent)), { code: 4400, reason: 'protocol' });
     assert.equal(calls.length, 3);
-    // A save that fails stops it before the Stop: the counter was not kept, so the answer would have been a replay hole.
+    // A save that fails does not hold the Stop back (Stop always works). The counter is raised in memory, so a copy is still a replay.
     d.storage.failNext = true;
     const unsaved = send(signed(key, phone, 9, stopId(4)));
-    assert.deepEqual(await settled(unsaved), { code: 4500, reason: 'storage' });
-    assert.equal(unsaved.sent.length, 0);
-    assert.equal(calls.length, 3, 'nothing was stopped on a counter that was not saved');
-    assert.equal(d.registry.counterOf(phone.keys.publicKey), 6);
-    assert.deepEqual(await settled(send(signed(key, phone, 9, stopId(4)))), { code: 1000, reason: 'stopped' }, 'and the same message works when the save does');
+    assert.deepEqual(await settled(unsaved), { code: 1000, reason: 'stopped' });
+    assert.equal(unsaved.sent.length, 1);
+    assert.equal(calls.length, 4, 'Stop ran although the counter could not be saved');
+    assert.equal(d.registry.counterOf(phone.keys.publicKey), 9);
+    assert.deepEqual(await settled(send(signed(key, phone, 9, stopId(4)), 'copy')), { code: 4400, reason: 'replay' }, 'and a copy of the same message is refused');
+    assert.equal(calls.length, 4);
     assert.equal(dh.count() - before, 0, 'no Diffie-Hellman for any of these');
     d.hs.shutdown();
   });

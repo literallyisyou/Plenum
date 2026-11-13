@@ -36,7 +36,7 @@
   let mode = 'list';
   // The editor's draft: { project, isNew, name, steps: [{ ref, effort, template }] }. It lives in memory, so a redraw keeps it.
   let editor = null;
-  // The pipeline on screen and its latest run: { project, name, steps: [{ ref, label, effort, status, text, error }], active, started, kept, error }.
+  // The pipeline on screen and its latest run: { project, thread (the id of the thread it started in; Main's is the project's id), name, steps: [{ ref, label, effort, status, text, error }], active, started, kept, error }.
   let run = null;
   let draftMessage = '';
   // A message about the controls (for example "Write a message first."), shown until the next change.
@@ -685,6 +685,10 @@
 
   // ---------- running ----------
 
+  // The thread of a run, in the shape app.js scopeBody sends it: the id of the thread that was on screen (Main's own id for Main), and
+  // nothing when the page had no thread yet.
+  const threadPart = r => (r.thread ? { thread: r.thread } : {});
+
   async function startRun() {
     if (!run || run.active) return;
     const project = MuseUI.state.activeProject;
@@ -696,6 +700,8 @@
 
     const current = run;
     current.project = project;
+    // The thread is taken now. Stop and Keep use this one, whichever thread is on screen later.
+    current.thread = MuseUI.state.activeThread || null;
     current.message = message;
     current.steps = current.steps.map(s => ({ ...s, status: 'waiting', text: '', error: '' }));
     current.active = true;
@@ -709,7 +715,7 @@
     try {
       const res = await MuseUI.request('/api/pipelines/run', {
         method: 'POST',
-        body: { project, name: current.name, message },
+        body: { project, ...threadPart(current), name: current.name, message },
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -743,7 +749,7 @@
   function stopRun() {
     if (!controller || !run) return;
     userStopped = true;
-    MuseUI.api('/api/cancel', { project: run.project }).catch(() => {});
+    MuseUI.api('/api/cancel', { project: run.project, ...threadPart(run) }).catch(() => {});
     controller.abort();
   }
 
@@ -799,15 +805,15 @@
     const current = run;
     const last = current?.steps.at(-1);
     if (!current || current.active || current.kept || last?.status !== 'done') return;
-    if (current.project !== MuseUI.state.activeProject) {
-      flash = { text: 'Switch back to the project this pipeline ran in, then keep the reply.', bad: true };
+    if (current.project !== MuseUI.state.activeProject || (current.thread || null) !== (MuseUI.state.activeThread || null)) {
+      flash = { text: 'Switch back to the chat this pipeline ran in, then keep the reply.', bad: true };
       return paintRun();
     }
     current.kept = true;
     flash = null;
     paintRun();
     try {
-      await MuseUI.api('/api/pipelines/keep', { project: current.project, prompt: current.message, model: last.ref, text: last.text });
+      await MuseUI.api('/api/pipelines/keep', { project: current.project, ...threadPart(current), prompt: current.message, model: last.ref, text: last.text });
       MuseUI.toast('Kept the final reply. It is in the chat.');
       draftMessage = '';
       MuseUI.closeDrawer();

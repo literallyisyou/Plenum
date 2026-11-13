@@ -5,7 +5,7 @@
 // Keys: 'computers' (array of records), 'ctr:<computerId>' (the handshake counter, raised only), 'meta:<name>' (lock settings).
 //
 // A computer record: { id, name, desktopPub (b64url 32 bytes), myPriv (b64url 32 bytes, or a PIN wrap { v, iv, ct } on the PWA when a
-// PIN is set), carriers, lastCarrier, lastSeen, pairedAt, counter, pushKey, stopKey (b64url 32 bytes, the Stop key: never PIN-wrapped),
+// PIN is set), carriers, lastCarrier, lastUrl (the address that connected last), lastSeen, pairedAt, counter, pushKey, stopKey (b64url 32 bytes, the Stop key: never PIN-wrapped),
 // myDeviceId (64 hex, this phone's own id on that computer) }. The record keeps the keys this phone holds for that
 // computer, and only the keys: publicComputer() is the view any screen or log may use.
 //
@@ -113,7 +113,7 @@ export function publicComputer(record) {
 // ----- the Stop cards -----
 
 // A second copy of what Stop without unlocking needs, one card per computer: { id, name, myDeviceId, stopKey, carriers, lastCarrier,
-// counter }. It lives in Web Storage (localStorage), apart from the store, so a store that cannot be read (a damaged entry, a Keystore or
+// lastUrl?, counter }. It lives in Web Storage (localStorage), apart from the store, so a store that cannot be read (a damaged entry, a Keystore or
 // IndexedDB failure) still leaves the lock screen a Stop (MOBILE.json floor: Stop from the phone always works). The Stop key is the one key
 // kept outside secure storage: all it can do is stop runs and deny the cards they wait on (lib/remote/stop-only.mjs), and a script that runs
 // in the shell could press Stop through the app anyway. myPriv, the psk and the push key never go here. `storage` is a Web Storage object.
@@ -134,6 +134,7 @@ function cardOf(record, counter = 0) {
     stopKey: record.stopKey,
     carriers,
     lastCarrier: typeof record.lastCarrier === 'string' ? record.lastCarrier : null,
+    ...(typeof record.lastUrl === 'string' ? { lastUrl: record.lastUrl } : {}),
     counter: Math.max(Number.isSafeInteger(record.counter) ? record.counter : 0, counter),
   };
 }

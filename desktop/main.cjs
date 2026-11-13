@@ -29,6 +29,7 @@ const SHELL_STARTED = Date.now();
 // start fails (non-zero). With PLENUM_SMOKE_CRASH_SERVER=1 too, the first server is ended once after the page has loaded and the app ends
 // 0 only after the server was started again and the page reconnected. Anything less than all three conditions is the normal app.
 const SMOKE = smokeMode(process.env);
+const BACKGROUND = process.argv.includes('--background');
 
 // This launch's token. Every request to the server's /api/ must carry it (lib/auth.mjs). It is made once per launch of the app, so
 // a server restart after an applied update keeps it and an open window keeps working. It goes to the server over the keys channel,
@@ -290,6 +291,9 @@ function serverEnv() {
   for (const name of Object.keys(env)) {
     if (name.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete env[name];
   }
+  // The second look for a CLI that was installed while Plenum runs (lib/platform/winpath.mjs) is on only for the server this app
+  // starts. Never in smoke mode: a test must only ever see the PATH it was given. A value that is already set (0 turns it off) stays.
+  if (process.platform === 'win32' && !SMOKE && !Object.keys(env).some(name => name.toUpperCase() === 'PLENUM_PATH_REFRESH')) env.PLENUM_PATH_REFRESH = '1';
   return env;
 }
 
@@ -677,7 +681,10 @@ function createWindow() {
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs'), spellcheck: false, ...(SMOKE ? { backgroundThrottling: false } : {}) },
   });
   win.once('ready-to-show', () => {
-    if (!SMOKE) win.show();
+    if (SMOKE) return;
+    // Started with Windows (--background): stay in the tray until the person opens Plenum; without a tray, show the window.
+    if (BACKGROUND && ensureTray()) return;
+    win.show();
   });
   // The page publishes its background as its theme colour. The window buttons follow it, so they
   // stay readable when Windows changes theme or the Theme button overrides it. Electron has the overlay on Windows and Linux only

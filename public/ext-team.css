@@ -1,0 +1,112 @@
+/* Settings > Agents > Team (public/ext-team.js). Every colour, size, radius and time is a token from style.css, so both themes follow;
+   nothing is set inline. One calm card on a 16 px rhythm: the parts are set off by a hairline, each kind of work is one hairline box
+   with separators, and there is one primary button (Use this team). Nothing moves; colours change in 120 ms. */
+
+.team-root, .team-main { display: grid; gap: var(--sp-4); min-width: 0; }
+.team-root [hidden] { display: none !important; }
+.team-root[aria-busy="true"] { cursor: progress; }
+.team-save:empty, .team-note:empty { display: none; }
+
+/* The paragraphs carry the section's class twice over, so the card's own paragraph rule (.card p) does not set their size and colour. */
+.team-root .team-line, .team-root .team-note, .team-root .team-empty, .team-root .team-kind-about { margin: 0; font-size: var(--fs-small); line-height: var(--lh-body); color: var(--muted); overflow-wrap: anywhere; }
+.team-root .team-line { font-size: var(--fs-body); color: var(--text-2); }
+.team-bad { color: var(--bad) !important; }
+.team-retry { justify-self: start; }
+.team-save { font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--muted); overflow-wrap: anywhere; }
+.team-root .switch-row + .team-save { margin-top: calc(-1 * var(--sp-2)); }
+.team-root .switch-row small { display: block; color: var(--muted); font-size: var(--fs-small); }
+
+/* What the person should know now (the server's hints, and the line under the switch about kinds with no model): one flat amber note. */
+.team-alerts, .team-root .team-warn {
+  display: grid; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--warn) 36%, var(--line));
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); min-width: 0;
+}
+.team-root .team-alert, .team-root .team-warn { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--text); overflow-wrap: anywhere; }
+
+/* A part of the card: a hairline above it and a small title. */
+.team-sec, .team-more { display: grid; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
+.team-sub { margin: 0; font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+
+/* The suggested team: the kind, then its models in order. */
+.team-sugg-list, .team-facts, .team-usage-list, .team-models, .team-workers { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.team-sugg-list { display: grid; gap: var(--sp-2); }
+.team-sugg-row { display: flex; align-items: baseline; gap: var(--sp-3); font-size: var(--fs-body); line-height: var(--lh-ui); min-width: 0; }
+.team-sugg-kind { flex: 0 0 72px; color: var(--text-2); font-weight: 600; }
+.team-sugg-models { flex: 1 1 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.team-facts { display: grid; gap: var(--sp-1); }
+.team-fact { font-size: var(--fs-small); line-height: var(--lh-body); color: var(--muted); overflow-wrap: anywhere; }
+.team-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+
+/* One kind of work: its name and what it is for, the workers in order, then Add. */
+.team-kinds { display: grid; gap: var(--sp-5); min-width: 0; }
+.team-kind { display: grid; gap: var(--sp-2); min-width: 0; }
+.team-kind-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); min-width: 0; }
+.team-kind-name { margin: 0; font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.team-kind-type { font-size: var(--fs-small); color: var(--muted); }
+.team-root .team-kind-about { margin-top: calc(-1 * var(--sp-1)); }
+
+.team-workers { border: 1px solid var(--line); border-radius: var(--r-md); }
+.team-worker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3); border-top: 1px solid var(--line); min-width: 0; }
+.team-worker:first-child { border-top: 0; }
+.team-rank { flex: none; min-width: 2ch; font-size: var(--fs-small); color: var(--muted); font-variant-numeric: tabular-nums; }
+.team-wmain, .team-mmain { flex: 1 1 180px; display: grid; gap: 2px; min-width: 0; }
+.team-wtop { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); min-width: 0; }
+.team-wname { font-size: var(--fs-body); font-weight: 500; line-height: var(--lh-ui); color: var(--text); overflow-wrap: anywhere; }
+.team-wmeta { font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--muted); overflow-wrap: anywhere; }
+.team-wstate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--text-2); min-width: 0; }
+.team-wwhy { color: var(--muted); overflow-wrap: anywhere; }
+
+/* The state dot. Green can run now; amber needs the person (a sign-in, a key) or waits for a plan to reset; red cannot run here. */
+.team-dot { flex: none; align-self: center; width: 8px; height: 8px; border-radius: var(--r-full); background: var(--muted); }
+.team-worker[data-state="ready"] .team-dot { background: var(--ok); }
+.team-worker[data-state="sign-in"] .team-dot, .team-worker[data-state="no-key"] .team-dot, .team-worker[data-state="limit"] .team-dot { background: var(--warn); }
+.team-worker[data-state="not-offered"] .team-dot, .team-worker[data-state="not-installed"] .team-dot { background: var(--bad); }
+
+/* Reorder and Remove. The down arrow is the up arrow turned round. */
+.team-wacts { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.team-act-down .ic { rotate: 180deg; }
+.team-act:disabled { color: var(--faint); background: transparent; cursor: default; }
+.team-remove {
+  height: var(--ctl-sm); padding: 0 var(--sp-2); border: 1px solid transparent; border-radius: var(--r-md); background: transparent;
+  color: var(--muted); font: var(--fs-body) var(--ui); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.team-remove:hover { background: var(--fill-2); color: var(--text); }
+.team-remove:active { background: var(--fill-3); }
+.team-act:focus-visible, .team-remove:focus-visible, .team-addgo:focus-visible, .team-select:focus-visible, .team-more summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Add a model (the menu chooses, the button adds), and the size of a model: the app's field. */
+.team-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+.team-select {
+  height: var(--ctl); min-width: 0; max-width: 100%; padding: 0 10px; border: 1px solid var(--line-2); border-radius: var(--r-md);
+  background-color: var(--bg); color: var(--text); font: var(--fs-body) var(--ui);
+}
+.team-select:hover { border-color: var(--line-3); }
+.team-select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.team-add .team-select { flex: 0 1 300px; }
+.team-addgo { flex: none; }
+
+/* Delegated work for each subscription beside its plan use. */
+.team-use { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); line-height: var(--lh-ui); min-width: 0; }
+.team-use:first-child, .team-model:first-child { border-top: 0; padding-top: 0; }
+.team-use-name { flex: 0 0 112px; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.team-use-work { flex: 1 1 160px; min-width: 0; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.team-use-plan { flex: none; display: inline-flex; align-items: center; gap: var(--sp-2); margin-left: auto; color: var(--muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.team-meter { appearance: none; -webkit-appearance: none; flex: none; width: 56px; height: 4px; border: 0; border-radius: var(--r-full); background: var(--surface-3); overflow: hidden; }
+.team-meter::-webkit-progress-bar { background: var(--surface-3); border-radius: var(--r-full); }
+.team-meter::-webkit-progress-value { background: var(--accent); border-radius: var(--r-full); }
+.team-meter[data-full="yes"]::-webkit-progress-value { background: var(--warn); }
+
+/* Other models and sizes. A details element does not lay its content out as a grid, so the rhythm is set on the children. */
+.team-more { display: block; }
+.team-more > :not(summary) { margin: var(--sp-3) 0 0; }
+.team-more summary { cursor: pointer; width: fit-content; border-radius: var(--r-sm); font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text-2); }
+.team-more summary:hover { color: var(--text); }
+.team-model { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--line); min-width: 0; }
+.team-size { flex: none; margin-left: auto; }
+
+/* Models billed per token. */
+.team-api { gap: var(--sp-2); }
+
+/* The row of Use this team takes no room while it has neither the button nor a word to say. */
+.team-actions:not(:has(> button:not([hidden]))):has(> .team-save:empty) { display: none; }

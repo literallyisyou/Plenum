@@ -749,6 +749,10 @@ html[data-surface="phone"] .approval-actions > .hint { order: 3; flex: 1 1 100%;
 html[data-surface="phone"] .approval[data-ph-arming] .approval-actions > button:not(.ph-again),
 html[data-surface="phone"] .approval[data-ph-arming] .ph-scope-btn:not(.ph-again) { opacity: 0.6; }
 
+/* The buttons' own fade of opacity (style.css, 120 ms) is off here: the arming and the fill below happen at once, not after a fade, and a
+   test or a person reading the button 120 ms after the tap sees it full. */
+html[data-surface="phone"] .approval-actions > button,
+html[data-surface="phone"] .ph-scope-btn { transition-property: background-color, border-color, color, box-shadow; }
 /* An ignored tap: the button fills at once and reads "Tap again" (P-34). */
 html[data-surface="phone"] .approval-actions > button.ph-again,
 html[data-surface="phone"] .ph-scope-btn.ph-again {

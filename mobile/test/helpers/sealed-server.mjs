@@ -27,6 +27,10 @@ import { randomBytes } from 'node:crypto';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
+// No suite may reach the owner's real Tailscale, however it is started: a Bridge made in this process (makeBridge) loads the real carrier
+// module, which would otherwise find C:\Program Files\Tailscale\tailscale.exe. A test that wants a CLI passes a stand-in (options.locate).
+process.env.PLENUM_TAILSCALE_CLI = 'off';
+
 export const APP_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -434,6 +438,7 @@ export async function startSealedServer(options = {}) {
     MUSE_CONSOLE_NO_FALLBACK: '1',
     MUSE_CONSOLE_APP_ROOT: appRoot,
     MOBILE_SEALED: '1',
+    PLENUM_TAILSCALE_CLI: 'off', // a sealed server never finds the owner's real Tailscale (a test that switched the carrier on used to run it)
     ANTHROPIC_BASE_URL: mock ? mock.url : 'http://127.0.0.1:9',
     ...(mock ? { ANTHROPIC_API_KEY: 'sk-test-mock-not-real' } : {}),
     ...(loopbackHint ? { PLENUM_REMOTE_LOOPBACK_HINT: '1' } : {}),

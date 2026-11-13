@@ -2680,9 +2680,26 @@ function usableCarriers(carriers) {
   }
   return out;
 }
+function isPrivateUrl(url) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return !1;
+  }
+  let v4 = ipv4Of(host);
+  return v4 ? v4[0] === 127 || isPrivateV4(v4) : host === "[::1]" || isPrivateV6(host);
+}
+function dialOrder(carriers, { lastCarrier = null, lastUrl = null, network = null } = {}) {
+  let all = [];
+  for (let c of usableCarriers(carriers))
+    for (let url of c.urls) all.push({ kind: c.kind, url });
+  let rank = (c) => c.url === lastUrl ? 0 : c.kind === lastCarrier ? 1 : 2, away = (c) => network === "cellular" && c.url.startsWith("ws:") && isPrivateUrl(c.url) ? 1 : 0;
+  return all.sort((a, b) => away(a) - away(b) || rank(a) - rank(b));
+}
 
 // mobile/shell/channel.worker.js
-var PROTOCOL = "1.0", DELAYS_MS = Object.freeze([1e3, 2e3, 4e3, 8e3]), RETRY_CAP_MS = 1e4, OFFLINE_ROUNDS = 3, CONNECT_TIMEOUT_MS = 6e3, HANDSHAKE_TIMEOUT_MS = 6e3, COUNTER_TIMEOUT_MS = 1e4, STOP_WINDOW_MS = 6e4, STOP_RESEND_MS = 8e3, RENEW_AFTER_MS = 36e5, RENEW_AFTER_MESSAGES = 1048576, RENEW_CHECK_MS = 6e4, RENEW_DRAIN_MS = 6e4, NOT_KNOWN_ROUNDS = 3, NOT_KNOWN_RETRY_MS = 6e4, ASLEEP_SLOW_AFTER_ROUNDS = 3, ASLEEP_RETRY_MS = 6e4, PING_INTERVAL_MS2 = 25e3, PING_MISSES = 2, PROBE_MS = 3e3, DEFAULT_CAPS = Object.freeze(["ui-from-desktop", "artifacts-iframe", "push-none", "share", "save"]), CARRIERS2 = Object.freeze(["lan", "tailscale", "relay"]), STOP_ONLY_WAIT_MS = 6e3, MAX_SOCKET_MESSAGE = 65599, PAGE_HEADERS = Object.freeze(["accept", "content-type", "x-plenum-client-id"]), SHELL_HEADERS = Object.freeze([...PAGE_HEADERS, "x-plenum-notify-line"]), SHELL_BRIDGE_PATHS = Object.freeze(["/_bridge/log", "/_bridge/ui-manifest"]), TERMINAL = Object.freeze(["revoked", "update-app", "update-desktop", "closed"]), utf82 = new TextEncoder(), utf8Decode = new TextDecoder();
+var PROTOCOL = "1.0", DELAYS_MS = Object.freeze([1e3, 2e3, 4e3, 8e3]), RETRY_CAP_MS = 1e4, OFFLINE_ROUNDS = 3, CONNECT_TIMEOUT_MS = 6e3, CONNECT_TIMEOUT_PRIVATE_MS = 2e3, DIAL_STAGGER_MS = 250, HANDSHAKE_TIMEOUT_MS = 6e3, COUNTER_TIMEOUT_MS = 1e4, STOP_WINDOW_MS = 6e4, STOP_RESEND_MS = 8e3, RENEW_AFTER_MS = 36e5, RENEW_AFTER_MESSAGES = 1048576, RENEW_CHECK_MS = 6e4, RENEW_DRAIN_MS = 6e4, NOT_KNOWN_ROUNDS = 3, NOT_KNOWN_RETRY_MS = 6e4, ASLEEP_SLOW_AFTER_ROUNDS = 3, ASLEEP_RETRY_MS = 6e4, PING_INTERVAL_MS2 = 25e3, PING_MISSES = 2, PROBE_MS = 3e3, DEFAULT_CAPS = Object.freeze(["ui-from-desktop", "artifacts-iframe", "push-none", "share", "save"]), CARRIERS2 = Object.freeze(["lan", "tailscale", "relay"]), STOP_ONLY_WAIT_MS = 6e3, MAX_SOCKET_MESSAGE = 65599, PAGE_HEADERS = Object.freeze(["accept", "content-type", "x-plenum-client-id"]), SHELL_HEADERS = Object.freeze([...PAGE_HEADERS, "x-plenum-notify-line"]), SHELL_BRIDGE_PATHS = Object.freeze(["/_bridge/log", "/_bridge/ui-manifest"]), TERMINAL = Object.freeze(["revoked", "update-app", "update-desktop", "closed"]), utf82 = new TextEncoder(), utf8Decode = new TextDecoder();
 function b64uToBytes(text) {
   let s = String(text).replace(/-/g, "+").replace(/_/g, "/"), bin = atob(s + "=".repeat((4 - s.length % 4) % 4)), out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -2716,7 +2733,8 @@ function failureName(err) {
   return /timeout|timed out/i.test(text) ? "timeout" : /closed|close/i.test(text) ? "closed" : /counter/i.test(text) ? "counter" : "error";
 }
 function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
-  return new Promise((resolve, reject) => {
+  let cancel = () => {
+  }, opened = new Promise((resolve, reject) => {
     let settled = !1, openTimer = null, ws = null, closeInfo = null, handler = null, onCloseFn = null, waiter = null, queue = [], fail2 = (err) => {
       settled || (settled = !0, clock.clearTimeout(openTimer), reject(err));
     }, sock = {
@@ -2757,6 +2775,13 @@ function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIMEOUT_MS 
         });
       }
     };
+    cancel = () => {
+      fail2(new Error("lost"));
+      try {
+        ws?.close(1e3, "lost");
+      } catch {
+      }
+    };
     try {
       ws = new WebSocketImpl(url);
     } catch (err) {
@@ -2794,6 +2819,7 @@ function openSocket(WebSocketImpl, url, { clock, timeoutMs = CONNECT_TIMEOUT_MS 
     }), ws.addEventListener("error", () => {
     });
   });
+  return opened.cancel = () => cancel(), opened;
 }
 function requestPolicy(msg) {
   let scope = msg?.scope === "shell" ? "shell" : "page", path = String(msg?.path || "/"), pathname;
@@ -2819,7 +2845,7 @@ function requestPolicy(msg) {
 function createChannelCore(options = {}) {
   let post = options.post;
   if (typeof post != "function") throw new TypeError("createChannelCore needs post(message, transfer)");
-  let WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket, clock = options.clock ?? systemClock(), random = options.random ?? defaultRandom2, computer = null, phase = "idle", session = null, desktopName = "", lastSeen = null, since = clock.now(), failedRounds = 0, retryTimer = null, nextRetryAt = null, attempting = !1, renewTimer = null, lastFailure = null, closedByPage = !1, pairing = null, ridSeq = 0, rids = /* @__PURE__ */ new Map(), pendingStops = /* @__PURE__ */ new Map(), draining = /* @__PURE__ */ new Set(), unknownRounds = 0, transition = (next) => {
+  let WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket, clock = options.clock ?? systemClock(), random = options.random ?? defaultRandom2, getNetwork = options.getNetwork ?? (() => globalThis.navigator?.connection?.type ?? null), computer = null, phase = "idle", session = null, desktopName = "", lastSeen = null, since = clock.now(), failedRounds = 0, retryTimer = null, nextRetryAt = null, attempting = !1, dialing = null, renewTimer = null, lastFailure = null, closedByPage = !1, pairing = null, ridSeq = 0, rids = /* @__PURE__ */ new Map(), pendingStops = /* @__PURE__ */ new Map(), draining = /* @__PURE__ */ new Set(), unknownRounds = 0, transition = (next) => {
     next !== phase && (phase = next, since = clock.now());
   }, snapshot = () => ({
     status: phase,
@@ -2854,8 +2880,8 @@ function createChannelCore(options = {}) {
       throw new Error("counter not saved");
     return answer.counter;
   }
-  async function handshake(kind, url, opts) {
-    let sock = await openSocket(WebSocketImpl, url, { clock });
+  async function handshake(kind, url, opts, opened = null) {
+    let sock = opened ?? await openSocket(WebSocketImpl, url, { clock });
     try {
       let payload = await opts.payloadFor(), hs = handshakeInitiator({
         staticPrivate: opts.myPriv,
@@ -3019,10 +3045,66 @@ function createChannelCore(options = {}) {
     }
   }
   function carrierCandidates(comp) {
-    let out = [];
-    for (let c of usableCarriers(comp.carriers))
-      for (let url of c.urls) out.push({ kind: c.kind, url });
-    return [...out.filter((c) => c.kind === comp.lastCarrier), ...out.filter((c) => c.kind !== comp.lastCarrier)];
+    let network = null;
+    try {
+      network = getNetwork();
+    } catch {
+    }
+    return dialOrder(comp.carriers, { lastCarrier: comp.lastCarrier, lastUrl: comp.lastUrl ?? null, network });
+  }
+  function raceOpen(candidates, scope) {
+    return new Promise((resolve) => {
+      let running = /* @__PURE__ */ new Map(), failed = [], next = 0, timer = null, over = !1, end = (winner) => {
+        if (over) return;
+        over = !0, clock.clearTimeout(timer), timer = null, scope.cancel = null;
+        let left = candidates.filter((c) => c !== winner?.candidate && !failed.some((f) => f.candidate === c));
+        for (let open of running.values()) open.cancel();
+        running.clear(), resolve({ winner, failed, left });
+      }, start = () => {
+        if (clock.clearTimeout(timer), timer = null, over || next >= candidates.length) return;
+        let candidate = candidates[next++], open = openSocket(WebSocketImpl, candidate.url, {
+          clock,
+          timeoutMs: isPrivateUrl(candidate.url) ? CONNECT_TIMEOUT_PRIVATE_MS : CONNECT_TIMEOUT_MS
+        });
+        running.set(candidate, open), open.then((sock) => {
+          over || (running.delete(candidate), end({ candidate, sock }));
+        }, (err) => {
+          over || (running.delete(candidate), failed.push({ candidate, err }), next < candidates.length ? start() : running.size || end(null));
+        }), next < candidates.length && (timer = clock.setTimeout(start, DIAL_STAGGER_MS));
+      };
+      scope.cancel = () => end(null), start();
+    });
+  }
+  async function raceCandidates(candidates, scope, tryOne, { before = null } = {}) {
+    let fails = [], left = candidates.slice();
+    for (; left.length && !scope.stopped; ) {
+      if (before) {
+        try {
+          await before();
+        } catch {
+          return { won: null, fails, blocked: !0 };
+        }
+        if (scope.stopped) break;
+      }
+      let race = await raceOpen(left, scope);
+      for (let f of race.failed) fails.push({ candidate: f.candidate, err: f.err, code: null });
+      if (!race.winner) break;
+      left = race.left;
+      let { candidate, sock } = race.winner;
+      if (scope.stopped) {
+        sock.close(1e3, "lost");
+        break;
+      }
+      try {
+        return { won: await tryOne(candidate, sock), fails, blocked: !1 };
+      } catch (err) {
+        fails.push({ candidate, err, code: sock.closed?.code ?? null });
+      }
+    }
+    return { won: null, fails, blocked: !1 };
+  }
+  function stopDial(scope) {
+    scope && (scope.stopped = !0, scope.cancel?.());
   }
   function clearRetry() {
     clock.clearTimeout(retryTimer), retryTimer = null, nextRetryAt = null;
@@ -3036,7 +3118,7 @@ function createChannelCore(options = {}) {
       });
     }, delay), emitState();
   }
-  async function connectSession(candidate, comp) {
+  async function connectSession(candidate, comp, opened = null) {
     let { sock, cs, message2 } = await handshake(candidate.kind, candidate.url, {
       remotePub: comp.desktopPub,
       myPriv: comp.myPriv,
@@ -3046,7 +3128,7 @@ function createChannelCore(options = {}) {
         let counter = await raiseCounter(comp.id, comp.counter);
         return comp.counter = counter, { v: PROTOCOL, kind: "session", counter, device: comp.device, caps: comp.caps, ...comp.hasStopKey ? {} : { wantStopKey: !0 } };
       }
-    }), s = makeSession({ sock, cs, kind: candidate.kind, url: candidate.url });
+    }, opened), s = makeSession({ sock, cs, kind: candidate.kind, url: candidate.url });
     try {
       s.hello = JSON.parse(utf8Decode.decode(message2));
     } catch {
@@ -3063,20 +3145,24 @@ function createChannelCore(options = {}) {
           lastFailure = "no-carrier", unknownRounds = 0, failedRounds += 1, scheduleRetry();
           return;
         }
+        dialing = { stopped: !1, cancel: null };
+        let round = await raceCandidates(candidates, dialing, (candidate, sock) => connectSession(candidate, computer, sock));
+        if (dialing = null, closedByPage || TERMINAL.includes(phase)) {
+          round.won && (round.won.retired = !0, round.won.frames.close("normal"));
+          return;
+        }
+        if (round.won) {
+          adopt(round.won);
+          return;
+        }
         let reasons = [];
         for (let candidate of candidates) {
-          if (closedByPage || TERMINAL.includes(phase)) return;
-          try {
-            let s = await connectSession(candidate, computer);
-            adopt(s);
-            return;
-          } catch (err) {
-            lastFailure = failureName(err), reasons.push(lastFailure);
-          }
+          let fail2 = round.fails.find((f) => f.candidate === candidate);
+          fail2 && reasons.push(failureName(fail2.err));
         }
-        unknownRounds = reasons.includes("unknown") && reasons.every((r) => r === "unknown" || !CODED_FAILURES.includes(r)) ? unknownRounds + 1 : 0, failedRounds += 1, unknownRounds >= NOT_KNOWN_ROUNDS ? transition("not-known") : reasons.includes("host-offline") ? transition("asleep") : (phase === "not-known" || phase === "asleep") && transition("reconnecting"), scheduleRetry();
+        reasons.length && (lastFailure = reasons.at(-1)), unknownRounds = reasons.includes("unknown") && reasons.every((r) => r === "unknown" || !CODED_FAILURES.includes(r)) ? unknownRounds + 1 : 0, failedRounds += 1, unknownRounds >= NOT_KNOWN_ROUNDS ? transition("not-known") : reasons.includes("host-offline") ? transition("asleep") : (phase === "not-known" || phase === "asleep") && transition("reconnecting"), scheduleRetry();
       } finally {
-        attempting = !1;
+        attempting = !1, dialing = null;
       }
     }
   }
@@ -3087,7 +3173,7 @@ function createChannelCore(options = {}) {
       transition(major > 1 ? "update-app" : "update-desktop"), s.frames.close(major > 1 ? "update-app" : "update-desktop"), emitState();
       return;
     }
-    transition("connected"), computer.lastCarrier = s.carrier, topUpStopKey(s), learnWays(s.hello), post({ op: "hello", hello: s.hello }), post({ op: "patch", id: computer.id, patch: { lastCarrier: s.carrier, lastSeen } }), s.frames.startLiveness({ intervalMs: PING_INTERVAL_MS2, misses: PING_MISSES });
+    transition("connected"), computer.lastCarrier = s.carrier, computer.lastUrl = s.url, topUpStopKey(s), learnWays(s.hello), post({ op: "hello", hello: s.hello }), post({ op: "patch", id: computer.id, patch: { lastCarrier: s.carrier, lastUrl: s.url, lastSeen } }), s.frames.startLiveness({ intervalMs: PING_INTERVAL_MS2, misses: PING_MISSES });
     for (let entry of pendingStops.values()) sendStop(entry);
     scheduleRenewCheck(RENEW_CHECK_MS), emitState();
   }
@@ -3218,10 +3304,11 @@ function createChannelCore(options = {}) {
     let comp = {
       id: c.id,
       carriers: Array.isArray(c.carriers) ? c.carriers : [],
-      lastCarrier: typeof c.lastCarrier == "string" ? c.lastCarrier : null
-    }, counter = Number.isSafeInteger(c.counter) && c.counter >= 0 ? c.counter : 0, stopId = random(16), done = !1, windowTimer = null, sleepTimer = null, wake = null, activeSock = null, finish = (detail) => {
+      lastCarrier: typeof c.lastCarrier == "string" ? c.lastCarrier : null,
+      lastUrl: typeof c.lastUrl == "string" ? c.lastUrl : null
+    }, counter = Number.isSafeInteger(c.counter) && c.counter >= 0 ? c.counter : 0, stopId = random(16), done = !1, windowTimer = null, sleepTimer = null, wake = null, activeSock = null, dial = null, finish = (detail) => {
       if (!done) {
-        done = !0, clock.clearTimeout(windowTimer), clock.clearTimeout(sleepTimer);
+        done = !0, clock.clearTimeout(windowTimer), clock.clearTimeout(sleepTimer), stopDial(dial);
         try {
           activeSock?.close(1e3, "stopped");
         } catch {
@@ -3231,33 +3318,32 @@ function createChannelCore(options = {}) {
     }, sleep = (ms) => new Promise((resolve) => {
       wake = resolve, sleepTimer = clock.setTimeout(resolve, ms);
     });
-    for (windowTimer = clock.setTimeout(() => finish({ error: "unreachable" }), STOP_WINDOW_MS), post({ op: "stopState", sid, state: "sending" }); !done; ) {
-      let candidates = carrierCandidates(comp), unknown = candidates.length > 0;
-      for (let candidate of candidates) {
-        if (done) return;
-        let sock = null;
-        try {
-          if (counter = await raiseCounter(comp.id, counter), done) return;
-          if (sock = await openSocket(WebSocketImpl, candidate.url, { clock }), activeSock = sock, done) {
-            sock.close(1e3, "stopped");
-            return;
-          }
-          sock.send(encodeStopOnly({ stopKey: key, deviceId: c.deviceId, counter, stopId }));
-          let first = await sock.next(STOP_ONLY_WAIT_MS);
-          if (done) return;
-          let ack = decodeStopAck(key, first, stopId);
-          if (sock.close(1e3, "done"), activeSock = null, ack) {
-            finish({ ack: { id: bytesToHex3(stopId), ...ack } });
-            return;
-          }
-          unknown = !1;
-        } catch {
-          if (sock && sock.close(1e3, "stop"), activeSock = null, done) return;
-          sock?.closed?.code !== 4401 && (unknown = !1);
-        }
+    windowTimer = clock.setTimeout(() => finish({ error: "unreachable" }), STOP_WINDOW_MS), post({ op: "stopState", sid, state: "sending" });
+    let sendOn = async (candidate, sock) => {
+      activeSock = sock;
+      try {
+        sock.send(encodeStopOnly({ stopKey: key, deviceId: c.deviceId, counter, stopId }));
+        let first = await sock.next(STOP_ONLY_WAIT_MS), ack = done ? null : decodeStopAck(key, first, stopId);
+        if (!ack) throw new Error("no ack");
+        return ack;
+      } finally {
+        sock.close(1e3, "stop"), activeSock === sock && (activeSock = null);
       }
-      if (done) return;
-      if (unknown) {
+    };
+    for (; !done; ) {
+      let candidates = carrierCandidates(comp);
+      dial = { stopped: !1, cancel: null };
+      let round = await raceCandidates(candidates, dial, sendOn, {
+        before: async () => {
+          counter = await raiseCounter(comp.id, counter);
+        }
+      });
+      if (dial = null, done) return;
+      if (round.won) {
+        finish({ ack: { id: bytesToHex3(stopId), ...round.won } });
+        return;
+      }
+      if (candidates.length > 0 && !round.blocked && round.fails.length === candidates.length && round.fails.every((f) => f.code === 4401)) {
         finish({ error: "unknown" });
         return;
       }
@@ -3372,6 +3458,7 @@ function createChannelCore(options = {}) {
         myPriv: asKey(c.myPriv),
         carriers: Array.isArray(c.carriers) ? c.carriers : [],
         lastCarrier: typeof c.lastCarrier == "string" ? c.lastCarrier : null,
+        lastUrl: typeof c.lastUrl == "string" ? c.lastUrl : null,
         counter: Number.isSafeInteger(c.counter) && c.counter >= 0 ? c.counter : 0,
         device: msg.device && typeof msg.device == "object" ? msg.device : {},
         caps: Array.isArray(msg.caps) ? msg.caps : DEFAULT_CAPS,
@@ -3386,7 +3473,7 @@ function createChannelCore(options = {}) {
   }
   function closeChannel() {
     if (closedByPage) return;
-    closedByPage = !0, clearRetry(), clock.clearTimeout(renewTimer), renewTimer = null;
+    closedByPage = !0, clearRetry(), stopDial(dialing), clock.clearTimeout(renewTimer), renewTimer = null;
     for (let entry of Array.from(pendingStops.values()))
       clearStop(entry), post({ op: "stopAck", sid: entry.sid, error: "closed" });
     pairing && cancelPairing();
@@ -3454,9 +3541,11 @@ export {
   ASLEEP_RETRY_MS,
   ASLEEP_SLOW_AFTER_ROUNDS,
   CONNECT_TIMEOUT_MS,
+  CONNECT_TIMEOUT_PRIVATE_MS,
   COUNTER_TIMEOUT_MS,
   DEFAULT_CAPS,
   DELAYS_MS,
+  DIAL_STAGGER_MS,
   HANDSHAKE_TIMEOUT_MS,
   MAX_SOCKET_MESSAGE,
   NOT_KNOWN_RETRY_MS,

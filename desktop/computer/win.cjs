@@ -876,31 +876,46 @@ function createWinNative({ koffi, ownPid = process.pid, wait = sleep, now = Date
   }
 
   // The name, help text and automation id of the focused element, joined with " | " (a one-time code box, a CVV box and the like say so
-  // there: IsPassword is false for them), or null when none can be read. One look, bounded by the same timeouts as the password question.
+  // there: IsPassword is false for them), or null when none can be read. Bounded by the same timeouts as the password question, and
+  // like it (uiaAnswer) an element that cannot be the field is looked at again after a short wait: a browser whose tree is not built
+  // yet answers with the pane around the page, and the pane's name is not the field's.
   async function focusedLabel() {
     try {
       const fg = api.GetForegroundWindow();
       if (isZero(fg) || pidOf(fg).pid === ownPid) return null;
       const u = uiaApi(koffi);
       if (!u || !u.readString) return null;
-      const auto = automationFor(u);
-      if (!auto) return null;
-      const out = [null];
-      if (u.call(auto, SLOT.GetFocusedElement, u.protos.outPointer, out) < 0 || !out[0]) return null;
-      const element = out[0];
-      try {
-        const parts = [];
-        for (const slot of [SLOT.get_CurrentName, SLOT.get_CurrentHelpText, SLOT.get_CurrentAutomationId]) {
-          const got = [null];
-          if (u.call(element, slot, u.protos.outPointer, got) >= 0 && got[0]) {
-            const text = u.readString(got[0]).trim();
-            if (text) parts.push(text);
-          }
+      const started = now();
+      let label = null;
+      for (let attempt = 0; attempt <= UIA_RETRY_GAPS_MS.length; attempt++) {
+        if (attempt > 0) {
+          if (now() - started + UIA_RETRY_GAPS_MS[attempt - 1] >= UIA_BUDGET_MS) break;
+          await wait(UIA_RETRY_GAPS_MS[attempt - 1]);
         }
-        return parts.length ? parts.join(' | ').slice(0, 600) : null;
-      } finally {
-        releaseCom(element);
+        const auto = automationFor(u);
+        if (!auto) break;
+        const out = [null];
+        if (u.call(auto, SLOT.GetFocusedElement, u.protos.outPointer, out) < 0 || !out[0]) break;
+        const element = out[0];
+        let again = false;
+        try {
+          const parts = [];
+          for (const slot of [SLOT.get_CurrentName, SLOT.get_CurrentHelpText, SLOT.get_CurrentAutomationId]) {
+            const got = [null];
+            if (u.call(element, slot, u.protos.outPointer, got) >= 0 && got[0]) {
+              const text = u.readString(got[0]).trim();
+              if (text) parts.push(text);
+            }
+          }
+          label = parts.length ? parts.join(' | ').slice(0, 600) : null;
+          const type = comInt(u, element, SLOT.get_CurrentControlType);
+          again = type !== null && !uiaTypeCanAnswer(type);
+        } finally {
+          releaseCom(element);
+        }
+        if (!again) break;
       }
+      return label;
     } catch {
       return null;
     }

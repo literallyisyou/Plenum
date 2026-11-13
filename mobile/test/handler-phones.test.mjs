@@ -431,14 +431,25 @@ describe('the encrypted store', () => {
     assert.equal(fs.readFileSync(`${file}.damaged-2`, 'utf8'), 'broken');
   });
 
-  test('a file that does not decrypt is damaged too', async () => {
+  test('a file that does not decrypt is "not now" for the first minute however often it is read, damaged after it, and set aside by the next save', async () => {
     const folder = freshFolder('nodecrypt');
     const file = path.join(folder, STORE_FILE);
     fs.writeFileSync(file, JSON.stringify({ version: 1, data: Buffer.from('plainly wrong').toString('base64') }));
-    const store = createStore({ file, getSafeStorage: () => fakeSafeStorage(), platform: 'win32', fs });
+    let now = 0;
+    const store = createStore({ file, getSafeStorage: () => fakeSafeStorage(), platform: 'win32', fs, monotonic: () => now });
+    for (let n = 0; n < 6; n++) {
+      const early = await store.load();
+      assert.equal(early.ok, false, 'a failed decryption can be the system, not the file');
+      assert.equal(early.storage, 'unavailable');
+      now += 100;
+    }
+    assert.equal(fs.existsSync(`${file}.damaged`), false);
+    now = 60_000;
     const loaded = await store.load();
     assert.equal(loaded.damaged, true);
     assert.equal(loaded.text, '');
+    assert.equal((await store.save(REGISTRY)).ok, true);
+    assert.ok(fs.existsSync(`${file}.damaged`), 'the file that could not be decrypted is kept under another name');
   });
 
   test('a locked file is refused on load and on save, and nothing is written over it', async () => {

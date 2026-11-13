@@ -1,10 +1,10 @@
-// Markdown and code colouring for chat messages. Loaded before app.js; defines md() and highlight().
+// Markdown and code colouring for chat messages. Loaded before app.js; defines md(), mdSplit() and highlight().
 //
 // Safety: replies are untrusted text. Every character of a reply is escaped before it is placed in
 // HTML, and the only tags that reach the page are the ones written in this file. Links are limited
 // to http and https. The scanners below work forwards through the text once, so hostile input
 // cannot make them stall.
-const { md, highlight } = (() => {
+const { md, mdSplit, highlight } = (() => {
   const esc = s => String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -522,12 +522,15 @@ const { md, highlight } = (() => {
     return { html: `<${tag}${ordered && from !== 1 ? ` start="${from}"` : ''}>${body}</${tag}>`, next: i };
   }
 
-  function blocks(lines, depth) {
+  // marks (optional, used by mdSplit for the top level only) receives two numbers for each block: the line it starts on and how much
+  // HTML was written before it.
+  function blocks(lines, depth, marks) {
     let html = '';
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
       if (!line.trim()) { i++; continue; }
+      if (marks) marks.push(i, html.length);
 
       const fence = fenceAt(line);
       if (fence) {
@@ -589,10 +592,39 @@ const { md, highlight } = (() => {
     return html;
   }
 
+  // Line ends become \n, the two characters inline() uses as its own marks are dropped, and a tab is four spaces.
+  const clean = src => String(src ?? '').replace(/\r\n?/g, '\n').replace(/[]/g, '').replace(/\t/g, '    ');
+
   function md(src) {
-    const text = String(src ?? '').replace(/\r\n?/g, '\n').replace(/[]/g, '').replace(/\t/g, '    ');
-    return blocks(text.split('\n'), 0);
+    return blocks(clean(src).split('\n'), 0);
   }
 
-  return { md, highlight };
+  // For text that is still arriving (a reply being streamed), or that is drawn a part at a time (a very long message): the same HTML
+  // as md(src), in two parts. `settled` is the HTML of the leading blocks that no later text can change, and `at` is how many
+  // characters of src they cover; `tail` is the HTML of the rest. So md(src) === settled + tail, and for any longer text that starts
+  // with src, md(longer) === settled + md(longer.slice(at)). The caller keeps `settled` on the page and parses only from `at` next time.
+  // Why a block is settled: the last line may still grow, and where a block ends can depend on the line after the next block's first
+  // line (a table is known by its divider row). So a block is settled once the block after it starts two lines or more before the last.
+  function mdSplit(src) {
+    const raw = String(src ?? '');
+    const lines = clean(raw).split('\n');
+    const marks = [];
+    const html = blocks(lines, 0, marks);
+    const last = lines.length - 1;
+    let line = 0;
+    let cut = 0;
+    for (let k = 2; k < marks.length && marks[k] <= last - 2; k += 2) {
+      line = marks[k];
+      cut = marks[k + 1];
+    }
+    // The place in src after that many line ends (\r\n counts as one, as it does in clean).
+    let at = 0;
+    if (line > 0) {
+      const ends = /\r\n?|\n/g;
+      for (let n = 0; n < line && ends.exec(raw); n++) at = ends.lastIndex;
+    }
+    return { at, settled: html.slice(0, cut), tail: html.slice(cut) };
+  }
+
+  return { md, mdSplit, highlight };
 })();

@@ -796,7 +796,7 @@ function onStartFailed(sh) {
 // Runs a kept installer silently and leaves it to finish after this app quits.
 function runInstaller(file) {
   try {
-    const child = require('node:child_process').spawn(file, ['/S', '--force-run'], { detached: true, stdio: 'ignore' });
+    const child = require('node:child_process').spawn(file, ['/S', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true });
     child.on?.('error', () => log('error: the kept installer could not be started'));
     child.unref?.();
   } catch (err) {

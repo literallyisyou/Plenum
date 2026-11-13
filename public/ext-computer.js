@@ -134,6 +134,8 @@
 
   api('/api/computer/probe')
     .then(probe => {
+      // The shortcut sheet (ext-drive.js) takes the stop key's label from this read instead of making its own.
+      window.dispatchEvent(new CustomEvent('plenum:computer-probe', { detail: { hotkey: probe?.hotkey ?? null } }));
       if (probe && probe.available === true) {
         MuseUI.slots.add('plusMenu', 'computer', { label: 'Use the computer…', icon: 'monitor', run: () => openComputer() }, 30);
         addComposerButton();

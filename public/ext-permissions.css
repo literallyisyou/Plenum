@@ -1,0 +1,68 @@
+/* ext-permissions: the Permissions control in the title bar, the sheet it opens, and the same panel in Settings > Safety. Colours are the
+   shared light and dark tokens only, so both themes follow the page. Tones follow UI-ARCH 9: amber is Fewer questions, red is Hands-off. */
+
+.perm-chip[data-preset="custom"] { color: var(--warn); }
+/* The title bar's fit ladder (style.css, app.js fitTitlebar): from step 2 the chip shows only the preset's name, as the Phone chip shows its short
+   word. The full words stay in its accessible name and its title. */
+#titlebar:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .perm-chip[data-short] { font-size: 0; gap: 0; }
+#titlebar:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .perm-chip[data-short]::after { content: attr(data-short); margin-left: 6px; font: 600 12px var(--ui); }
+
+/* ---------- the sheet (shown with show(), not showModal(), so the Approve all question and the drive Stop stay usable over it) ---------- */
+
+.perm-scrim { position: fixed; inset: 0; z-index: 25; background: var(--scrim); -webkit-app-region: no-drag; }
+.perm-scrim[hidden] { display: none; }
+dialog.perm-sheet {
+  position: fixed; inset: 0; z-index: 30; margin: auto; height: max-content; max-height: calc(100vh - 32px); overflow: auto;
+  width: min(560px, calc(100vw - 32px)); max-width: calc(100vw - 32px); box-sizing: border-box; padding: 20px;
+  border: 1px solid var(--line-2); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-2);
+}
+dialog.perm-sheet[hidden] { display: none; }
+dialog.perm-sheet:focus { outline: none; }
+.perm-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 8px; }
+.perm-sheet-title { margin: 0; font: 650 17px/1.3 var(--display); letter-spacing: -0.01em; color: var(--text); }
+.perm-lead { margin: 0 0 12px; font-size: 13.5px; line-height: 1.45; color: var(--text-2); }
+.perm-more { margin-top: 12px; }
+
+/* ---------- the panel ---------- */
+
+.perm-panel { display: grid; gap: 10px; min-width: 0; }
+.perm-status { margin: 0; font: 600 12.5px/1.4 var(--ui); color: var(--text-2); overflow-wrap: anywhere; }
+.perm-scopes { display: grid; gap: 2px; }
+.perm-scope { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; border-radius: 10px; cursor: pointer; }
+.perm-scope:hover { background: var(--surface-2); }
+.perm-scope input { flex: none; margin: 3px 0 0; accent-color: var(--accent); }
+.perm-scope input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.perm-scope:has(input:disabled) { cursor: default; opacity: 0.6; }
+.perm-scope-text { display: grid; gap: 1px; min-width: 0; }
+.perm-scope-text strong { font: 600 13px/1.3 var(--ui); color: var(--text); }
+.perm-scope-text small { font-size: 12px; line-height: 1.4; color: var(--muted); }
+
+.perm-card { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.perm-card[data-current="1"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.perm-card[data-preset="fewer"][data-current="1"] { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.perm-card[data-preset="hands"][data-current="1"] { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.perm-card-head { display: flex; align-items: center; gap: 8px; }
+.perm-card-name { margin: 0; font: 650 14px/1.3 var(--ui); color: var(--text); }
+.perm-card[data-preset="fewer"] .perm-card-name { color: var(--warn); }
+.perm-card[data-preset="hands"] .perm-card-name { color: var(--bad); }
+.perm-mark { padding: 1px 8px; border-radius: 999px; font: 600 11px/1.6 var(--ui); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.perm-mark[hidden] { display: none; }
+.perm-summary { margin: 0; font-size: 13px; line-height: 1.4; color: var(--text); }
+.perm-words, .perm-fields { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); }
+.perm-fields { font-size: 11.5px; color: var(--muted); }
+.perm-use { justify-self: start; margin-top: 2px; }
+.perm-use:disabled { opacity: 0.6; cursor: default; }
+.perm-use:focus-visible, .perm-more:focus-visible, .perm-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.perm-card[data-preset="hands"] .perm-use:not(:disabled) { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); color: var(--bad); }
+.perm-floor { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+
+@media (max-width: 560px) {
+  dialog.perm-sheet { padding: 16px; }
+  .perm-use { justify-self: stretch; min-height: 36px; }
+}
+
+.perm-question { color: var(--text); }
+.perm-changes { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.perm-changes[hidden] { display: none; }
+.perm-changes-head { margin: 0; font: 600 12px/1.4 var(--ui); color: var(--text-2); }
+.perm-changes-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; color: var(--text); }

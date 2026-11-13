@@ -32,6 +32,7 @@
 // capture { scope, target, maxEdge }, input { action }, focus { windowId }, overlay { show, displayId, rect, state, model, label }.
 // A result that is not an object, or that has an id or type of its own, travels under a name: windows -> { windows }, foreground ->
 // { foreground }, isSecureField -> { secure }, cursor (when unreadable) -> { value: null }. Nothing from a message is logged here, and typed text exists only in the call.
+// The reply to computer-probe also carries methods: the names of the requests this desktop answers.
 const geometry = require('./geometry.cjs');
 const { normalizeAction, pointsOf } = require('./actions.cjs');
 const { createSpace, createCapture } = require('./capture.cjs');
@@ -70,7 +71,9 @@ function withProtocol(backend) {
   async function call(method, message) {
     switch (method) {
       case 'probe':
-        return backend.probe();
+        // methods: every request this desktop answers, so a newer server can tell what an older desktop app cannot do (it asks for
+        // the name of the focused field before it types, and refuses to type where the desktop has no answer for it).
+        return { ...(await backend.probe()), methods: Object.keys(METHODS) };
       case 'windows':
         return { windows: await backend.windows({ all: message.all === true }) };
       case 'foreground':
@@ -412,10 +415,18 @@ function createComputerBackend(options = {}) {
       const s = build();
       if (s.error) return unavailable(s.error);
       try {
+        const rect = geometry.rectOk(opts.rect) ? { x: Math.round(opts.rect.x), y: Math.round(opts.rect.y), width: Math.round(opts.rect.width), height: Math.round(opts.rect.height) } : null;
+        // A rect with no display named (the server follows a window that moved) goes to the display that holds most of it.
+        const named = opts.displayId === undefined || opts.displayId === null ? null : String(opts.displayId);
+        const displays = rect && opts.show === true ? s.space.displays() : [];
+        const holder = named === null ? geometry.displayHolding(rect, displays) : displays.find(d => d.id === named) ?? null;
+        // The frame goes around the part of the window that is on that display, which is what the capture shows: a maximised window
+        // reaches a few pixels past the display's edges, and a frame drawn there would be off the screen or on the display beside it.
+        const onDisplay = rect && holder ? geometry.cropRect(rect, holder.bounds) ?? rect : rect;
         const clean = {
           show: opts.show === true,
-          displayId: opts.displayId === undefined || opts.displayId === null ? null : String(opts.displayId),
-          rect: geometry.rectOk(opts.rect) ? { x: Math.round(opts.rect.x), y: Math.round(opts.rect.y), width: Math.round(opts.rect.width), height: Math.round(opts.rect.height) } : null,
+          displayId: named ?? holder?.id ?? null,
+          rect: onDisplay,
           state: opts.state === 'paused' ? 'paused' : 'running',
           model: typeof opts.model === 'string' ? opts.model : '',
           label: typeof opts.label === 'string' ? opts.label : '',
@@ -462,4 +473,4 @@ function createComputerBackend(options = {}) {
   return Object.assign(api, withProtocol(api), { isFake: false });
 }
 
-module.exports = { createComputerBackend, withProtocol, ELEVATED_MESSAGE, ELEVATED_POINT_MESSAGE };
+module.exports = { createComputerBackend, withProtocol, METHODS, ELEVATED_MESSAGE, ELEVATED_POINT_MESSAGE };

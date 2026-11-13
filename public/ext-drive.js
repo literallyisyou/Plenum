@@ -482,6 +482,65 @@
   // The project name changes on every redraw of the title bar, which can change the "in <project>" words.
   new MutationObserver(paint).observe(MuseUI.el.projName, { childList: true, characterData: true, subtree: true });
 
+  // ---------- the stop key on the shortcut sheet (Ctrl+/) ----------
+
+  // The emergency stop key works from any app, so it is listed with the other keys. Only the desktop app registers it. The label is the one the
+  // start card shows: the server makes it from the person's own stop key (Control+Option+Esc on a Mac), and the probe route carries it.
+  const STOP_KEY_WAIT_MS = 4000;
+  const stopRow = { keys: [], action: 'Stop a computer or browser run from any app.' };
+  let stopRowListed = false;
+  let stopKeyReading = false;
+  let stopKeyTimer = null;
+
+  // Lists the row for a label such as "Ctrl+Alt+Esc". Anything else is left out.
+  function useStopKeyLabel(label) {
+    const parts = String(label ?? '').split('+').map(p => p.trim()).filter(Boolean);
+    if (!parts.length || parts.length > 5 || parts.some(p => p.length > 20)) return;
+    stopRow.keys = parts;
+    if (!stopRowListed) {
+      stopRowListed = true;
+      (window.MuseShortcutRows = window.MuseShortcutRows || []).push(stopRow);
+    }
+  }
+
+  async function loadStopKey() {
+    if (stopKeyReading) return;
+    stopKeyReading = true;
+    try {
+      const probe = await MuseUI.api('/api/computer/probe');
+      useStopKeyLabel(probe?.hotkey?.label);
+    } catch {
+      // The sheet is read each time it opens; without the label the row is left out, and the next connection tries again.
+    } finally {
+      stopKeyReading = false;
+    }
+  }
+
+  // The read waits a few seconds, so it never competes with the start of the page, and several calls close together make one read.
+  function readStopKeySoon(again) {
+    if (!window.plenumShell && document.documentElement?.dataset?.shell !== 'desktop') return;
+    if (!again && stopRowListed) return; // the Computer panel's read already gave the label
+    clearTimeout(stopKeyTimer);
+    stopKeyTimer = setTimeout(loadStopKey, STOP_KEY_WAIT_MS);
+  }
+
+  // The Computer panel reads the same route once at load and hands the key on, so the first read here is not needed (a reconnect still reads).
+  // The row shows at once and the waiting read is dropped.
+  let probeAt = 0;
+  window.addEventListener('plenum:computer-probe', ev => {
+    if (!window.plenumShell && document.documentElement?.dataset?.shell !== 'desktop') return;
+    if (!ev.detail?.hotkey?.label) return;
+    useStopKeyLabel(ev.detail.hotkey.label);
+    if (stopRowListed) {
+      probeAt = Date.now();
+      clearTimeout(stopKeyTimer);
+    }
+  });
+
+  // A reconnect reads the key again, so a stop key the person changed shows without a restart.
+  // A hello right after the Computer panel's read is the page's own start, which that read covers; any other is a reconnect.
+  MuseUI.events.on('hello', () => readStopKeySoon(Date.now() - probeAt > 10000));
+
   paint();
-  (MuseUI.ready ?? Promise.resolve()).then(load);
+  (MuseUI.ready ?? Promise.resolve()).then(load).then(() => readStopKeySoon(false));
 })();

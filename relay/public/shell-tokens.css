@@ -1,56 +1,149 @@
 :root {
   color-scheme: light dark;
 
-  /* Surfaces, from the page background up to the most raised. The two --bg values are repeated
-     in app.js (the window colour the desktop app picks up) and in desktop/main.cjs. */
+  /* Surfaces, from the page background up to the most raised. The two values of the page background are repeated
+     in app.js (the window colour the desktop app picks up) and in desktop/main.cjs: they do not change here alone.
+     Light: a soft grey page with white cards. Dark: a near-black page, and each layer above it is lighter.
+     Against the values before the refresh, a surface never moved toward the text and a text colour never moved toward
+     the surface, so no pair of these tokens lost contrast (the drive bar, the Phone chip and the phone layer use them). */
   --bg: light-dark(#f6f6fb, #0a0a11);
-  --bg-side: light-dark(#eeeef7, #0d0d16);
-  --surface: light-dark(#ffffff, #13131d);
-  --surface-2: light-dark(#f2f2f9, #1a1a27);
-  --surface-3: light-dark(#e6e6f2, #232434);
-  --line: light-dark(rgba(24, 22, 60, 0.09), rgba(255, 255, 255, 0.07));
-  --line-2: light-dark(rgba(24, 22, 60, 0.16), rgba(255, 255, 255, 0.13));
-  --sheen: light-dark(rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.05));
+  --bg-side: light-dark(#efeff4, #0d0d14);
+  --surface: light-dark(#ffffff, #13131a);
+  --surface-2: light-dark(#f2f2f9, #1a1a23);
+  --surface-3: light-dark(#e8e8ee, #24242f);
+  /* Hairlines: 1 separators and card edges, 2 field and control edges, 3 a hovered field. */
+  --line: light-dark(rgba(22, 22, 40, 0.10), rgba(255, 255, 255, 0.08));
+  --line-2: light-dark(rgba(22, 22, 40, 0.16), rgba(255, 255, 255, 0.14));
+  --line-3: light-dark(rgba(22, 22, 40, 0.28), rgba(255, 255, 255, 0.26));
+  /* The top edge of a lifted layer. Nothing in the light theme; a faint light edge in the dark one. */
+  --sheen: light-dark(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.04));
+  /* Fills: translucent ink that works on any surface. 1 a hovered row or a well, 2 a quiet button or a selected row,
+     3 a hovered button, 4 a pressed one. Muted text stays on 1 and 2 only. */
+  --fill-1: light-dark(rgba(22, 22, 40, 0.04), rgba(255, 255, 255, 0.06));
+  --fill-2: light-dark(rgba(22, 22, 40, 0.07), rgba(255, 255, 255, 0.10));
+  --fill-3: light-dark(rgba(22, 22, 40, 0.11), rgba(255, 255, 255, 0.15));
+  --fill-4: light-dark(rgba(22, 22, 40, 0.16), rgba(255, 255, 255, 0.20));
 
-  --text: light-dark(#15151f, #edeef6);
-  --text-2: light-dark(#40435a, #b9bdcf);
-  --muted: light-dark(#686c85, #8389a0);
+  /* Text: primary, secondary, and muted for notes and placeholders. All three reach 4.5 to 1 on the page, the sidebar,
+     the three surfaces and fills 1 and 2 (muted on the third surface: 4.9 light, 5.1 dark). */
+  --text: light-dark(#15151b, #efeff4);
+  --text-2: light-dark(#42434e, #bdbeca);
+  --muted: light-dark(#61626e, #9394a2);
+  /* Disabled text and decorative marks only: it does not reach 4.5 to 1. */
+  --faint: light-dark(#9a9ba6, #5e5f6c);
 
-  /* The brand runs periwinkle to orchid, the same as the loop in the app icon. */
+  /* The accent is the periwinkle of the loop in the app icon. Text, icons, focus and selection use the accent; a filled
+     control uses the fill with white text (6.2 to 1 light, 5.2 dark). The older pairs still hold: the ink on the accent, on
+     the brand and on amber, red and green badges. */
   --accent: light-dark(#5a48dd, #a9b2ff);
   --accent-2: light-dark(#b0409f, #dfa3e4);
   --accent-ink: light-dark(#ffffff, #100d24);
-  --brand: linear-gradient(120deg, light-dark(#5568ee, #9fb1ff) 0%, light-dark(#7a52e0, #c2a9f7) 52%, light-dark(#b548ad, #e4a1de) 100%);
-  --glow-a: light-dark(rgba(110, 96, 255, 0.17), rgba(124, 108, 255, 0.2));
-  --glow-b: light-dark(rgba(214, 120, 210, 0.13), rgba(224, 140, 222, 0.1));
-  --halo: radial-gradient(closest-side, light-dark(rgba(110, 96, 255, 0.34), rgba(126, 110, 255, 0.5)), light-dark(rgba(214, 120, 210, 0.12), rgba(224, 150, 225, 0.16)) 55%, transparent 74%);
+  --accent-fill: light-dark(#5a48dd, #6156ea);
+  --accent-fill-hover: light-dark(#4d3bd2, #6c62f0);
+  --accent-fill-press: light-dark(#4231c0, #554ad9);
+  --on-accent: light-dark(#ffffff, #ffffff);
+  --accent-soft: light-dark(rgba(90, 72, 221, 0.10), rgba(169, 178, 255, 0.14));
+  --accent-line: light-dark(rgba(90, 72, 221, 0.36), rgba(169, 178, 255, 0.40));
+  --focus: light-dark(#5a48dd, #a9b2ff);
+  --selection: light-dark(rgba(90, 72, 221, 0.20), rgba(169, 178, 255, 0.30));
+  /* A flat accent, kept under its old name for the rules that fill with it. The periwinkle to orchid run of the icon is
+     the gradient below, and one place uses it: the word in the welcome heading. */
+  --brand: linear-gradient(light-dark(#5a48dd, #a9b2ff), light-dark(#5a48dd, #a9b2ff));
+  --brand-gradient: linear-gradient(120deg, light-dark(#5568ee, #9fb1ff) 0%, light-dark(#7a52e0, #c2a9f7) 52%, light-dark(#b548ad, #e4a1de) 100%);
+  /* The page no longer glows: both lights are clear. The halo behind the welcome mark is kept, softer. */
+  --glow-a: light-dark(rgba(110, 96, 255, 0), rgba(124, 108, 255, 0));
+  --glow-b: light-dark(rgba(214, 120, 210, 0), rgba(224, 140, 222, 0));
+  --halo: radial-gradient(closest-side, light-dark(rgba(110, 96, 255, 0.16), rgba(126, 110, 255, 0.26)), light-dark(rgba(214, 120, 210, 0.05), rgba(224, 150, 225, 0.08)) 55%, transparent 74%);
 
-  --claude: light-dark(#bd5b27, #ec9a6c);
-  --muse: light-dark(#2c62d8, #8fb4ff);
-  --codex: light-dark(#18814b, #76d8a4);
+  /* Provider colours. In the light theme each one reaches 4.5 to 1 as a letter on its own 15 percent tint. */
+  --claude: light-dark(#a64a19, #ec9a6c);
+  --muse: light-dark(#285bd0, #8fb4ff);
+  --codex: light-dark(#15763f, #76d8a4);
   --advisor: light-dark(#6b3dc2, #c8a8ff);
-  --ok: light-dark(#157a48, #62d6a0);
-  --bad: light-dark(#c22c3c, #ff8088);
+  --ok: light-dark(#137243, #62d6a0);
+  --bad: light-dark(#b92838, #ff8088);
   --warn: light-dark(#8a5a00, #f6c468);
   /* Gemini: a teal-blue, apart from Muse blue, and readable on both surfaces. */
-  --gemini: light-dark(#0c7d91, #6fd6e6);
+  --gemini: light-dark(#0a6e80, #6fd6e6);
   /* Cursor: a graphite slate. It is apart from every provider's colour, and from amber, red and green, which mean attention, failure and passed. */
   --cursor: light-dark(#4b5b6e, #b4c3d6);
   /* Grok Build: a rose, apart from every provider colour and from amber (attention), red (failure) and green (passed). */
   --grok: light-dark(#b5366f, #ff8fbe);
 
-  --code-bg: light-dark(#f1f1f8, #08080d);
-  --scrim: light-dark(rgba(40, 38, 70, 0.28), rgba(4, 4, 10, 0.55));
-  --shade-1: light-dark(rgba(30, 26, 80, 0.06), rgba(0, 0, 0, 0.4));
-  --shade-2: light-dark(rgba(30, 26, 80, 0.17), rgba(0, 0, 0, 0.5));
-  --shade-3: light-dark(rgba(30, 26, 80, 0.28), rgba(0, 0, 0, 0.7));
-  --shadow-1: 0 1px 2px var(--shade-1), 0 10px 26px -8px var(--shade-2);
-  --shadow-2: 0 2px 6px var(--shade-1), 0 28px 64px -14px var(--shade-3);
+  /* Code: nearly white in the light theme (lifted a little on the page, a shallow well inside a card), a dark well in the dark one. */
+  --code-bg: light-dark(#fafafd, #08080c);
+  /* A quiet button: white with a hairline in the light theme, a lifted translucent layer in the dark one. Rest, hover, pressed. */
+  --btn: light-dark(#ffffff, rgba(255, 255, 255, 0.09));
+  --btn-hover: light-dark(#f2f2f9, rgba(255, 255, 255, 0.14));
+  --btn-press: light-dark(#e8e8ee, rgba(255, 255, 255, 0.19));
+  /* The chosen part of a segmented control or tab row, raised on its grey track. */
+  --raised: light-dark(#ffffff, rgba(255, 255, 255, 0.16));
+  --scrim: light-dark(rgba(16, 16, 32, 0.30), rgba(0, 0, 0, 0.56));
+  /* Elevation. 1 raised (the composer, a floating card), 2 floating (menus, pop-ups, toasts), 3 modal (drawers, dialogs). */
+  --shade-1: light-dark(rgba(16, 16, 32, 0.06), rgba(0, 0, 0, 0.32));
+  --shade-2: light-dark(rgba(16, 16, 32, 0.12), rgba(0, 0, 0, 0.46));
+  --shade-3: light-dark(rgba(16, 16, 32, 0.20), rgba(0, 0, 0, 0.62));
+  --shadow-1: 0 1px 2px var(--shade-1), 0 2px 8px -2px var(--shade-1);
+  --shadow-2: 0 2px 6px var(--shade-1), 0 12px 32px -6px var(--shade-2);
+  --shadow-3: 0 4px 12px var(--shade-1), 0 24px 64px -12px var(--shade-3);
+  /* The soft halo of a focused field, with an accent edge. */
+  --ring: 0 0 0 3px light-dark(rgba(90, 72, 221, 0.22), rgba(169, 178, 255, 0.28));
+  /* Materials: a translucent layer with the blur beside it, for what floats over content (menus, toasts, a bar over a scroll). */
+  --material-bar: light-dark(rgba(246, 246, 251, 0.82), rgba(10, 10, 17, 0.80));
+  --material-menu: light-dark(rgba(255, 255, 255, 0.86), rgba(26, 26, 35, 0.86));
+  --material-sheet: light-dark(rgba(255, 255, 255, 0.95), rgba(19, 19, 26, 0.94));
+  --blur-bar: blur(20px) saturate(1.6);
+  --blur-menu: blur(28px) saturate(1.8);
+  --scroll-thumb: light-dark(rgba(22, 22, 40, 0.22), rgba(255, 255, 255, 0.22));
+  --scroll-thumb-hover: light-dark(rgba(22, 22, 40, 0.42), rgba(255, 255, 255, 0.42));
 
-  --ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
-  --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
-  --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  /* Type. Windows leads with Segoe UI Variable (Text for reading sizes, Display from 20 px up), a Mac takes its system font. */
+  --ui: "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
+  --display: "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* The scale: caption 11, small 12, body 13 (controls, rows, labels), base 14, reading 15 (chat prose), title 17,
+     large title 22, hero 32. Weights are 400, 500 (controls) and 600 (titles and labels). */
+  --fs-caption: 11px;
+  --fs-small: 12px;
+  --fs-body: 13px;
+  --fs-base: 14px;
+  --fs-read: 15px;
+  --fs-title: 17px;
+  --fs-title-lg: 22px;
+  --fs-hero: 32px;
+  --lh-tight: 1.25;
+  --lh-ui: 1.4;
+  --lh-body: 1.5;
+  --lh-read: 1.6;
+
+  /* Space on a 4 px grid, the radii (6 small parts, 8 controls, 12 cards and menus, 16 sheets and the composer), and the
+     heights of a control (24 inline, 28 small and toolbar, 32 regular, 36 large). */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 999px;
+  --ctl-xs: 24px;
+  --ctl-sm: 28px;
+  --ctl: 32px;
+  --ctl-lg: 36px;
+
+  /* Motion: quick, and it eases out. Fast for a colour, base for a control or a menu, slow for a drawer or a sheet. */
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+  --t-slow: 240ms;
 
   --bar-h: 52px;
   --col: min(800px, 100% - 56px);
