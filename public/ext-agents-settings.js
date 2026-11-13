@@ -322,6 +322,8 @@
 
   function appHead(m, data) {
     const wrap = make('div', 'ext-ag-head');
+    // The card has a title of its own (it opened in the middle of an idea, after the Team card).
+    wrap.append(make('h3', 'card-title', 'Agent types and limits'));
     let text = 'Used by every project that has no agent settings of its own.';
     if (data.project?.customised) text += ` ${data.project.name} has its own, so changes here do not reach it.`;
     wrap.append(para('ext-ag-scope-note', text));
@@ -425,7 +427,6 @@
     if (t.commands) tags.append(pill('Runs commands', true));
     if (t.web) tags.append(pill('Web'));
     if (t.kind === 'edit' && t.folders.length) tags.append(pill(`Writes only in: ${t.folders.join(', ')}`));
-    if (t.buildOnly) tags.append(pill('Build only'));
     if (tags.childElementCount) card.append(tags);
     card.append(make('p', 'ext-ag-desc', t.description), make('p', 'ext-ag-used', usedLine(block, t, data)));
 
@@ -472,7 +473,7 @@
 
   // Which rows and overrides name this type, in words. Planner is used by /build alone.
   function usedLine(block, t, data) {
-    if (t.buildOnly) return 'Used by /build for its plan';
+    if (t.buildOnly) return 'A model cannot hand work to it.';
     const labels = ROLE_ORDER.filter(r => block.limits.roles[r].types.includes(t.name)).map(r => roleLabel(data, r));
     const n = block.limits.models.filter(o => Array.isArray(o.types) && o.types.includes(t.name)).length;
     let text = labels.join(', ');

@@ -61,7 +61,6 @@ dialog.perm-sheet:focus { outline: none; }
   .perm-use { justify-self: stretch; min-height: 36px; }
 }
 
-.perm-question { color: var(--text); }
 .perm-changes { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .perm-changes[hidden] { display: none; }
 .perm-changes-head { margin: 0; font: 600 12px/1.4 var(--ui); color: var(--text-2); }

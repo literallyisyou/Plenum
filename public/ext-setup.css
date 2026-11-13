@@ -36,6 +36,11 @@
 
 /* The footer: Skip on the left, Back and Next (or Finish) on the right. It wraps rather than running past a 360 px drawer. */
 .setup-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+/* The wizard fills the drawer, so the footer rests at the drawer's foot and not under the last line of a short step, with the rest
+   of the drawer empty below it. A step taller than the drawer scrolls as before, the footer after it. */
+.drawer-body:has(> .setup) { flex: 1 1 auto; }
+.setup { flex: 1 0 auto; }
+.setup-foot { margin-top: auto; }
 .setup-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 
 /* The badge letters take the colours the Accounts panel uses. The rules name each class, so a badge never loses its colour. */

@@ -16,3 +16,7 @@
 .ext-store-head { margin: 0; font-weight: 600; }
 .ext-store-note { margin: 2px 0 0; color: var(--text-2); overflow-wrap: anywhere; }
 .ext-store-dismiss { flex: none; }
+
+/* Backups rows: the line that says what a copy holds is in the UI font like the time beside it (the build card's mono face is for
+   version numbers); the Restore button stays on the row at any width. */
+.eb-root .eb-line { font: 12.5px/1.45 var(--ui); color: var(--muted); }

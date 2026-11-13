@@ -17,6 +17,10 @@
 /* The Agent types | Limits switch uses the app's segmented control (.seg, .seg-btn in style.css). */
 .ext-ag-view { align-self: flex-start; }
 
+/* The type cards, one under the other with the Add a type button after them. */
+.ext-ag-types { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; }
+.ext-ag-types > .card, .ext-ag-types > .ext-ag-intro, .ext-ag-types > .ext-ag-form { align-self: stretch; }
+
 /* One agent type. */
 .ext-ag-type { gap: 8px; min-width: 0; }
 .ext-ag-type-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }

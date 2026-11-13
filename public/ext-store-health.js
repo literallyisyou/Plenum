@@ -132,6 +132,19 @@
     return node;
   };
 
+  // A sentence with a path in it, as pieces (spans) with a break point (wbr) after every separator of the path.
+  function pathParts(before, path, after) {
+    const part = text => make('span', null, text);
+    const parts = [part(before)];
+    for (const piece of String(path).split(/([\\/])/)) {
+      if (!piece) continue;
+      parts.push(part(piece));
+      if (piece === '\\' || piece === '/') parts.push(document.createElement('wbr'));
+    }
+    parts.push(part(after));
+    return parts;
+  }
+
   function sizeWords(bytes) {
     const n = Number(bytes);
     if (!Number.isFinite(n) || n < 0) return '';
@@ -148,6 +161,10 @@
     if (messages === 0) return 'no messages';
     return `${messages} ${messages === 1 ? 'message' : 'messages'} in ${chats} ${chats === 1 ? 'chat' : 'chats'}`;
   }
+
+  // A copy with no message in it and no more bytes than an empty state takes (about 380) holds nothing to bring back.
+  const BARE_BYTES = 512;
+  const isBare = copy => copy.messages === 0 && copy.chats === 0 && Number.isFinite(copy.bytes) && copy.bytes < BARE_BYTES;
 
   // The time of every copy as its row shows it. The time is to the minute, so copies of one kind made in the same minute (two
   // restores in a row) get a number after it, the oldest first: "(1)", "(2)". The list is newest first.
@@ -286,6 +303,13 @@
         row.setAttribute('role', 'listitem');
         const when = labels.get(copy);
         const kind = KIND_WORDS[copy.kind];
+        // A copy of a bare state (no message and no room for a project: a start with nothing yet) has nothing to bring back, so it
+        // gets a sentence in place of the Restore button.
+        if (isBare(copy)) {
+          row.append(make('span', 'eb-label', when), make('span', 'eb-line', [`Empty, ${sizeWords(copy.bytes)}`, kind, 'nothing to restore'].filter(Boolean).join(', ')));
+          list.append(row);
+          continue;
+        }
         const btn = MuseUI.button('ghost small', 'Restore');
         // The label names the kind and the number too, so no two buttons of the list read the same.
         btn.setAttribute('aria-label', kind ? `Restore the copy from ${when}, ${kind}` : `Restore the copy from ${when}`);
@@ -310,7 +334,8 @@
         const data = await MuseUI.api('/api/store/backups');
         const copies = Array.isArray(data && data.backups) ? data.backups.filter(c => c && typeof c.name === 'string') : [];
         draw(copies);
-        where.textContent = typeof data.folder === 'string' && data.folder ? `The copies are files in ${data.folder}.` : '';
+        // The folder's path breaks after each separator, never inside a name, so a narrow window shows whole words.
+        where.replaceChildren(...(typeof data.folder === 'string' && data.folder ? pathParts('The copies are files in ', data.folder, '.') : []));
         if (!keepStatus) say(typeof data.problem === 'string' ? data.problem : '', typeof data.problem === 'string');
       } catch (err) {
         list.replaceChildren();

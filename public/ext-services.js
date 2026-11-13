@@ -33,6 +33,12 @@
     hubAtStart: 'Plenum starts the hub and its helper in the background, with no window, while Docker is already running.',
     follows: 'It follows Connect agents until you change it here.',
     notMine: 'Plenum does not change whether the hub\'s helper starts with Windows, hands-off mode, or Docker\'s own settings. It never stops the hub.',
+    // The same two sentences for a hub that runs without Docker (engine local), and for one whose way of running is not known (no reading
+    // yet, or a value this Plenum does not know): Docker is named only for a hub that runs in Docker.
+    hubAtStartLocal: 'Plenum starts the hub and its helper in the background, with no window.',
+    notMineLocal: 'Plenum does not change whether the hub\'s helper starts with Windows or hands-off mode. It never stops the hub.',
+    hubAtStartAny: 'Plenum starts the hub and its helper in the background, with no window. If the hub runs in Docker, it waits until Docker is already running.',
+    notMineAny: 'Plenum does not change whether the hub\'s helper starts with Windows or hands-off mode, or Docker\'s own settings if the hub runs in Docker. It never stops the hub.',
     missing: 'This build of Plenum has no Background services yet.',
     noAnswer: 'Plenum did not answer. Try again.',
     loading: 'Reading what runs...',
@@ -227,7 +233,7 @@
     main.append(listEl, switches, foot);
     root.append(intro, line, retry, main);
     body.append(root);
-    view = { root, line, retry, main, listEl, auto, atStart, drawn: '' };
+    view = { root, line, retry, main, listEl, auto, atStart, foot, drawn: '' };
   }
 
   function serviceRow(service) {
@@ -241,7 +247,7 @@
     dot.setAttribute('aria-hidden', 'true');
     const text = make('div', 'svc-text');
     const top = make('div', 'svc-top');
-    top.append(make('span', 'svc-name', str(service.label) || service.id), make('span', 'svc-word', STATE_WORD[state]));
+    top.append(make('span', 'svc-name', str(service.label) || service.id), make('span', 'svc-word', service.id === 'sign-ins' && state === 'running' ? 'Ready' : STATE_WORD[state]));
     text.append(top, make('p', 'svc-why', str(service.why)));
     li.append(dot, text);
     const action = isObj(service.action) && str(service.action.id) && str(service.action.label) ? service.action : null;
@@ -293,9 +299,12 @@
     v.auto.small.textContent = supported ? TEXT.autostart : a.reason === 'next-build' ? TEXT.autostartNext : TEXT.autostartInstalled;
 
     const h = isObj(data.hubAtStart) ? data.hubAtStart : {};
+    const engine = str(data.hubEngine);
+    const atStartText = engine === 'docker' ? TEXT.hubAtStart : engine === 'local' ? TEXT.hubAtStartLocal : TEXT.hubAtStartAny;
     v.atStart.input.checked = h.on === true;
     v.atStart.input.disabled = Boolean(busy);
-    v.atStart.small.textContent = h.follows === true ? `${TEXT.hubAtStart} ${TEXT.follows}` : TEXT.hubAtStart;
+    v.atStart.small.textContent = h.follows === true ? `${atStartText} ${TEXT.follows}` : atStartText;
+    v.foot.textContent = engine === 'docker' ? TEXT.notMine : engine === 'local' ? TEXT.notMineLocal : TEXT.notMineAny;
 
     drawSaid();
     if (wantFocus && !busy) {

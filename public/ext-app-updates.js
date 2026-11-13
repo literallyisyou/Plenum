@@ -271,6 +271,10 @@
 
     r.switchInput.disabled = !desktop || !settings;
     r.channelSel.disabled = !desktop || !settings;
+    // A locked switch says why, on the row and on the channel field.
+    const locked = !desktop ? 'Only the Plenum desktop app can change this.' : '';
+    r.switchInput.closest('label').title = locked;
+    r.channelSel.title = locked;
 
     const view = !data
       ? (loadError

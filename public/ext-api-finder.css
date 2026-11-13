@@ -59,7 +59,7 @@
 }
 .af-panel .af-search:disabled,
 .af-panel .af-select:disabled { opacity: 0.6; cursor: default; }
-.af-panel .af-filter-toggle { flex: none; }
+.af-panel .af-filter-toggle { flex: none; box-sizing: border-box; height: 34px; }
 .af-panel .af-sort { flex: 0 1 auto; }
 .af-panel .af-filter-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .af-panel .af-chips-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }

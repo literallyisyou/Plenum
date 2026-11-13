@@ -59,6 +59,11 @@
 .ext-art-danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 
 .ext-art-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; margin-top: 12px; }
+/* No artifact open: one sentence, centred in the upper part of the pane. */
+.ext-art-empty {
+  margin: 40px auto 0; max-width: 300px; padding: 0 8px; color: var(--muted); font-size: 13px; line-height: 1.5;
+  text-align: center; text-wrap: balance;
+}
 
 .ext-art-stage { display: flex; flex-direction: column; flex: 1 1 auto; gap: 6px; min-height: 360px; }
 .ext-art-wait { margin: 0; color: var(--muted); }

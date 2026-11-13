@@ -43,7 +43,8 @@
 .ext-board-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ext-board-row.is-wait { border-color: var(--warn); }
 .ext-board-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.ext-board-row-top .pill { flex: none; }
+/* The status starts at the row's left edge, over the run's name (the shared .pill keeps to the right of a card's head). */
+.ext-board-row-top .pill { flex: none; margin-left: 0; }
 .ext-board-pill.amber { color: var(--warn); }
 .ext-board-pill.red { color: var(--bad); }
 .ext-board-row-name {

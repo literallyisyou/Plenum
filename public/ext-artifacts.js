@@ -22,6 +22,9 @@
   const WEB_TEXT = 'This page may now load scripts from and send requests to any https site, including whatever the model wrote into it. It still cannot read your files, keys or Plenum.';
   const MADE_TEXT = 'An artifact is a page or small app that a model wrote. It runs apart from Plenum, without access to your files or keys, but it can still be wrong, misleading or broken. Do not type passwords or personal details into it, and read its code before you use it anywhere else.';
   const SANDBOX_TEXT = 'Previews run in a sandbox: no network, no cookies, no popups, no access to Plenum.';
+  // What the pane says while no artifact is open: with nothing to open in the chat on screen, and with something to pick.
+  const EMPTY_NONE = 'No artifact is open. When a reply holds a page, a drawing, a Markdown document or a long block of code, press Open on that block to see it here.';
+  const EMPTY_PICK = 'No artifact is open. Pick one from the list, or press Open on a block of code in the chat.';
 
   // The code blocks in the chat as of the last pass, in chat order: { el, kind, lang, code, lines, title }.
   let records = [];
@@ -202,7 +205,10 @@
   function refreshLive(view) {
     const { ui } = view;
     const art = ui.art;
-    if (!art) return;
+    if (!art) {
+      paintEmpty(ui);
+      return;
+    }
     const same = records.find(r => r.kind === art.kind && r.code === art.code);
     if (same) {
       art.el = same.el;
@@ -217,10 +223,11 @@
   // Rebuilds the list only when its entries change, so the menu does not flicker while a reply streams.
   function syncList(ui) {
     const art = ui.art;
-    const selected = records.findIndex(r => r.kind === art.kind && r.code === art.code);
+    const selected = art ? records.findIndex(r => r.kind === art.kind && r.code === art.code) : -1;
     const items = records.map((r, i) => ({ value: String(i), text: r.title }));
-    // The open artifact stays in the list even when its block has left the chat.
-    if (selected < 0) items.unshift({ value: 'current', text: art.title });
+    // The open artifact stays in the list even when its block has left the chat. With none open, the first entry asks for a pick.
+    if (!art) items.unshift({ value: 'none', text: 'Pick an artifact' });
+    else if (selected < 0) items.unshift({ value: 'current', text: art.title });
     const sig = items.map(o => `${o.value}\u0000${o.text}`).join('\n');
     if (sig !== ui.listSig) {
       ui.listSig = sig;
@@ -231,7 +238,21 @@
         return opt;
       }));
     }
-    ui.list.value = selected >= 0 ? String(selected) : 'current';
+    ui.list.value = selected >= 0 ? String(selected) : art ? 'current' : 'none';
+  }
+
+  // No artifact is open (the pane was opened by its name, as the phone's menu does): the pane says what belongs here and shows only
+  // what has something to act on, which is the list when the chat on screen holds artifacts. The kind, Preview and Code, Copy, Save
+  // and the web access switch come back with the first artifact (see show).
+  function paintEmpty(ui) {
+    const any = records.length > 0;
+    ui.head.hidden = !any;
+    ui.bar.hidden = true;
+    ui.webRow.hidden = true;
+    if (any) syncList(ui);
+    const text = any ? EMPTY_PICK : EMPTY_NONE;
+    if (ui.empty.textContent !== text) ui.empty.textContent = text;
+    if (ui.empty.parentNode !== ui.body) ui.body.replaceChildren(ui.empty);
   }
 
   // Open, on a block's button. The click is handled here once for every block, including blocks added later.
@@ -267,8 +288,10 @@
     ui.close.setAttribute('aria-label', 'Close the artifact pane');
     ui.close.append(MuseUI.icon('x'));
     head.append(ui.list, ui.close);
+    ui.head = head;
 
     const bar = mk('div', 'ext-art-bar');
+    ui.bar = bar;
     ui.kind = mk('span', 'pill ext-art-kind', '');
     const seg = mk('div', 'seg ext-art-seg');
     seg.setAttribute('role', 'group');
@@ -324,13 +347,16 @@
     ui.save.append(label, ui.saveProject, ui.planNote, ui.saveError, ui.replace, actions);
 
     ui.body = mk('div', 'ext-art-body');
+    ui.empty = mk('p', 'ext-art-empty');
 
     root.append(head, bar, ui.webRow, ui.notes, ui.stale, ui.save, ui.body);
     body.replaceChildren(root);
     views.set(api, ui);
+    // Until an artifact is shown the view is the empty one, so the pane is never a row of controls with nothing to act on.
+    paintEmpty(ui);
 
     ui.list.addEventListener('change', () => {
-      if (ui.list.value === 'current') return;
+      if (ui.list.value === 'current' || ui.list.value === 'none') return;
       const rec = records[Number(ui.list.value)];
       if (rec) MuseUI.pane.open(TAB, { artifact: artifactOf(rec) });
     });
@@ -389,6 +415,8 @@
     const ui = views.get(api);
     if (!ui || ui.art === art) return;
     ui.art = art;
+    ui.head.hidden = false;
+    ui.bar.hidden = false;
     ui.kind.textContent = KIND_LABEL[art.kind] ?? 'Code';
     ui.mode = art.kind === 'code' ? 'code' : 'preview';
     ui.previewBtn.hidden = art.kind === 'code';
@@ -539,7 +567,11 @@
     onShow: api => {
       const art = api.params?.artifact;
       if (art) show(api, art);
-      else if (views.get(api)?.art) live = { api, ui: views.get(api) };
+      else if (views.get(api)) {
+        // Opened by its name: the view follows the chat, whether it holds an artifact or is still the empty one.
+        live = { api, ui: views.get(api) };
+        if (!live.ui.art) paintEmpty(live.ui);
+      }
     },
     onClose: api => {
       const ui = views.get(api);

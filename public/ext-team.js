@@ -129,6 +129,8 @@
   const limits = () => (isObj(team?.limits) ? team.limits : {});
   const sizes = () => (isObj(team?.sizes) ? team.sizes : {});
   const refOf = w => (isObj(w) ? str(w.ref) : str(w));
+  // Which vendor's program or API runs a model, from its reference: 'claude', 'codex', 'gemini' or the prefix itself.
+  const vendorOf = ref => { const p = str(ref).split(':')[0]; return p === 'anthropic' ? 'claude' : p === 'googleai' || p === 'antigravity' ? 'gemini' : p === 'openai' ? 'codex' : p; };
   const refsOf = kind => list(kind.workers).map(refOf).filter(Boolean);
   const modelOf = ref => models().find(m => m.ref === ref) ?? null;
   const labelOf = (ref, given) => str(given) || str(modelOf(ref)?.label) || (typeof MuseUI.modelName === 'function' ? str(MuseUI.modelName(ref)) : '') || ref;
@@ -637,10 +639,17 @@
     const matches = same && on && !nobody;
     // With no suggestion to press, the off text ends before the sentence about pressing it.
     const lead = on ? '' : `${OFF_LEAD} `;
-    v.suggIntro.textContent = !s ? `${lead}${TEXT.checking}` : nobody ? `${lead}${TEXT.nobody}` : matches ? 'Your team is the suggested team.' : on ? 'What Plenum would choose from the models you are signed in to. Nothing changes until you press Use this team.' : TEXT.off;
+    v.suggIntro.textContent = !s ? `${lead}${TEXT.checking}` : nobody ? `${lead}${TEXT.nobody}` : matches ? 'Your team is the suggested team.' : on ? 'What Plenum would choose from the models that can run now. Nothing changes until you press Use this team.' : TEXT.off;
     v.suggList.replaceChildren(...(matches || nobody ? [] : rows));
     v.suggList.hidden = matches || nobody || !rows.length;
-    const factRows = list(team.facts).filter(h => typeof h === 'string' && h).map(h => make('li', 'team-fact', h));
+    // A fact is shown only while the suggestion shown follows it: "Claude leads Code and Test" is not said of a suggestion with no Claude model.
+    const leader = id => vendorOf(list(s?.find(k => k.id === id)?.workers).map(refOf).find(Boolean));
+    const factHolds = h => (/^Claude /.test(h) ? ['code', 'test'].every(id => leader(id) === 'claude')
+      : /Codex leads Data/.test(h) ? leader('data') === 'codex'
+        : /^Gemini .* leads Research/.test(h) ? leader('research') === 'gemini'
+          : /second vendor/.test(h) ? Boolean(leader('review')) && Boolean(leader('code')) && leader('review') !== leader('code')
+            : true);
+    const factRows = list(team.facts).filter(h => typeof h === 'string' && h && factHolds(h)).map(h => make('li', 'team-fact', h));
     v.facts.replaceChildren(...factRows);
     v.facts.hidden = !factRows.length || !s || nobody;
     // The server's hints, at the top. The one the suggestion's own line already says is not said twice.

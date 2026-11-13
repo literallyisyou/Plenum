@@ -21,12 +21,14 @@
 }
 .ext-rules-tab:focus-visible,
 .ext-rules-tab-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* Blocked commands is a link, so it reads as one. */
+/* Blocked commands opens another page, so it sits in the tab row with the tabs' own size and colour, and its arrow says it leaves. */
 .ext-rules-tab-link {
-  background: transparent; border: 0; padding: 6px 8px; border-radius: 6px;
-  color: var(--accent); font: 500 12.5px/1.2 var(--ui); cursor: pointer;
-  text-decoration: underline; text-underline-offset: 3px;
+  background: transparent; border: 0; padding: 6px 10px; border-radius: 8px;
+  color: var(--muted); font: 500 12.5px/1.2 var(--ui); white-space: nowrap; cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
+.ext-rules-tab-link::after { content: " \203A"; }
+.ext-rules-tab-link:hover { color: var(--text); background: var(--fill-1); }
 .ext-rules-tab-note { font-size: 12px; color: var(--muted); padding: 0 4px; white-space: nowrap; }
 
 .ext-rules-create { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -38,7 +40,9 @@
   background: var(--bg); color: var(--text);
   font: 13px/1.5 var(--mono); tab-size: 2;
 }
+.ext-rules > button { justify-self: start; }
 .ext-rules-text:read-only { color: var(--muted); }
+.ext-rules-text::placeholder { font-family: var(--ui); font-size: 13px; line-height: 1.5; color: var(--muted); opacity: 1; }
 .ext-rules-text:hover { border-color: var(--line-3); }
 .ext-rules-text:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 

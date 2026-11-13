@@ -357,6 +357,13 @@
     root.append(foot);
     body.append(root);
 
+    // Until the first paint nothing is claimed: no waiting list, no agents, and the word says what is happening.
+    word.textContent = 'Checking';
+    dot.dataset.state = 'checking';
+    checkBtn.hidden = true;
+    waitBox.hidden = true;
+    usedBox.hidden = true;
+
     view = {
       root, state, dot, word, open, line, starter, agents, agentsWhy, agentsSave, agentsSlot, confirm, confirmSave, noAskSlot,
       waitBox, big, bigNum, bigText, bigNote, rows, checkBtn, checkLine,
@@ -639,6 +646,8 @@
     body.textContent = '';
     build(body);
     paint();
+    // The card is not in the page yet while it is built, so that first paint may have drawn nothing: paint again once it is there.
+    setTimeout(paint, 0);
     if (!st) load();
     observe(view.root);
   }

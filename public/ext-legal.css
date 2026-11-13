@@ -131,7 +131,9 @@ html[data-legal='pending'] #app { visibility: hidden; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
   padding: 12px 0; cursor: pointer; color: var(--text);
 }
-.legal-notice-title { font-weight: 600; color: var(--text); }
+.legal-notice-title { flex: 1 1 0; min-width: 0; font-weight: 600; color: var(--text); }
+.legal-showall { display: inline-flex; align-items: center; gap: 10px; }
+.legal-showall-note { color: var(--text-2); font-size: 13px; }
 .legal-notice-where { flex-basis: 100%; color: var(--text); font-size: 13.5px; }
 .legal-notice-body { display: grid; gap: 8px; padding: 0 0 14px; color: var(--text); }
 .legal-notice-body p { margin: 0; }

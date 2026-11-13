@@ -17,6 +17,10 @@
     background: var(--bg-side); box-shadow: var(--shadow-3); overflow-y: auto;
   }
   body.ext-side-open .ext-side-close { display: inline-flex; align-self: flex-end; }
+  /* It sits at the right end of the brand row, not on a row of its own under it (where it read as a second control of the list). */
+  html:not([data-surface="phone"]) body.ext-side-open .ext-side-close { position: absolute; top: 20px; right: 10px; }
+  /* The menu scrolls as a whole, so the project list keeps its height in it (an open add form squeezed it to a sliver). */
+  html:not([data-surface="phone"]) body.ext-side-open .projects { flex: 1 0 auto; }
   /* Above the chat, below the toasts (40 in style.css). The drawer (21) sits lower than the menu, so ext-sidebar.js closes the menu when a drawer opens. */
   body.ext-side-open .ext-side-scrim { display: block; position: fixed; inset: 0; z-index: 29; background: var(--scrim, rgba(0, 0, 0, 0.4)); }
   /* Under the title bar, as the pane is; the drive bar sits under the menu, and the drive pill (in the bar) stays visible. */

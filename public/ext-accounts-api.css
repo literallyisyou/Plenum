@@ -43,6 +43,13 @@
 .ext-apikeys-model + .ext-apikeys-model { padding-top: 10px; border-top: 1px solid var(--line); }
 .ext-apikeys-model .field-note { margin: 0; }
 
+/* The three routes (Claude, Gemini, Codex), each a block with room around it, and inside a block the intro, the switch, what it does now and the terms link. */
+.ext-apikeys-routes { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.ext-apikeys-route { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ext-apikeys-route > .seg, .ext-apikeys-route > .ext-apikeys-link { align-self: flex-start; }
+/* The link starts at the same edge as the buttons and lines beside it (the general link rule below pushes it to the right with an auto margin). */
+.ext-apikeys-route > .ext-apikeys-link { margin-left: 0; }
+
 /* The key page link sits at the end of the buttons, as plain text in the accent colour. */
 .ext-apikeys-link { margin-left: auto; color: var(--accent); font-size: 12.5px; text-underline-offset: 3px; }
 .ext-apikeys-link:hover { text-decoration: underline; }

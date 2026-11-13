@@ -83,8 +83,8 @@ const el = {
 };
 
 const DEFAULT_HINT = el.hint.textContent;
-// Shown while a run is going: Enter then queues what is typed (see queueFollowUp).
-const BUSY_HINT = 'Working… Esc stops · Enter queues what you type';
+// Shown while a run is going: Enter then queues what is typed (see queueFollowUp). The status items beside it say "Working…".
+const BUSY_HINT = 'Esc stops · Enter queues what you type';
 const MAX_QUEUED = 5;
 // The provider registry (UI-ARCH sections 1 and 10.9). Every model picker, the compare and pipeline group names and the Accounts
 // badges read this one list, so a provider that joins Plenum is one row here, plus its colour token in style.css. The order is the
@@ -251,6 +251,9 @@ const THEME_COLORS = { dark: '#0a0a11', light: '#f6f6fb' };
 const systemIsLight = matchMedia('(prefers-color-scheme: light)');
 
 let S = { projects: [], activeProject: null, activeThread: null, threads: [], closedThreads: [], messages: [], model: 'muse:muse-spark-1.2', advisor: null, advisorAuto: false, approvals: 'ask', running: false };
+// False until the saved state has arrived (the first successful refresh, or a state event). S holds the built-in default model until then,
+// so the model, Advisor and effort menus stay blank and Send waits: a person's model is never switched or used silently.
+let stateLoaded = false;
 let catalog = [];
 let aliases = {};
 let providers = null;
@@ -1571,7 +1574,10 @@ function renderTop() {
   // "Project · Thread" once the project has several threads (UI-ARCH 3 and 8); a project with only Main shows just its name.
   const thread = (S.threads ?? []).length > 1 ? threadInfo() : null;
   const title = p ? (thread ? `${p.name} · ${thread.name}` : p.name) : 'No project';
-  el.projName.textContent = title;
+  // The thread's part is its own piece: a title bar on two rows shows the project alone (style.css, the fit ladder), since the thread
+  // tabs under the bar name the thread.
+  if (p && thread) el.projName.replaceChildren(p.name, span('proj-thread', ` · ${thread.name}`));
+  else el.projName.textContent = title;
   el.projPath.textContent = p ? p.path : '';
   el.projPath.title = p ? p.path : '';
   document.title = p ? `${title} · Plenum` : 'Plenum';
@@ -1581,6 +1587,12 @@ function renderTop() {
   }
   if (!el.effort.options.length) {
     el.effort.replaceChildren(...menuHead(), ...effortOptions());
+  }
+  // Until the saved state has arrived S holds only the defaults: the menus show no choice and take none (blank, no jump of width).
+  for (const menu of [el.model, el.advisor, el.effort]) menu.disabled = !stateLoaded;
+  if (!stateLoaded) {
+    for (const menu of [el.model, el.advisor, el.effort]) menu.selectedIndex = -1;
+    return;
   }
   // The selector shows the model of the thread on screen (Main: the app's model).
   ensureOption(el.model, threadModelRef());
@@ -1601,6 +1613,9 @@ function menuOption(value, name, note = '', provider = null) {
   if (!RICH_MENUS) return new Option(note && provider ? `${name} (${note})` : name, value);
   const o = document.createElement('option');
   o.value = value;
+  // A menu that is not drawn as a rich one (the Settings cards' selects) shows the label, not the spans run together
+  // ("Off No second opinion"); the rich menus ignore it and draw the children.
+  o.label = note && provider ? `${name} (${note})` : name;
   if (provider !== null) {
     const dot = span('o-dot');
     dot.dataset.p = provider;
@@ -1838,6 +1853,17 @@ function setBusy(busy) {
 function idleHint() {
   return mode === 'council' ? 'Council · Enter asks every seat · /council off returns to Chat' : DEFAULT_HINT;
 }
+
+// The hint is drawn as one piece per phrase (the parts between " · "), so that the stylesheet can leave out whole phrases when the
+// line is too short for all of them (style.css, .hint-part): the line never ends in a cut word. Every place that sets the hint sets
+// its text, and this turns the text into pieces.
+function splitHint() {
+  if (el.hint.firstElementChild) return;
+  const parts = el.hint.textContent.split(' · ');
+  if (parts.length > 1) el.hint.replaceChildren(...parts.map((p, i) => span('hint-part', i ? ` · ${p}` : p)));
+}
+new MutationObserver(splitHint).observe(el.hint, { childList: true });
+splitHint();
 
 // ---------- palette ----------
 
@@ -2377,6 +2403,7 @@ const councilFiles = () => pickedImages();
 // scope (optional) is the thread the message goes to: the thread on screen, or (for a queued message) another thread of the project.
 async function sendMessage(text, model, images, computer, appNames, scope = activeScope()) {
   refusedBy = null;
+  if (!stateLoaded) return toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
   if (text.length > 14_000_000) return toast('That message is too long to send (over 14 million characters). Split it up or attach the file with @path.', 'bad');
   if (!S.activeProject) {
     openAddForm();
@@ -3989,6 +4016,11 @@ function moderatorPill() {
 // so a second edit that copied S before the first save had answered would put the first edit back (B-9). Each task runs after the last.
 let settingsSaves = Promise.resolve();
 function queueSettingsSave(task) {
+  // Before the saved state has arrived S holds defaults: a save would copy them over the person's council.
+  if (!stateLoaded) {
+    toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
+    return Promise.resolve();
+  }
   const run = settingsSaves.then(task, task);
   settingsSaves = run.catch(() => {});
   return run;
@@ -4479,6 +4511,7 @@ function tellPromptsHealth(health) {
 async function refresh() {
   try {
     S = await api('/api/state');
+    stateLoaded = true;
     notes = notes.filter(n => !n.startsWith(CONNECTION_LINE));
   } catch (err) {
     if (!notes.some(n => n.startsWith(CONNECTION_LINE))) notes.push(`${CONNECTION_LINE} (${err.message}).`);
@@ -4496,6 +4529,7 @@ function applyState(next, { chat } = {}) {
   const threadSwitched = !switched && next.activeThread !== undefined && next.activeThread !== S.activeThread;
   const before = activeScope();
   S = { ...S, ...next, messages: S.messages };
+  stateLoaded = true;
   if (switched) {
     notes = [];
     threadNotes.clear();
@@ -4994,6 +5028,15 @@ function openAddForm() {
   el.addPath.focus();
 }
 
+// The button beside "Add a project folder first" in Settings: leaves the Settings page (the form is in the sidebar), opens the sidebar
+// when it is a menu (narrow windows), and opens the add-a-folder form.
+function addProjectFromSettings() {
+  if (document.getElementById('app')?.hasAttribute('data-settings-open')) closeSettingsPage();
+  const toggle = document.querySelector('.ext-side-toggle');
+  if (toggle && getComputedStyle(toggle).display !== 'none' && !document.body.classList.contains('ext-side-open')) toggle.click();
+  openAddForm();
+}
+
 // ---------- music (window.MuseMusic from public/music.js; playback starts only on a click) ----------
 
 function mm() {
@@ -5311,6 +5354,7 @@ function museCard(m) {
   actions.className = 'actions';
   const signIn = button('primary small', m.signedIn ? 'Sign in again' : 'Sign in to Muse Code');
   signIn.disabled = !m.installed;
+  if (!m.installed) signIn.title = 'Muse Code is not installed. Install it, press Refresh, then sign in.';
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/muse/login', {});
@@ -5344,6 +5388,7 @@ function codexCard(c) {
   actions.className = 'actions';
   const signIn = button('primary small', c.loggedIn === true ? 'Sign in again' : 'Sign in to Codex');
   signIn.disabled = !c.installed;
+  if (!c.installed) signIn.title = 'Codex is not installed. Install it, press Refresh, then sign in.';
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/codex/login', {});
@@ -5387,6 +5432,7 @@ function geminiCard(g) {
   actions.className = 'actions';
   const signIn = button('primary small', g?.signedIn ? 'Sign in again' : 'Sign in to Gemini CLI');
   signIn.disabled = !g?.installed;
+  if (!g?.installed) signIn.title = 'Gemini CLI is not installed. Install it, press Refresh, then sign in.';
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/gemini/login', {});
@@ -6067,6 +6113,8 @@ function paneFillTab(inst) {
   inst.badgeEl = span('badge', '');
   parts.push(inst.badgeEl);
   inst.tab.replaceChildren(...parts);
+  // The tooltip names the tab when the strip is tight and the tab shows its icon alone (see paneFitTabs).
+  inst.tab.title = inst.label;
   inst.view.setAttribute('aria-label', inst.label);
   paneSetBadge(inst, inst.count ?? null);
 }
@@ -6437,6 +6485,27 @@ el.paneTabs.addEventListener('keydown', e => {
   tabs[to].focus();
 });
 
+// The tab strip fits its column. When the tabs' names do not all fit, the tabs that are not selected show their icon alone (style.css,
+// .pane-tabs[data-tight]); a tab keeps its name as its tooltip and for screen readers. Measured once per frame after each change of
+// the tabs (a tab opens or closes, a count arrives, another tab is selected) or of the strip's width; the selected tab is then
+// brought into view, since a strip with more tabs than icons fit still scrolls.
+let paneFitFrame = 0;
+function paneFitTabs() {
+  paneFitFrame = 0;
+  const strip = el.paneTabs;
+  delete strip.dataset.tight;
+  if (strip.scrollWidth > strip.clientWidth + 1) strip.dataset.tight = '';
+  const tab = paneActive ? paneInstances.get(paneActive)?.tab : null;
+  if (!tab) return;
+  const a = tab.getBoundingClientRect(); const b = strip.getBoundingClientRect();
+  if (!a.width || !b.width) return;
+  if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
+  else if (a.right > b.right) strip.scrollLeft += a.right - b.right;
+}
+const paneQueueFit = () => { if (!paneFitFrame) paneFitFrame = requestAnimationFrame(paneFitTabs); };
+new ResizeObserver(paneQueueFit).observe(el.paneTabs);
+new MutationObserver(paneQueueFit).observe(el.paneTabs, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'aria-selected'] });
+
 // Escape with the focus inside the pane closes its active tab. It stops here, so the composer's Escape (which stops a run) never sees
 // it. Three cases leave it alone: a panel that handled Escape itself (it calls preventDefault), an open drawer (it sits above the
 // pane, so Escape closes the drawer first), and no open tab. The drawer's own Escape handler on the document then runs.
@@ -6596,6 +6665,9 @@ function projectCard() {
   const project = S.projects.find(p => p.id === S.activeProject);
   if (!project) {
     body.append(para('Add a project folder first. Each project keeps its own settings.'));
+    const add = button('primary small', 'Add a project folder');
+    add.addEventListener('click', addProjectFromSettings);
+    body.append(add);
   } else {
     body.append(para(`Settings for ${project.name}: model, effort, approvals, plan and build focus, checks after each turn, blocked commands, tools, isolated copies, the spend limit and the agent settings. Each one follows the app default until you change it.`));
     const open = button('ghost small', 'Open project settings');
@@ -6848,6 +6920,9 @@ settingsRegister({
   title: 'Music',
   order: 15,
   render(body) {
+    // The card's title already says Music, so the row names what the switch does.
+    const name = el.music.querySelector('.music-name');
+    if (name) name.textContent = 'Play background music';
     body.append(el.music);
   },
 });
@@ -6976,6 +7051,7 @@ function desktopSwitch(sw, data) {
   });
   const input = row.querySelector('input');
   input.disabled = !data.desktop;
+  if (!data.desktop) row.title = 'Only the Plenum desktop app can change this.';
   wrap.append(row, status.note);
   return wrap;
 }
@@ -7563,6 +7639,8 @@ el.form.addEventListener('submit', e => {
     return;
   }
   const text = el.input.value.trim();
+  // The text stays in the box until the saved model has arrived: a message must not go out with the built-in default.
+  if (text && !stateLoaded) return toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
   if (!text) {
     if (pickedImages().length) toast('Type a message to send with the image.', 'bad');
     return;
@@ -7698,6 +7776,17 @@ el.chat.addEventListener('click', async e => {
   copy.textContent = 'Copied';
   setTimeout(() => { copy.textContent = 'Copy'; }, 1400);
 });
+
+// The message box's hint is one sentence at any width: on a narrow window it is the short one, so it never ends in a cut word.
+{
+  const wide = el.input.getAttribute('placeholder') ?? '';
+  const narrow = window.matchMedia?.('(max-width: 560px)');
+  const fitHint = () => { el.input.placeholder = narrow?.matches ? 'Ask, review or plan. Type / for commands.' : wide; };
+  if (narrow && wide) {
+    fitHint();
+    narrow.addEventListener?.('change', fitHint);
+  }
+}
 
 el.addProjectBtn.addEventListener('click', () => (el.addForm.hidden ? openAddForm() : (el.addForm.hidden = true)));
 el.addCancel.addEventListener('click', () => { el.addForm.hidden = true; });
@@ -7969,6 +8058,7 @@ window.MuseUI = {
   sendComputer,
   computer: { frameUrl: frameDataUrl, busy: () => busyNow(), stopWord: stopWordOf },
   openAddForm,
+  addProjectFromSettings,
   // The name of a paired phone from its device id (a via field), or '' while it is not known. The callers write "a phone" for ''.
   phoneName: id => phoneNames.get(String(id)) || '',
   // Overwritable. public/ext-notices.js assigns the real notice strip and risk here. A notice is information, so the stub draws

@@ -318,6 +318,7 @@
     // The button names the product, as the other coding agents' buttons do. It is off until the CLI is installed.
     const signIn = MuseUI.button('primary small', 'Sign in to Cursor');
     signIn.disabled = !c?.installed;
+    if (!c?.installed) signIn.title = 'Cursor is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
         await MuseUI.api('/api/accounts/cursor/login', {});
@@ -373,6 +374,7 @@
     // The button names the product, as the other coding agents' buttons do. It is off until the CLI is installed.
     const signIn = MuseUI.button('primary small', 'Sign in to Grok Build');
     signIn.disabled = !g?.installed;
+    if (!g?.installed) signIn.title = 'Grok Build is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
         await MuseUI.api('/api/accounts/grok/login', {});
@@ -418,6 +420,7 @@
     actions.className = 'actions';
     const signIn = MuseUI.button('primary small', a?.signedIn === true ? 'Sign in again' : 'Sign in to Antigravity');
     signIn.disabled = !a?.installed;
+    if (!a?.installed) signIn.title = 'Antigravity is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
         await MuseUI.api('/api/accounts/antigravity/login', {});

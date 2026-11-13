@@ -68,7 +68,8 @@
 
   function openCompare() {
     MuseUI.openDrawer(TITLE, draw);
-    view?.prompt.focus();
+    // The prompt takes the focus without scrolling the drawer to it: the drawer opens at its top, on the first group of models.
+    view?.prompt.focus({ preventScroll: true });
   }
 
   // Builds the whole panel from the module state. openDrawer and refreshDrawer both call it.

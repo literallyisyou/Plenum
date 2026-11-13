@@ -563,7 +563,7 @@
     if (n.updated) return { text: 'Updated', kind: 'updated' };
     if (n.hidden) return { text: n.hiddenAt ? `Hidden ${dateText(n.hiddenAt)}` : 'Hidden', kind: 'hidden' };
     if (n.status === 'planned') return { text: 'Planned feature', kind: 'planned' };
-    return { text: 'Shows', kind: 'shows' };
+    return { text: 'Will show', kind: 'shows' };
   }
 
   // The notices list. openId is expanded and scrolled into view when it draws. A change draws the list again.
@@ -582,7 +582,11 @@
     head.append(para('These appear once where a risk starts. Hiding one never turns off a safety check.', 'legal-intro'));
     const showAll = button('ghost small', 'Show all again', () => changeNotice('/api/notices/show-all', {}, 'Hidden notices are shown again.', wrap, openId));
     showAll.disabled = hiddenCount === 0;
-    head.append(showAll);
+    // The button is off while nothing is hidden, and the words beside it say so (a pale button alone looks broken).
+    const showAllBox = make('div', 'legal-showall');
+    showAllBox.append(showAll);
+    if (hiddenCount === 0) showAllBox.append(make('span', 'legal-showall-note', 'Nothing is hidden.'));
+    head.append(showAllBox);
 
     const items = list.map(n => {
       const det = make('details', 'legal-notice');

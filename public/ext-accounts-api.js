@@ -289,12 +289,14 @@
         ? 'Gemini CLI is set to its Google sign-in, so your Google AI key is not used. Run gemini, type /auth and pick "Gemini API key" so your key is used.'
         : !g.on
           ? 'Gemini uses its Google sign-in.'
-          : 'No Google AI key is saved, so Gemini uses its Google sign-in.';
+          : 'The switch is on, but no Google AI key is saved, so Gemini uses its Google sign-in for now. A saved key will be used instead.';
     paintGeminiModels(panel, g.models);
     const c = routes.claude ?? {};
     for (const [value, button] of ui.claude.buttons) button.setAttribute('aria-pressed', String(c.route === value));
     const automatic = c.choice === null || c.choice === undefined ? ' Chosen automatically. Pick one to keep it.' : '';
-    ui.claude.status.textContent = c.route === 'api'
+    ui.claude.status.textContent = c.route === 'api' && c.saved === false
+      ? `No Anthropic API key is saved, so Claude cannot run through it yet. ${c.cli?.installed === false ? 'Add a key, or install Claude Code and choose the subscription.' : 'Add a key, or choose the Claude Code subscription.'}${automatic}`
+      : c.route === 'api'
       ? `Claude runs through your Anthropic API key, billed per token.${automatic}`
       : c.cli?.installed === false
         ? `Claude Code is not installed, so Claude cannot run through your subscription yet. Install Claude Code, or choose the Anthropic API key.${automatic}`
@@ -305,7 +307,7 @@
       ? 'Codex uses its ChatGPT sign-in.'
       : x.saved
         ? 'Codex uses your OpenAI API key, billed per token.'
-        : 'No OpenAI API key is saved, so Codex uses its ChatGPT sign-in.';
+        : 'The switch is on, but no OpenAI API key is saved, so Codex uses its ChatGPT sign-in for now. A saved key will be used instead.';
   }
 
   // One change is one request. The controls wait for the answer, and only the answer to the latest change is shown. A refused

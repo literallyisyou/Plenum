@@ -231,7 +231,7 @@
   if (!MuseUI || typeof MuseUI.setProjectApprovals !== 'function') return;
 
   const SCOPES = [
-    { id: 'project', label: () => `This project${activeProject() ? ` (${activeProject().name})` : ''}`, help: () => 'Only the project on screen.' },
+    { id: 'project', label: () => `This project${activeProject() ? ` (${activeProject().name})` : ''}`, help: () => (activeProject() ? 'Only the project on screen.' : 'Needs a project. Add a project folder first.') },
     { id: 'all', label: () => 'Every project', help: () => 'Sets the app default and makes every project follow it. A project’s own approval settings are cleared, and projects you add later start in it too.' },
     { id: 'new', label: () => 'New projects', help: () => 'Sets the app default for projects you add later. A project that follows the default today keeps what it has now.' },
   ];
@@ -409,7 +409,7 @@
       const state = MuseUI.state;
       const project = activeProject();
       if (!project && scopeNow === 'project') scopeNow = 'all';
-      const mine = project ? nameOf(currentFor('project', state)) : 'no project';
+      const mine = project ? nameOf(currentFor('project', state)) : 'No project';
       status.textContent = `${project ? `${project.name}: ` : ''}${mine}. App default for new projects: ${nameOf(currentFor('new', state))}.`;
       for (const r of radios) {
         r.input.checked = r.s.id === scopeNow;

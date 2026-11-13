@@ -18,11 +18,19 @@
   const TEXT = {
     loading: 'Loading the rules…',
     noProject: 'Add a project folder first.',
+    addFolder: 'Add a project folder',
     intro: 'Plenum sends AGENTS.md and the global rules in its own prompt to every model in the chat and to the build\'s planner, coders and reviewer. CLAUDE.md and GEMINI.md are read by their own CLIs from the project folder. Council, relay, compare and pipeline seats get no rules: they are text-only roles without the project\'s files.',
     about: {
       'AGENTS.md': 'Plenum sends this file to every model in the chat and to the build\'s planner, coders and reviewer, as the project owner\'s instructions. Codex also reads it from the folder on its own. It is treated as data: it cannot approve an action, widen the project folder or turn a tool on.',
       'CLAUDE.md': 'Claude Code reads this file from the project folder on its own. Plenum does not add it to a prompt. Claude Code\'s docs suggest keeping it under 200 lines.',
       'GEMINI.md': 'The Gemini CLI reads this file from the project folder on its own. Plenum does not add it to a prompt. A running Gemini session sees a change after /memory reload or a new session.',
+    },
+    // What an empty editor says: what goes there and what Plenum does with it (a placeholder, so it is gone once there is text).
+    empty: {
+      'AGENTS.md': 'No rules yet. Write what every model should know about this project: how to build and test it, its conventions, what never to do. Plenum sends this text with each message, and Save writes it to AGENTS.md in the project folder. Insert starter gives you a first outline.',
+      'CLAUDE.md': 'Empty. Write what Claude Code should know about this project. It reads this file from the project folder on its own.',
+      'GEMINI.md': 'Empty. Write what the Gemini CLI should know about this project. It reads this file from the project folder on its own.',
+      [GLOBAL]: 'No global rules yet. Write rules for every project: how you like answers written, habits to keep, things to avoid. Plenum adds them to each message after the rules of the project.',
     },
     changed: 'The file changed on disk. Save is refused until you Reload.',
     running: 'A run is in progress.',
@@ -355,6 +363,7 @@
     d.textarea = make('textarea', 'ext-rules-text');
     d.textarea.spellcheck = false;
     d.textarea.rows = 18;
+    d.textarea.placeholder = TEXT.empty[name];
     d.textarea.setAttribute('aria-label', `${label} text`);
     d.textarea.maxLength = global ? view.limits.globalChars : view.limits.saveChars;
     d.textarea.addEventListener('input', () => {
@@ -453,7 +462,7 @@
 
     const note = make('p', 'ext-rules-note');
     note.append(`${TEXT.patternsNote} `);
-    note.append(button('primary small ext-rules-patterns', TEXT.editPatterns, openPatterns));
+    note.append(button('ghost small ext-rules-patterns', TEXT.editPatterns, openPatterns));
     root.append(note);
 
     refreshAll(view);
@@ -466,6 +475,7 @@
     const projectId = MuseUI.state.activeProject;
     if (!projectId) {
       root.append(make('p', 'ext-rules-note', TEXT.noProject));
+      if (typeof MuseUI.addProjectFromSettings === 'function') root.append(button('primary small', TEXT.addFolder, () => MuseUI.addProjectFromSettings()));
       return;
     }
     root.append(make('p', 'ext-rules-note', TEXT.loading));

@@ -340,6 +340,8 @@ kbd {
 .app[data-strip] .side-link .ic { width: 18px; height: 18px; font-size: 13.5px; }
 .app[data-strip] .side-link .badge { position: absolute; margin: 0; transform: translate(12px, -12px); min-width: 16px; height: 16px; font-size: 9.5px; }
 .app[data-strip] .side-link { position: relative; }
+/* With no project the strip keeps the + button alone: the sentence about it has no room in 56 px. */
+.app[data-strip] .empty-side { display: none; }
 
 .add-project {
   display: grid; gap: 8px; padding: 10px; margin: 2px 0 8px;
@@ -357,6 +359,20 @@ kbd {
   box-shadow: var(--ring);
 }
 .row { display: flex; gap: 8px; }
+/* The form opens with a notice (ext-notices.js puts it first in the form). The folder box and its buttons stay on top; the notice
+   follows them. */
+.add-project > .risk-note { order: 1; margin: 0; }
+/* Beside the chat the form is a card over the page, under the + button (beside it on the icon strip): the sidebar is too narrow
+   for the notice, and the strip for the form itself, so the project list and the links under it stay where they are. On a narrow
+   window the sidebar is a menu that scrolls, and the form stays in it. The card lies over an expanded pane (19) and under the scrim
+   of a drawer (20 as well, later in the page). */
+@media (min-width: 861px) {
+  .add-project {
+    position: fixed; left: 10px; top: 108px; z-index: 20; width: 320px; margin: 0;
+    max-height: calc(100vh - 120px); overflow-y: auto; box-shadow: var(--shadow-3);
+  }
+  .app[data-strip] .add-project { left: calc(var(--side-w) + 8px); top: 72px; max-height: calc(100vh - 84px); }
+}
 
 .side-foot { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 2px; flex: none; }
 .side-link {
@@ -496,6 +512,9 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 #titlebar:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) > .proj-title { flex: 1 1 0; min-height: var(--bar-h); align-items: center; margin-right: var(--win-controls); }
 #titlebar:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) > :is(.titlebar-slot, .controls, .titlebar-space, .pane-buttons) { order: 2; }
 #titlebar:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) > .titlebar-space { min-width: 0; }
+/* On two rows the title is the project alone: the first row also holds the window buttons, and the thread (app.js renderTop draws it
+   as its own piece) is named by the thread tabs under the bar. */
+#titlebar:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) .proj-thread { display: none; }
 @media (min-width: 861px) { .app:not([data-settings-open]):not([data-pane-expanded]):has(> .pane:not([hidden])) #titlebar > .proj-title { margin-right: 0; } }
 /* Step 4: the Phone chip shows its short word (ext-remote.js sets data-short); the full words stay in its accessible name. */
 #titlebar:is([data-fit="4"],[data-fit="5"]) .remote-chip[data-short] { font-size: 0; gap: 0; }
@@ -994,6 +1013,13 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 .foot { width: var(--col); margin: 8px auto 0; min-height: 24px; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .statusbar { display: flex; align-items: center; gap: 2px; flex: none; margin-left: -6px; }
 .hint { color: var(--muted); font-size: 12px; margin-left: auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The line under the composer never ends in a cut word: app.js splitHint draws each phrase as its own piece, the pieces wrap, and
+   only the first row shows, so a phrase that does not fit is left out whole. The empty piece in front lets the first phrase go the
+   same way (a row always keeps its first piece). The :where keeps the weight of ".foot .hint", so the rules that hide the hint
+   (860 px and below, the phone) still win. */
+.foot .hint:where(:has(> .hint-part)) { display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: flex-start; height: 18px; line-height: 18px; }
+.foot .hint:where(:has(> .hint-part))::before { content: ""; }
+.hint-part { flex: none; white-space: pre; }
 .st {
   display: inline-flex; align-items: center; gap: 7px; background: none; border: 0;
   color: var(--muted); padding: 3px 8px; border-radius: 8px; font-size: 12px;
@@ -1121,6 +1147,9 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 .pane-tab[aria-selected="true"] { background: var(--fill-2); color: var(--text); }
 .pane-tab[aria-selected="true"] .ic { color: var(--accent); }
 .pane-tab .badge { margin-left: 2px; }
+/* A strip too narrow for every name (app.js paneFitTabs sets data-tight): the tabs that are not selected show their icon alone. The
+   name is taken out of sight the way .sr does it, so the tab keeps its name for screen readers; a tab without an icon keeps its name. */
+.pane-tabs[data-tight] .pane-tab[aria-selected="false"]:has(> .ic) .pane-tab-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 /* The Back chevron is shown only where the pane takes the whole window (see the 860 px rules below). */
 .pane-back { display: none; }
 .pane-back .ic { rotate: 180deg; }
@@ -1131,12 +1160,17 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 .settings-card .card-title { margin: 0; font: 600 var(--fs-read)/1.3 var(--ui); letter-spacing: 0; color: var(--text); }
 .card-body { display: grid; gap: 10px; min-width: 0; }
 .card-body > p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+/* The one button of the This project card is as wide as its words, not the card. */
+.settings-card[data-section="project"] .card-body > button { justify-self: start; }
 .setting { display: grid; gap: 6px; min-width: 0; }
 /* Each saved change says "Saved" on its row, or the server's refusal in red. Empty until the first change. */
 .setting-status { font-size: 12px; color: var(--ok); }
 .setting-status:empty { display: none; }
 .setting-status.bad { color: var(--bad); }
-.switch-row:has(input:disabled) { cursor: default; opacity: 0.6; }
+/* A switch that cannot be changed here keeps its state at full strength: an ON switch must look on (a blanket opacity turned the
+   accent track and the white knob into a grey pair, 2.5:1 in dark). Only an OFF one is dimmed; the row's title says why it is locked. */
+.switch-row:has(input:disabled) { cursor: default; }
+.switch-row input:disabled:not(:checked) + .switch-track { opacity: 0.55; }
 
 /* ---------- the Settings page (UI-ARCH section 5, app.js) ---------- */
 /* One page over the chat column and the side pane, under the title bar, so the drive pill and Stop stay in view. The sidebar stays.
@@ -1328,6 +1362,12 @@ html[data-legal='pending'] #app { display: none; }
 .music-sub input[type="range"] { width: 100%; min-width: 0; accent-color: var(--accent); }
 .music-sub output { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 .music-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+/* In the Settings card (the card's own title says Music) the block is a plain row like its siblings: the switch first, one label, no box. */
+.card-body > .side-music { padding: 0; margin: 0; border: 0; background: none; border-radius: 0; gap: 12px; }
+.card-body > .side-music .music-row { gap: 12px; }
+.card-body > .side-music .music-row > .ic { display: none; }
+.card-body > .side-music .music-row .switch { order: -1; flex: none; }
+.card-body > .side-music .music-name { flex: 0 1 auto; font: 500 var(--fs-body)/1.3 var(--ui); color: var(--text); }
 .plain-select {
   min-width: 0; max-width: 100%; border: 0; border-radius: var(--r-sm); padding: 3px 18px 3px 4px; outline: none; cursor: pointer;
   background-color: transparent; background-image: var(--i-chevron-grey); background-repeat: no-repeat; background-position: right 2px center; background-size: 12px;
@@ -1619,10 +1659,10 @@ html[data-legal='pending'] #app { display: none; }
 .compact-model + .compact-model { padding-top: 10px; border-top: 1px solid var(--line); }
 .compact-model .range-row { flex-wrap: wrap; }
 .compact-model .range-row select { flex: none; }
-.compact-model .range-row input[type="range"] { flex: 1 1 140px; }
-.compact-model .range-row input[type="range"]:disabled { opacity: 0.45; }
+.compact-model .range-row input[type="range"] { flex: 1 1 80px; min-width: 80px; }
+.compact-model .range-row input[type="range"]:disabled { opacity: 0.55; }
 .compact-model .range-row .compact-tokens { flex: none; width: 11ch; font-variant-numeric: tabular-nums; }
-.compact-model .range-row .compact-tokens:disabled { opacity: 0.45; }
+.compact-model .range-row .compact-tokens:disabled { opacity: 0.6; }
 .compact-model .range-row .compact-unit { flex: none; color: var(--muted); font-size: 13px; }
 .switch-row { position: relative; display: flex; align-items: flex-start; gap: 12px; cursor: pointer; color: var(--text); font-size: 13px; line-height: 1.45; }
 .switch-row .switch-track { margin-top: 2px; }
