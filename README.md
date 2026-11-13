@@ -43,6 +43,13 @@ The look follows the system (light or dark). The **Theme** button in the sidebar
 
 Applied updates are kept in Plenum's state folder, never in the install folder, so the install location does not need to be writable for them. See [Updates to Plenum](#updates-to-plenum).
 
+### Starting, health and build identity
+
+- The server answers /api/health at once ({ ok, pid, uptimeMs }), before and after the License Agreement is accepted. The desktop window waits on it, and restarts the server by itself if it ends.
+- /api/status never waits for a CLI or a model list. It returns what it last read and refreshes in the background. When something changes, the page is told by a 'providers' event and asks again. Model lists for Codex, Antigravity and Muse Code are read from the CLIs themselves. A model a CLI no longer offers is shown with a note and a way to pick another. Plenum does not switch your model for you.
+- Every build says which one it is. 'npm run stamp' (node scripts/stamp-build.mjs) writes build-info.json (version, build as UTC YYYYMMDD.HHmm, commit, dirty, builtAt); the release workflow runs it before the build. GET /api/build-info and the log line read like 'Plenum 0.6.0 (build 20261113.0412, 0af7276)', and a development copy reads 'Plenum 0.6.0 (development copy)'.
+- The repository now lives at https://github.com/literallyisyou/Plenum.
+
 ## Run without the app window
 
 In a terminal, in this folder:
@@ -148,7 +155,7 @@ Applied changes are tied to the Plenum version they were applied under. After Pl
 
 ## New versions
 
-The desktop app checks for a new version 20 seconds after it starts and every four hours after that, unless **Check for new versions** is off in **Settings › Updates**. The check asks the Plenum release repository on GitHub (`https://github.com/RealAlcibiades/Plenum`) for the newest published release. It carries your Plenum version, operating system and architecture, your IP address, and a random rollout ID that Plenum keeps in its user-data folder. Apart from the download of an update itself, nothing else leaves your computer for this, and nothing about you goes to Plenum's developer: GitHub shows the developer only how many times each file was downloaded.
+The desktop app checks for a new version 20 seconds after it starts and every four hours after that, unless **Check for new versions** is off in **Settings › Updates**. The check asks the Plenum release repository on GitHub (`https://github.com/literallyisyou/Plenum`) for the newest published release. It carries your Plenum version, operating system and architecture, your IP address, and a random rollout ID that Plenum keeps in its user-data folder. Apart from the download of an update itself, nothing else leaves your computer for this, and nothing about you goes to Plenum's developer: GitHub shows the developer only how many times each file was downloaded.
 
 What happens when a new version is found depends on the build:
 

@@ -1286,7 +1286,57 @@ function effortOptions() {
   return Object.entries(EFFORT_LABELS).map(([value, name]) => menuOption(value, name, EFFORT_NOTES[value]));
 }
 
+// Every model menu fillModels has filled (the chat's, the Advisor's, each council seat's and the moderator's), so a new catalog reaches
+// all of them. A menu that left the page (a closed panel) is dropped when the list is next walked.
+const modelMenus = new Map(); // select element -> whether it has the Off choice
+
+// A catalog entry the CLI's own list does not have is marked offered: false (DECISIONS item 91). It stays in the menu and can still be
+// chosen; this is the line the person reads next to it. '' for a model that is offered, or not known to be gone.
+function notOfferedWords(ref) {
+  const entry = typeof ref === 'string' ? catalog.find(c => `${c.provider}:${c.id}` === ref) : null;
+  if (!entry || entry.offered !== false) return '';
+  const name = PROVIDER_REGISTRY.find(p => p.id === entry.provider)?.name ?? entry.provider;
+  return `${name} no longer offers this model to your account. Pick another.`;
+}
+
+function dropGoneMenus() {
+  for (const select of [...modelMenus.keys()]) if (!select.isConnected) modelMenus.delete(select);
+}
+
+function menuIsOpen(select) {
+  try {
+    return select.matches(':open');
+  } catch {
+    return false;
+  }
+}
+
+// Fills every model menu again from the catalog. Each keeps its chosen value, and the menu keeps focus because the select itself stays.
+// A popup that is open is not touched (its rows would move under the pointer): this waits and looks again in 200 ms.
+let menuWait = 0;
+function refreshModelMenus() {
+  clearTimeout(menuWait);
+  menuWait = 0;
+  dropGoneMenus();
+  if ([...modelMenus.keys()].some(menuIsOpen)) {
+    menuWait = setTimeout(refreshModelMenus, 200);
+    return;
+  }
+  for (const [select, withOff] of [...modelMenus]) {
+    const chosen = select.value;
+    fillModels(select, withOff);
+    ensureOption(select, chosen);
+    select.value = chosen;
+  }
+  renderTop();
+  renderBoard();
+  // A council panel that is open and not in use is drawn again, so its seats show the new catalog.
+  if (drawerRender === renderCouncilDrawer && !el.drawer.hidden && !el.drawer.contains(document.activeElement)) refreshDrawer();
+}
+
 function fillModels(select, withOff) {
+  if (modelMenus.size > 30) dropGoneMenus();
+  modelMenus.set(select, withOff);
   const nodes = menuHead();
   if (withOff) nodes.push(menuOption('off', 'Off', 'No second opinion', ''));
   for (const [provider, name] of GROUPS) {
@@ -2516,6 +2566,23 @@ function notRunWords(cd, s, r) {
   return { label: 'Waiting', text: `Waiting for round ${r - 1} to finish` };
 }
 
+const NOT_OFFERED_ERROR = /^.{1,60}? does not offer\b/;
+
+// Takes the person to a seat's model menu: the board scrolls into view and the menu takes focus. Where the board is not on screen (chat
+// mode, or a narrow window where it is a single line) the Council panel opens and its menu takes focus.
+function showSeatModelMenu(seatId) {
+  const index = SEAT_IDS.indexOf(seatId);
+  if (index < 0) return;
+  const onBoard = mode === 'council' && el.board.getClientRects().length > 0 && boardPills[index]?.modelSelect;
+  if (onBoard) {
+    el.board.scrollIntoView({ block: 'nearest' });
+    boardPills[index].modelSelect.focus();
+    return;
+  }
+  openCouncilDrawer();
+  el.drawerBody.querySelectorAll('.seat select[aria-label^="Model of seat"]')[index]?.focus();
+}
+
 function roundEl(cd, s, r) {
   const data = s.rounds[r] ?? { state: 'waiting', text: '' };
   const d = document.createElement('details');
@@ -2533,6 +2600,13 @@ function roundEl(cd, s, r) {
   body.className = 'turn-body round-body';
   if (data.state === 'failed') {
     body.append(span('seat-err', data.error || 'This seat failed.'));
+    // A seat whose model the CLI no longer offers (the server's text starts "<name> does not offer") is fixed in its model menu.
+    if (NOT_OFFERED_ERROR.test(data.error ?? '') && SEAT_IDS.includes(s.id)) {
+      const change = button('ghost small seat-change', 'Change model');
+      change.setAttribute('aria-label', `Change the model of seat ${s.id.toUpperCase()}`);
+      change.addEventListener('click', () => showSeatModelMenu(s.id));
+      body.append(change);
+    }
   } else if (data.state === 'waiting') {
     body.append(span('round-wait', r === 1 ? 'Waiting to start' : unrun.text));
   } else if (!data.text) {
@@ -3368,6 +3442,24 @@ function pickSelect(cls, title, aria) {
   return { pickEl, select };
 }
 
+// The line under a seat's model menu when its chosen model is no longer offered (notOfferedWords). The menu points at it, so a screen
+// reader reads it with the menu. It is hidden, and the menu points at nothing, while the model is offered.
+let goneLines = 0;
+function goneLine() {
+  const line = span('seat-gone', '');
+  line.id = `seat-gone-${++goneLines}`;
+  line.hidden = true;
+  return line;
+}
+
+function showGone(select, line, ref) {
+  const words = notOfferedWords(ref);
+  line.textContent = words;
+  line.hidden = !words;
+  if (words) select.setAttribute('aria-describedby', line.id);
+  else select.removeAttribute('aria-describedby');
+}
+
 function seatPill(index) {
   const L = SEAT_IDS[index].toUpperCase();
   const root = document.createElement('div');
@@ -3394,11 +3486,14 @@ function seatPill(index) {
   const foot = document.createElement('div');
   foot.className = 'seat-foot';
   foot.append(effort.pickEl, sess);
-  root.append(head, model.pickEl, foot);
+  const gone = goneLine();
+  root.append(head, model.pickEl, gone, foot);
   return {
     root,
+    modelSelect: model.select,
     sync(cfg) {
       const s = cfg.seats[index] ?? {};
+      showGone(model.select, gone, s.ref);
       const gemini = providerOf(s.ref) === 'gemini';
       root.dataset.p = providerOf(s.ref);
       remove.hidden = cfg.seats.length <= MIN_SEATS;
@@ -3433,11 +3528,14 @@ function moderatorPill() {
   const foot = document.createElement('div');
   foot.className = 'seat-foot';
   foot.append(effort.pickEl);
-  root.append(head, model.pickEl, foot);
+  const gone = goneLine();
+  root.append(head, model.pickEl, gone, foot);
   return {
     root,
+    modelSelect: model.select,
     sync(cfg) {
       const m = cfg.moderator ?? {};
+      showGone(model.select, gone, m.ref);
       root.dataset.p = providerOf(m.ref);
       ensureOption(model.select, m.ref);
       model.select.value = m.ref ?? '';
@@ -3469,12 +3567,40 @@ async function editSeat(index, field, value) {
 // Add seat and the × on a seat (DECISIONS item 88). The server takes 2 to 4 seats; the letters follow the order, so removing seat B
 // makes seat C the new B. A new seat takes the first role not yet on the council, and the first of Plenum's CLIs not yet seated
 // (Gemini CLI, Codex, Muse Code, then Claude), so the council can have every one of them; with all four seated it copies the last seat.
+// DECISIONS item 91: Google no longer serves Gemini CLI on a Google AI Pro plan and Antigravity does, so the Gemini seat takes Gemini 4
+// Hydrogen through Antigravity when Antigravity is signed in and lists it, and Gemini CLI otherwise (it stays in every menu). A
+// candidate the CLI's own list says it no longer offers (offered: false in the catalog) is skipped, so a retired model is never added.
 const NEW_SEAT_MODELS = [['gemini', 'gemini:default'], ['codex', 'codex:default'], ['muse', 'muse:muse-wonder-full-1.0'], ['anthropic', 'anthropic:claude-opus-5-5']];
+const HYDROGEN_HIGH = 'antigravity:gemini-4-hydrogen-high';
+const catalogRef = c => `${c.provider}:${c.id}`;
+const retiredRef = ref => catalog.some(c => catalogRef(c) === ref && c.offered === false);
+
+// Signed in is the status's word. The status is a snapshot that can be older than the list (a list that was just read means agy answered
+// with this account), so a status that does not know yet (null) goes by the list; a status that says false is believed.
+const antigravitySignedIn = () => {
+  const said = providers?.antigravity?.signedIn;
+  return said === true || (said == null && catalog.some(c => c.provider === 'antigravity' && c.discovered === true && c.offered !== false));
+};
+
+function geminiSeatModel(fallback) {
+  if (antigravitySignedIn()) {
+    const listed = catalog.filter(c => c.provider === 'antigravity' && c.offered !== false);
+    if (listed.some(c => catalogRef(c) === HYDROGEN_HIGH)) return HYDROGEN_HIGH;
+    const other = listed.find(c => c.id.startsWith('gemini-4-hydrogen-'));
+    if (other) return catalogRef(other);
+  }
+  return fallback;
+}
+
 function newSeat(seats) {
   const roles = new Set(seats.map(s => s.role));
   const role = ['architect', 'skeptic', 'engineer', 'generalist'].find(r => !roles.has(r)) ?? 'generalist';
   const seated = new Set(seats.map(s => providerOf(s.ref)));
-  const ref = NEW_SEAT_MODELS.find(([p]) => !seated.has(p))?.[1] ?? seats.at(-1)?.ref ?? 'gemini:default';
+  // A seat that already runs a Gemini model through Antigravity is the council's Gemini seat.
+  if (seats.some(s => typeof s.ref === 'string' && s.ref.startsWith('antigravity:gemini'))) seated.add('gemini');
+  const ref = NEW_SEAT_MODELS
+    .map(([p, model]) => [p, p === 'gemini' ? geminiSeatModel(model) : model])
+    .find(([p, model]) => !seated.has(p) && !retiredRef(model))?.[1] ?? seats.at(-1)?.ref ?? 'gemini:default';
   return { ref, effort: 'high', role };
 }
 
@@ -4150,33 +4276,90 @@ events.on('run', ev => {
 
 // The catalog the model menus were last filled from, and whether a second read is already planned (see loadProviders).
 let catalogKey = '';
-let codexReloadPlanned = false;
 
-async function loadProviders({ refreshCodex = false } = {}) {
-  const data = await api(refreshCodex ? '/api/status?refresh=codex' : '/api/status');
+// GET /api/status always answers at once (DECISIONS item 91). The lists of models that a CLI reads (Codex, Antigravity, Muse Code) arrive
+// later, so the page asks again while one says reading: true (after 3 seconds, then every 6, at most 10 times) and whenever the events
+// channel says the providers or the catalog changed. Loads never overlap: every call made while one runs shares the one that follows it.
+let providersAsk = null;      // { refresh, waiters }: the next load, filled by every call made until it starts
+let providersLoop = null;     // the loop that runs the loads, while there is one
+let providersReading = false; // whether the last answer said a list is still being read
+let providersPolls = 0;       // how many reads were planned for the same wait
+let providersPollTimer = 0;
+const POLL_FIRST_MS = 3000;
+const POLL_NEXT_MS = 6000;
+const POLL_MAX = 10;
+
+function loadProviders({ refreshCodex = false } = {}) {
+  return new Promise((resolve, reject) => {
+    providersAsk ??= { refresh: false, waiters: [] };
+    providersAsk.refresh ||= refreshCodex;
+    providersAsk.waiters.push({ resolve, reject });
+    providersLoop ??= drainProviders();
+  });
+}
+
+async function drainProviders() {
+  while (providersAsk) {
+    const ask = providersAsk;
+    providersAsk = null;
+    try {
+      await readProviders(ask.refresh);
+      for (const w of ask.waiters) w.resolve();
+    } catch (err) {
+      for (const w of ask.waiters) w.reject(err);
+    }
+  }
+  providersLoop = null;
+}
+
+async function readProviders(refreshCodex) {
+  let data;
+  try {
+    data = await api(refreshCodex ? '/api/status?refresh=codex' : '/api/status');
+  } catch (err) {
+    // A read that fails while a list is still being read is tried again on the same schedule.
+    planProvidersPoll();
+    throw err;
+  }
   providers = data.providers;
   catalog = data.catalog;
   aliases = data.aliases;
-  // The catalog grows when Codex reports the models it offers (lib/codex-models.mjs), so the menus are filled again when the list
-  // changed. The value on screen is put back by renderTop.
-  const key = catalog.map(c => `${c.provider}:${c.id}`).join('\n');
+  // A first answer that says statusPending: true (the server has not read the providers yet) is asked for again like a list being read.
+  providersReading = data.statusPending === true || [data.codexModels, data.antigravityModels, data.museModels].some(m => m?.reading === true);
+  // The catalog grows when a CLI reports the models it offers (lib/codex-models.mjs), and an entry can say the CLI no longer offers it
+  // (offered: false), so the menus are filled again when the list, a label or that mark changed. Each menu keeps the value it had.
+  const key = catalog.map(c => `${c.provider}:${c.id}|${c.label}|${c.offered === false ? 'gone' : ''}`).join('\n');
   if (key !== catalogKey) {
     catalogKey = key;
-    el.model.replaceChildren();
-    el.advisor.replaceChildren();
+    refreshModelMenus();
   }
   renderStatus();
   renderTop();
-  // Codex or Antigravity was still reading its list when the server answered: ask once more shortly, so its models join the menu.
-  // The server never waits for Antigravity's list (DECISIONS item 89), so this is how the first menu gets it.
-  if ((data.codexModels?.reading || data.antigravityModels?.reading) && !codexReloadPlanned) {
-    codexReloadPlanned = true;
-    setTimeout(() => {
-      codexReloadPlanned = false;
-      loadProviders().catch(() => {});
-    }, 6000);
-  }
+  planProvidersPoll();
 }
+
+// Asks again soon while a list is still being read. The server never waits for a CLI's list (DECISIONS items 89 and 90), so this is how
+// the first menu gets it.
+function planProvidersPoll() {
+  if (!providersReading) {
+    providersPolls = 0;
+    clearTimeout(providersPollTimer);
+    providersPollTimer = 0;
+    return;
+  }
+  if (providersPollTimer || providersPolls >= POLL_MAX) return;
+  const wait = providersPolls === 0 ? POLL_FIRST_MS : POLL_NEXT_MS;
+  providersPolls += 1;
+  providersPollTimer = setTimeout(() => {
+    providersPollTimer = 0;
+    loadProviders().catch(() => {});
+  }, wait);
+}
+
+// The server publishes this when the provider status or the catalog changed in the background (a list was read, a sign-in changed).
+events.on('providers', () => {
+  loadProviders().catch(() => {});
+});
 
 // ---------- theme ----------
 
@@ -7253,7 +7436,7 @@ window.MuseUI = {
   approvalNames: APPROVAL_NAMES,
   approvalModes: APPROVAL_MODES,
   dialogOpen,
-  el, span, button, para, icon, cardShell, modelName, stream: () => streamEl ?? el.chat,
+  el, span, button, para, icon, cardShell, modelName, notOfferedWords, stream: () => streamEl ?? el.chat,
   // The approval card (see approvalEl): the Agents board builds its waiting cards with it, so the keys, the countdown and Show all are the chat's own.
   approvalEl,
   // Stops a run (POST /api/cancel), as the Stop button does. The Agents pane stops a run through this. Pass a project id to stop that

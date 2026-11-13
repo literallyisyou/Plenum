@@ -1,0 +1,15 @@
+/* Settings > Updates > Build (public/ext-build-info.js). Every colour is a token from style.css, so both themes follow; nothing is set inline. */
+
+.eb-root { display: grid; gap: 6px; min-width: 0; }
+.eb-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.eb-label { flex: none; font-size: 13px; font-weight: 600; color: var(--text); }
+.eb-line { flex: 1 1 auto; min-width: 0; font: 12.5px/1.45 var(--mono); color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
+.eb-copy { flex: none; }
+.eb-note { margin: 0; min-height: 16px; font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.eb-note:empty { display: none; }
+.eb-note.eb-bad { color: var(--bad); }
+
+@media (max-width: 480px) {
+  .eb-row { flex-wrap: wrap; }
+  .eb-line { flex-basis: 100%; order: 3; }
+}

@@ -206,6 +206,13 @@ jobs:
         shell: bash
         run: (cd mobile && npm ci --ignore-scripts --no-audit --no-fund)
 
+      # The build identity (build-info.json: version, build number, commit) is written before anything else is generated, so the
+      # "dirty" flag describes the checked-out tree and not generated files. The release builds call electron-builder directly, so the
+      # npm scripts that stamp a local build do not run here.
+      - name: Stamp the build
+        shell: bash
+        run: node scripts/stamp-build.mjs
+
       # The legal texts are built first, as every pack and dist script does. The build fails while a placeholder remains.
       - name: Build the legal texts
         run: npm run legal

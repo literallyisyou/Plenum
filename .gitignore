@@ -32,3 +32,6 @@ mobile/android/app/google-services.json
 
 # Stray files written by CLI test runs
 *-touch.txt
+
+# Written by scripts/stamp-build.mjs at pack time: which build this is
+build-info.json

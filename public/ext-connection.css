@@ -15,3 +15,6 @@
 
 /* A repeated connection line: the script marks every one but the last, and only the last one is shown. */
 .ext-conn-dup { display: none; }
+
+/* Reload shows only when the server refuses this page's token. The hidden attribute has to win over the button's own display rule. */
+.ext-conn-btn[hidden] { display: none; }

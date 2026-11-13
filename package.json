@@ -7,7 +7,7 @@
   "description": "Desktop console that runs Claude Code, Codex, Gemini CLI and Muse Code side by side with API models",
   "author": {
     "name": "RealAlcibiades",
-    "url": "https://github.com/RealAlcibiades"
+    "url": "https://github.com/literallyisyou"
   },
   "license": "SEE LICENSE IN LICENSE.txt",
   "main": "desktop/main.cjs",
@@ -18,15 +18,16 @@
     "start": "node plenum.mjs",
     "desktop": "electron .",
     "computer:smoke": "electron desktop/computer/smoke.cjs",
+    "stamp": "node scripts/stamp-build.mjs",
     "legal": "node scripts/build-legal.mjs",
     "mobile:build": "node scripts/build-mobile.mjs",
-    "pack": "npm run legal && npm run mobile:build && electron-builder --win --x64 --dir --publish never",
-    "dist": "npm run legal && npm run mobile:build && electron-builder --win --x64 --publish never",
-    "dist:portable": "npm run legal && npm run mobile:build && electron-builder --win portable --x64 --publish never",
-    "dist:mac": "npm run legal && npm run mobile:build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
-    "dist:mac:x64": "npm run legal && npm run mobile:build && electron-builder --mac dmg zip --x64 --publish never",
-    "dist:mac:arm64": "npm run legal && npm run mobile:build && electron-builder --mac dmg zip --arm64 --publish never",
-    "dist:linux": "npm run legal && npm run mobile:build && electron-builder --linux AppImage deb --x64 --publish never",
+    "pack": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --win --x64 --dir --publish never",
+    "dist": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --win --x64 --publish never",
+    "dist:portable": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --win portable --x64 --publish never",
+    "dist:mac": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "dist:mac:x64": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --mac dmg zip --x64 --publish never",
+    "dist:mac:arm64": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --mac dmg zip --arm64 --publish never",
+    "dist:linux": "npm run stamp && npm run legal && npm run mobile:build && electron-builder --linux AppImage deb --x64 --publish never",
     "dist:all": "node -e \"const s={win32:'dist',darwin:'dist:mac',linux:'dist:linux'}[process.platform];if(s)require('child_process').execSync('npm run '+s,{stdio:'inherit'})\""
   },
   "dependencies": {
@@ -50,7 +51,7 @@
     "copyright": "Copyright © 2026 RealAlcibiades. All rights reserved.",
     "publish": {
       "provider": "github",
-      "owner": "RealAlcibiades",
+      "owner": "literallyisyou",
       "repo": "Plenum",
       "releaseType": "draft"
     },
@@ -75,6 +76,7 @@
       "mobile/www/**/*",
       "!mobile/www/ui/**",
       "package.json",
+      "build-info.json",
       "build/icon.png",
       "node_modules/**/*",
       "!**/*.map",
@@ -124,6 +126,7 @@
         "mobile/www/**/*",
         "!mobile/www/ui/**",
         "package.json",
+        "build-info.json",
         "build/icon.png",
         "node_modules/**/*",
         "!**/*.map",
@@ -182,6 +185,7 @@
         "mobile/www/**/*",
         "!mobile/www/ui/**",
         "package.json",
+        "build-info.json",
         "build/icon.png",
         "node_modules/**/*",
         "!**/*.map",
@@ -211,6 +215,7 @@
         "mobile/www/**/*",
         "!mobile/www/ui/**",
         "package.json",
+        "build-info.json",
         "build/icon.png",
         "node_modules/**/*",
         "!**/*.map",
@@ -231,10 +236,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/RealAlcibiades/Plenum.git"
+    "url": "https://github.com/literallyisyou/Plenum.git"
   },
   "bugs": {
-    "url": "https://github.com/RealAlcibiades/Plenum/issues",
+    "url": "https://github.com/literallyisyou/Plenum/issues",
     "email": "theloved@muse.ai"
   }
 }

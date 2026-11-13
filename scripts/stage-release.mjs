@@ -154,7 +154,16 @@ async function main(argv) {
   await stageRelease(tag, percent);
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+// Node reports the real path of the module, so a script started through a junction or a link (the written path differs from the real one) is
+// compared by real path too; otherwise it would do nothing and say nothing.
+const sameFile = (a, b) => {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return false;
+  }
+};
+const isMain = process.argv[1] !== undefined && (import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href || sameFile(fileURLToPath(import.meta.url), process.argv[1]));
 if (isMain) {
   main(process.argv.slice(2)).catch((error) => {
     if (error instanceof StageError) {

@@ -3,6 +3,10 @@
 // every 5 seconds until it answers again. A failed send gets Retry, which puts the text of that send back in the composer from
 // MuseUI.lastSent; it does not send it. Copy error is on every failed send. Only the last "Cannot reach the Plenum server" line stays visible.
 // The fetch wrapper only watches same-origin /api/ calls. It never changes a request or a response.
+// In the desktop app the shell starts a server that stopped again by itself (desktop/server-supervisor.cjs, DECISIONS item 91), so the
+// banner says the server is being restarted and the page comes back without a reload: the composer and everything typed in it stay.
+// The page keeps how many times it came back in the data-plenum-reconnects attribute of the page element (the smoke run of the shell
+// reads it).
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -12,13 +16,28 @@
   const EVERY_MS = 5000;
   // Checked while the server is up: a small file from the fixed static list, so an idle page does not run the status check.
   const UP_CHECK = '/mark.svg';
-  // Checked while the banner shows: the status endpoint, which answers only once the server is running again.
-  const DOWN_CHECK = '/api/status';
+  // Checked while the banner shows: the health route, which does no work and answers only once the server is running again. A server
+  // from before that route answers 404 there, and is checked on the status endpoint instead.
+  const DOWN_CHECK = '/api/health';
+  const DOWN_CHECK_OLD = '/api/status';
+  // After this long without an answer the banner says the restarts may have run out (the desktop app then shows its own box).
+  const LONG_MS = 30_000;
+  const DESKTOP = Boolean(window.plenumShell);
+  const TEXT_DOWN = DESKTOP
+    ? "Plenum's server stopped and is being restarted. This page reconnects by itself, and what you typed is kept."
+    : 'Cannot reach the Plenum server. Retrying every 5 seconds.';
+  const TEXT_LONG = "Plenum's server has not come back yet. If a box asks what to do, choose Try again. What you typed is kept.";
+  const TEXT_TOKEN = "Plenum's server is running again but does not accept this page. Reload the page to continue.";
   // The original fetch. The checks use it, so they never pass through the wrapper below.
   const real = window.fetch.bind(window);
 
   let down = false;    // the banner is showing
   let probing = false; // one check at a time, so a tick and a click cannot overlap
+  let downAt = 0;      // when the banner first showed, for the longer wording
+  let refused = false; // the server answers but not to this page's token
+  let healthMissing = false; // the server has no /api/health (a server from before it)
+  let reconnects = 0;
+  let downs = 0;
 
   const banner = document.createElement('div');
   banner.className = 'ext-conn-banner';
@@ -26,10 +45,14 @@
   banner.hidden = true;
   const note = document.createElement('span');
   note.className = 'ext-conn-text';
-  note.textContent = 'Cannot reach the Plenum server. Retrying every 5 seconds.';
+  note.textContent = TEXT_DOWN;
   const retryNow = MuseUI.button('ghost small ext-conn-btn', 'Retry now');
   retryNow.addEventListener('click', () => probe());
-  banner.append(note, retryNow);
+  // Only for a server that refuses this page's token: the page has to be loaded again to get the new one. The person presses it.
+  const reload = MuseUI.button('ghost small ext-conn-btn', 'Reload');
+  reload.hidden = true;
+  reload.addEventListener('click', () => location.reload());
+  banner.append(note, retryNow, reload);
   // Above the transcript, in the same column as the messages.
   MuseUI.el.chat.before(banner);
 
@@ -59,36 +82,82 @@
     }
   };
 
+  // Writes a count into the page element's data attributes, where the shell's smoke run reads it. A page without one is not an error.
+  function stamp(name, value) {
+    try {
+      document.documentElement.dataset[name] = String(value);
+    } catch {
+      // Nothing to write into.
+    }
+  }
+
+  // The banner's words for how things stand now.
+  function wording() {
+    if (refused) note.textContent = TEXT_TOKEN;
+    else note.textContent = DESKTOP && Date.now() - downAt > LONG_MS ? TEXT_LONG : TEXT_DOWN;
+    reload.hidden = !refused;
+  }
+
   function markDown() {
     if (down) return;
     down = true;
+    downAt = Date.now();
+    refused = false;
+    downs += 1;
+    stamp('plenumDowns', downs);
+    wording();
     banner.hidden = false;
   }
 
   function markUp() {
     if (!down) return;
     down = false;
+    refused = false;
     banner.hidden = true;
+    reconnects += 1;
+    stamp('plenumReconnects', reconnects);
     MuseUI.toast('Connected to the Plenum server again.');
+    // The state is read again; the composer is not touched.
     MuseUI.refresh();
   }
 
-  // One check: every 5 seconds, and at once for Retry now. An ok answer from the status endpoint ends the banner. A network
-  // failure starts it (or keeps it up).
+  // The server answered, but it refused this page's token (it started again with another one). It is up, yet this page cannot use it.
+  // A server that has just started answers 401 for a moment, until the desktop shell has given it its token (keys-hello), so a refusal in
+  // the first 10 seconds of the banner counts as "still starting" and the longer wording waits.
+  const TOKEN_GRACE_MS = 10_000;
+  function markRefused() {
+    if (!down || refused) return;
+    if (Date.now() - downAt < TOKEN_GRACE_MS) return;
+    refused = true;
+    wording();
+  }
+
+  // One check call. The route is behind the Plenum token like every other /api/ route.
+  const check = path => real(path, {
+    cache: 'no-store',
+    headers: MuseUI.headers ? MuseUI.headers() : {},
+    signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined,
+  });
+
+  // One check: every 5 seconds, and at once for Retry now. An ok answer from the health route ends the banner. A network failure
+  // starts it (or keeps it up). An answer that refuses the token says so in the banner.
   async function probe() {
     if (probing) return;
     probing = true;
     try {
-      const res = await real(down ? DOWN_CHECK : UP_CHECK, {
-        cache: 'no-store',
-        // The status endpoint is behind the Plenum token like every other /api/ route.
-        headers: MuseUI.headers ? MuseUI.headers() : {},
-        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined,
-      });
+      let res = await check(down ? (healthMissing ? DOWN_CHECK_OLD : DOWN_CHECK) : UP_CHECK);
+      if (down && !healthMissing && res.status === 404) {
+        healthMissing = true;
+        res.body?.cancel().catch(() => {});
+        res = await check(DOWN_CHECK_OLD);
+      }
       res.body?.cancel().catch(() => {});
       if (res.ok) markUp();
+      else if (down && res.status === 401 && res.headers?.get?.('x-plenum-auth') === 'token') markRefused();
+      else if (down) wording();
     } catch {
       markDown();
+      wording();
     } finally {
       probing = false;
     }

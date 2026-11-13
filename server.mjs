@@ -18,8 +18,7 @@ import { expandFileMentions, listTree, workingDiff } from './lib/files.mjs';
 import { queueUpdate, listUpdates, applyUpdate, discardUpdate, rollbackUpdate, resetOverlay, overlayStatus, acknowledgeRollback } from './lib/updates.mjs';
 import * as overlay from './lib/overlay.mjs';
 import { readUsage } from './lib/usage.mjs';
-import { codexModelsWithin } from './lib/codex-models.mjs';
-import { antigravityModelsState, antigravityModelsWithin, refreshAntigravityModels } from './lib/antigravity.mjs';
+import { invalidateProviderStatus, prewarmProviderStatus, providersQuick, statusPayload } from './lib/provider-status.mjs';
 import { claudeRoute, claudeCliStatus } from './lib/claude-cli.mjs';
 import { cleanReason } from './lib/tools.mjs';
 import { DEFAULT_COUNCIL, normalizeCouncil, runCouncil } from './lib/council.mjs';
@@ -38,6 +37,7 @@ import { buildFocusOf, FOCUS_REMINDER } from './lib/focus.mjs';
 import { keepArchive, peekArchive } from './lib/archive.mjs';
 import { accrueReply, budgetState, checkBudget, spendOf } from './lib/budget.mjs';
 import { findExtRoute } from './lib/routes/index.mjs';
+import { buildLine } from './lib/build-info.mjs';
 import { legalSummary, termsAccepted, termsGate } from './lib/legal.mjs';
 import { canStart as canStartDrive, DEFAULT_IDLE_MINUTES, hotkeyStatus, listDrives, normalizeIdleMinutes, normalizeStopOverride } from './lib/drive.mjs';
 import { bridge as computerBridge } from './lib/computer/bridge.mjs';
@@ -2059,28 +2059,12 @@ async function handleApi(req, res, url) {
       refuseForeignOrigin(req);
       return json(res, 200, activity.snapshot());
 
-    // The catalog includes the models the Codex CLI offers this account (lib/codex-models.mjs). Codex's app server is asked only once
-    // the terms are accepted and Codex is installed, and this waits at most 4 s for it; codexModels.reading tells the page to ask again.
-    case 'GET /api/status': {
-      // Antigravity's models are read in the background (only once the terms are accepted) and are never waited for here: the desktop
-      // shell's start check and the page's connection check give this route about 1.5 s, and on 12 Nov 2026 a read that took longer
-      // kept Plenum from starting (DECISIONS item 89). The page asks again while antigravityModels.reading is true. Only Accounts'
-      // Refresh (?refresh=antigravity) waits for a fresh read, at most 4 s.
-      let antigravityModels = null;
-      if (termsAccepted(store.get())) {
-        if (url.searchParams.get('refresh') === 'antigravity') await antigravityModelsWithin(4000, { force: true });
-        else refreshAntigravityModels().catch(() => {});
-        const { ok, count, reading } = antigravityModelsState();
-        antigravityModels = { ok, count, reading };
-      }
-      const providers = await providerStatus();
-      let codexModels = null;
-      if (providers?.codex?.installed && termsAccepted(store.get())) {
-        const { ok, count, reading } = await codexModelsWithin(4000, { force: url.searchParams.get('refresh') === 'codex' });
-        codexModels = { ok, count, reading };
-      }
-      return json(res, 200, { providers, catalog: CATALOG, aliases: ALIASES, codexModels, antigravityModels });
-    }
+    // GET /api/status never waits for a CLI, a model-list read, the network or a slow disk scan (lib/provider-status.mjs, DECISIONS item 91).
+    // It answers from a snapshot of the provider status that is computed in the background. ?refresh=codex|antigravity|muse|all (Accounts'
+    // Refresh) is the one case that waits for a fresh read, at most 4 s. statusPending: true says the first snapshot is not there yet.
+    // The catalog includes the models Codex, Antigravity and Muse Code offer this account; each *Models value is { ok, count, reading }.
+    case 'GET /api/status':
+      return json(res, 200, await statusPayload({ refresh: url.searchParams.get('refresh') ?? '', accepted: termsAccepted(store.get()) }));
 
     case 'GET /api/state':
       return json(res, 200, publicState());
@@ -2289,7 +2273,7 @@ async function handleApi(req, res, url) {
       return await handleCompact(req, res);
 
     case 'GET /api/usage': {
-      const [providers, key] = await Promise.all([providerStatus(), anthropicKey()]);
+      const [providers, key] = await Promise.all([providersQuick(), anthropicKey()]);
       const main = splitRef(st.model);
       const usage = await readUsage({
         muse: { installed: providers.muse.installed && museSignedIn(), model: main.provider === 'muse' ? main.id : 'muse-spark-1.2' },
@@ -2415,24 +2399,29 @@ async function handleApi(req, res, url) {
     // it, which is so when ANTHROPIC_AUTH_TOKEN is set in the environment.
     case 'POST /api/accounts/claude/remove': {
       const result = await forgetKey('anthropic');
+      invalidateProviderStatus();
       const { key } = await anthropicKey();
       return json(res, 200, { ok: result.ok, configured: key !== null, message: result.message });
     }
 
     case 'POST /api/accounts/claude/login':
       await openSignIn('claude', ['auth', 'login'], 'Claude sign-in');
+      invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/gemini/login':
       await geminiSignIn();
+      invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/muse/login':
       await openSignIn('muse', ['login'], 'Muse Code sign-in');
+      invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/codex/login':
       await openSignIn('codex', ['login'], 'Codex sign-in');
+      invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'GET /api/updates':
@@ -2602,6 +2591,8 @@ ensureToken();
 // What the events channel sends as the state: everything but the transcript (see publicState).
 events.useStateProvider(() => publicState({ messages: false }));
 await listen();
+// The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them.
+prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) });
 await startPhones();
 // A clean stop before the desktop app quits (B-29). Every run is stopped the way Stop stops it, so its reply is stored with what it had;
 // the state is saved; then the app is told it may end the process. Only the desktop channel can ask (lib/shell.mjs), so no page, phone
@@ -2627,3 +2618,4 @@ if (process.env.PLENUM_OVERLAY_DIR !== undefined) overlay.markHealthy();
 if (tokenSource() === 'generated' && !keyChannel) console.log(`Open Plenum at http://${HOST}:${PORT}/#token=${token()}`);
 else console.log(`Plenum running at http://${HOST}:${PORT}`);
 console.log(`State file: ${path.join(store.HOME, 'state.json')}`);
+console.log(buildLine());

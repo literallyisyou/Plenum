@@ -5,6 +5,10 @@
 // desktop (keys, the folder dialog, the alerts, and later the browser and the computer) is answered by the handler modules in
 // desktop/handlers/, which desktop/handler-loader.cjs loads and routes (see that file for the shape). The over-the-air updater
 // (desktop/handlers/app-update.cjs) adds a tray item and may take over the error box of a failed first start after an update.
+// The app always opens and recovers by itself (DECISIONS item 91): the start check asks GET /api/health, a server that ends after it had
+// answered is started again by the policy in desktop/server-supervisor.cjs while the window stays, a start that fails offers Try again,
+// Open log and Quit, and the window loads its page again when its renderer is gone or its load failed. A hidden smoke mode (see SMOKE
+// below) lets a test start the whole shell with nothing on screen.
 const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, shell: electronShell, utilityProcess } = require('electron');
 const { execFileSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
@@ -16,6 +20,15 @@ const { createKeyVault, stripKeys } = require('./keyvault.cjs');
 const { tooltipFor } = require('./alerts.cjs');
 const { createSseParser } = require('./sse.cjs');
 const { loadHandlers, handleMessage, runHooks } = require('./handler-loader.cjs');
+const { createSupervisor, smokeMode, RESTART_EXIT_CODE } = require('./server-supervisor.cjs');
+
+// When the shell started, for the start lines in the log (the server answered after, the window loaded after).
+const SHELL_STARTED = Date.now();
+// The hidden smoke mode, for tests: with PLENUM_SMOKE=1, a PORT other than 4317 and a MUSE_CONSOLE_HOME all set, the window is invisible,
+// no dialog is ever shown (the message goes to the log) and the app ends by itself once the page has loaded (exit code 0), or when the
+// start fails (non-zero). With PLENUM_SMOKE_CRASH_SERVER=1 too, the first server is ended once after the page has loaded and the app ends
+// 0 only after the server was started again and the page reconnected. Anything less than all three conditions is the normal app.
+const SMOKE = smokeMode(process.env);
 
 // This launch's token. Every request to the server's /api/ must carry it (lib/auth.mjs). It is made once per launch of the app, so
 // a server restart after an applied update keeps it and an open window keeps working. It goes to the server over the keys channel,
@@ -24,10 +37,9 @@ const { loadHandlers, handleMessage, runHooks } = require('./handler-loader.cjs'
 const TOKEN = randomBytes(32).toString('hex');
 const apiHeaders = () => ({ 'x-plenum-token': TOKEN });
 
-const PORT = 4317;
+const PORT = SMOKE ? SMOKE.port : 4317;
 const APP_URL = `http://127.0.0.1:${PORT}/`;
-// The server exits with this code when it wants a restart (after an applied update).
-const RESTART_EXIT_CODE = 75;
+// The server exits with this code when it wants a restart (after an applied update): RESTART_EXIT_CODE, from server-supervisor.cjs.
 // Set once the server has been started again because it ended while an applied update was still unproven (see the exit handler in
 // startServer). It is cleared when a start gets as far as answering, so one bad update costs one restart, not a loop.
 let restartTried = false;
@@ -37,6 +49,12 @@ const POLL_MS = 2_000;
 const POLL_TIMEOUT_MS = 1_000;
 // How long to wait before the events channel is opened again, by the number of failed tries in a row.
 const EVENTS_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
+// A window that does not respond for this long is asked about (onStillUnresponsive). After a renderer crash the page is loaded again by
+// itself RELOADS_PER_WINDOW times in RELOAD_WINDOW_MS. A failed load of the app's page is tried LOAD_TRIES times before the person is asked.
+const UNRESPONSIVE_MS = 10_000;
+const RELOADS_PER_WINDOW = 2;
+const RELOAD_WINDOW_MS = 60_000;
+const LOAD_TRIES = 3;
 // How long the port check waits for an answer before it counts the port as in use.
 const PORT_PROBE_MS = 1_500;
 const root = path.resolve(__dirname, '..');
@@ -89,6 +107,25 @@ let phonesConnected = 0;
 // Set once a handler has taken over the error box for a failed start, so the 30-second wait and the server's exit cannot each show
 // another box for the same failure.
 let startFailureHandled = false;
+// The restart policy (desktop/server-supervisor.cjs). everAnswered is whether a server has answered at least once in this app's life: before
+// that an ended server is a failed start (the person chooses), after it the supervisor restarts the server by itself.
+const supervisor = createSupervisor();
+let everAnswered = false;
+let restartTimer = null;
+// How many times the server has answered (the first start and every restart), for the log and for the smoke mode.
+let answers = 0;
+// True while a recovery question (Try again, Open log, Quit) is open, so two causes never put two boxes up.
+let recoveryOpen = false;
+// The window's own recovery. pageReloads holds the times of the reloads made after the renderer was gone (two in a minute at most);
+// loadFailures counts failed loads of the app's page in a row; pageLoadedOnce keeps the start line of the log to the first load.
+const pageReloads = [];
+let loadFailures = 0;
+let loadRecovering = false;
+let pageLoadedOnce = false;
+let expectGone = false;
+let unresponsiveTimer = null;
+let windowOfferOpen = false;
+let smokeDone = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -137,12 +174,29 @@ function runStartFailed(info) {
   return taken;
 }
 
+// The dialogs of this app. In smoke mode none is ever shown: each call is logged and answers as if the person had chosen the last
+// button (Quit), cancelled, or closed the box.
+function quietBox(name, args) {
+  const options = [...args].reverse().find(a => a && typeof a === 'object' && !Array.isArray(a) && ('message' in a || 'buttons' in a || 'title' in a));
+  writeLog(`smoke: ${name} was not shown: ${String(options?.message ?? options?.title ?? args.filter(a => typeof a === 'string').join(': ')).replace(/\s+/g, ' ').slice(0, 300)}`);
+  const buttons = Array.isArray(options?.buttons) ? options.buttons : [];
+  return { response: Number.isInteger(options?.cancelId) ? options.cancelId : Math.max(0, buttons.length - 1), checkboxChecked: false, canceled: true, filePaths: [], filePath: undefined };
+}
+const quietDialog = {
+  showErrorBox: (...args) => void quietBox('an error box', args),
+  showMessageBox: async (...args) => quietBox('a message box', args),
+  showMessageBoxSync: (...args) => quietBox('a message box', args).response,
+  showOpenDialog: async (...args) => quietBox('an open dialog', args),
+  showSaveDialog: async (...args) => quietBox('a save dialog', args),
+};
+const dialogs = SMOKE ? quietDialog : dialog;
+
 // What a handler module is given as its shell (desktop/handler-loader.cjs). It is this process's view for the handlers' own jobs:
 // the key vault and the token are read through it, and windows, notifications and replies to the server go out through it.
 // shell.log writes to the app's log; the handlers here never pass a key or the token to it.
 const desktopShell = {
   app,
-  dialog,
+  dialog: dialogs,
   shell: electronShell,
   Notification,
   nativeImage,
@@ -230,7 +284,8 @@ function windowsEnv() {
 // channel instead. A key that is still in the environment (for example one an older version saved to the Windows user
 // environment) is left out, and the Accounts panel offers to import it.
 function serverEnv() {
-  const env = stripKeys(process.platform === 'win32' ? windowsEnv() : { ...process.env });
+  // Smoke mode (a test) gives the server this process's environment as it is: the registry's PATH and variables are the real computer's.
+  const env = stripKeys(process.platform === 'win32' && !SMOKE ? windowsEnv() : { ...process.env });
   // A utility process is started by Electron itself and must not be told to run as plain Node.
   for (const name of Object.keys(env)) {
     if (name.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete env[name];
@@ -248,6 +303,9 @@ function startServer() {
     stdio: 'pipe',
   });
   server = child;
+  // answered: this server has answered a start check. exited: its process has ended (the start check stops waiting for it).
+  child.answered = false;
+  child.exited = false;
   child.stdout.pipe(logStream, { end: false });
   child.stderr.pipe(logStream, { end: false });
   child.on('message', message => {
@@ -258,6 +316,7 @@ function startServer() {
     onServerMessage(child, message).catch(() => writeLog('a message from the server could not be handled'));
   });
   child.on('exit', code => {
+    child.exited = true;
     if (child !== server) return;
     server = null;
     // The server's phones are gone with it, so the tray stops saying so.
@@ -276,13 +335,117 @@ function startServer() {
       setTimeout(restartAndReload, 300);
       return;
     }
-    // A handler may deal with the failure itself (the updater does when this was the first start after an update); then there is
-    // no box here and no quit.
-    if (runStartFailed({ code, message: `The local server exited with code ${code}.` })) return;
-    dialog.showErrorBox('Plenum stopped', `The local server exited with code ${code}.\n\nLog: ${logFile}`);
-    app.quit();
+    onServerEnded(child, code);
   });
   callHooks('serverStarted', child);
+  return child;
+}
+
+// The server ended on its own (not a quit, not the restart code, not the rollback above). Before any server has answered this is a
+// failed start: the person chooses. After that the supervisor decides (desktop/server-supervisor.cjs): start it again by itself, keeping
+// the window, until the restarts are used up (DECISIONS item 91). A handler may deal with the failure itself first (the updater does when
+// this was the first start after an update); then there is no restart and no box here.
+function onServerEnded(child, code) {
+  const info = { code, message: `The local server exited with code ${code}.` };
+  if (!everAnswered) {
+    void startFailed(child, info);
+    return;
+  }
+  // A server that was given up on (it did not answer in time and the box is open) and then ends is not started again behind the box.
+  if (child.failureHandled) return;
+  if (runStartFailed(info)) return;
+  const verdict = supervisor.onExit({ code, quitting, answered: everAnswered });
+  if (verdict.restart) {
+    writeLog(`the server ended (code ${code}); starting it again in ${verdict.afterMs} ms (restart ${verdict.attempt} of ${supervisor.limit})`);
+    clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      // The page keeps its window and reconnects by itself (public/ext-connection.js): it is not loaded again.
+      void bringUp({ loadPage: false });
+    }, verdict.afterMs);
+    return;
+  }
+  writeLog(`the server ended (code ${code}); ${verdict.reason === 'used-up' ? 'the restarts are used up' : `it is not started again (${verdict.reason})`}`);
+  if (verdict.reason === 'used-up') void keepsStopping(code);
+}
+
+// The server has stopped as often as the policy allows. The same three choices as a failed start.
+async function keepsStopping(code) {
+  const choice = await offerRecovery("Plenum's server keeps stopping.", `It was started again ${supervisor.limit} times in 5 minutes and stopped each time (last exit code ${code}). Try again starts it once more. The log says why it stopped.`);
+  if (choice === 'busy') return;
+  if (choice === 'quit') {
+    quitApp(true);
+    return;
+  }
+  supervisor.reset();
+  await bringUp({ loadPage: false });
+}
+
+// A start that did not work: the server ended before it answered, or the wait for it ran out. One box with Try again, Open log and Quit
+// instead of an error box and a quit. A handler may take it over first (runStartFailed). Each server is dealt with once, however many
+// things notice that it failed. Try again ends a server that is still there, then starts and waits again.
+async function startFailed(child, info) {
+  if (child.failureHandled) return;
+  child.failureHandled = true;
+  if (runStartFailed(info)) return;
+  const choice = await offerRecovery('Plenum could not start.', info.message);
+  if (choice === 'busy') return;
+  if (choice === 'quit') {
+    quitApp(true);
+    return;
+  }
+  supervisor.reset();
+  if (child === server) stopServer();
+  await bringUp({ loadPage: true });
+}
+
+// The recovery question: Try again, Open log and Quit. Open log shows the log file in the file manager and asks again. Resolves 'retry',
+// 'quit' or 'busy' (another question of this kind is already open). In smoke mode nothing is shown and the answer is 'quit'.
+async function offerRecovery(message, detail) {
+  if (recoveryOpen) return 'busy';
+  recoveryOpen = true;
+  try {
+    for (;;) {
+      const picked = await choose({ message, detail: `${detail}\n\nLog: ${logFile}`, buttons: ['Try again', 'Open log', 'Quit'], defaultId: 0, cancelId: 2 });
+      if (picked === 1) {
+        try {
+          electronShell.showItemInFolder?.(logFile);
+        } catch {
+          // The file manager could not open; the log path is in the box.
+        }
+        continue;
+      }
+      return picked === 0 ? 'retry' : 'quit';
+    }
+  } finally {
+    recoveryOpen = false;
+  }
+}
+
+// One message box: resolves with the index of the button chosen. A box that cannot be shown falls back to the plain error box and
+// counts as the last button, which is Quit in every box of this app.
+async function choose({ title = 'Plenum', message, detail, buttons, defaultId = 0, cancelId = buttons.length - 1, type = 'warning' }) {
+  writeLog(`dialog: ${message} [${buttons.join(' / ')}] ${String(detail ?? '').split(/\r?\n/)[0].slice(0, 300)}`.trimEnd());
+  try {
+    if (typeof dialogs.showMessageBox !== 'function') throw new Error('no message box');
+    const result = await dialogs.showMessageBox({ type, title, message, detail, buttons, defaultId, cancelId, noLink: true });
+    const n = Number(result?.response);
+    return Number.isInteger(n) && n >= 0 && n < buttons.length ? n : cancelId;
+  } catch {
+    try {
+      dialogs.showErrorBox(title, `${message}\n\n${detail ?? ''}`);
+    } catch {
+      // Nothing can be shown; the log has the message.
+    }
+    return cancelId;
+  }
+}
+
+// Ends the app. A normal quit goes through before-quit (the server is stopped cleanly). In smoke mode the exit code says whether the run
+// worked: failed is true for every quit that follows a problem.
+function quitApp(failed) {
+  if (SMOKE) void smokeExit(failed ? 1 : 0, failed ? 'the app quit after a failure' : 'quit');
+  else app.quit();
 }
 
 // Sends the server a message, if it is still the server this reply was for.
@@ -396,51 +559,97 @@ function portInUse() {
   });
 }
 
-// Polls the server until it answers. Gives up after 30 seconds. Each try may take STATUS_TRY_MS: /api/status checks every CLI and
-// can take a few seconds on a busy computer. On 12 Nov 2026 a limit of 1.5 s a try kept Plenum from starting (DECISIONS item 89).
-// A try ends once, whichever comes first of its answer, an error or its time limit. Destroying a request also fires its error event,
-// and before this each timed-out try started two retries, so a slow server got twice as many checks every round.
+// Polls the server until it answers. Gives up after 30 seconds. It asks GET /api/health, which does no work and answers at once; a server
+// from before that route answers 404 there, and is asked /api/status instead (DECISIONS item 91). Each try may take STATUS_TRY_MS:
+// /api/status checks every CLI and can take a few seconds on a busy computer. On 12 Nov 2026 a limit of 1.5 s a try kept Plenum from
+// starting (DECISIONS item 89). A try ends once, whichever comes first of its answer, an error or its time limit. Destroying a request
+// also fires its error event, and before this each timed-out try started two retries, so a slow server got twice as many checks every
+// round. There is one try at a time. abort, when given, is asked before every try: true stops the wait (the server has ended).
 const STATUS_TRY_MS = 10_000;
-function waitForServer(timeoutMs = 30_000) {
+function waitForServer(timeoutMs = 30_000, abort = null) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
+    let checkPath = '/api/health';
+    const stopped = () => typeof abort === 'function' && abort();
     const retry = () => {
-      if (Date.now() > deadline) reject(new Error('The local server did not start in time.'));
+      if (stopped()) reject(new Error('The local server stopped before it answered.'));
+      else if (Date.now() > deadline) reject(new Error('The local server did not start in time.'));
       else setTimeout(tryOnce, 300);
     };
     const tryOnce = () => {
+      if (stopped()) {
+        reject(new Error('The local server stopped before it answered.'));
+        return;
+      }
       let ended = false;
-      const end = ok => {
+      const end = outcome => {
         if (ended) return;
         ended = true;
-        if (ok) resolve();
+        if (outcome === 'ok') resolve();
+        else if (outcome === 'older' && Date.now() <= deadline) tryOnce();
         else retry();
       };
-      const req = http.get({ host: '127.0.0.1', port: PORT, path: '/api/status', headers: apiHeaders() }, res => {
+      const req = http.get({ host: '127.0.0.1', port: PORT, path: checkPath, headers: apiHeaders() }, res => {
         res.resume();
-        end(res.statusCode === 200);
+        if (res.statusCode === 200) end('ok');
+        else if (res.statusCode === 404 && checkPath === '/api/health') {
+          checkPath = '/api/status';
+          end('older');
+        } else end('no');
       });
-      req.on('error', () => end(false));
+      req.on('error', () => end('no'));
       req.setTimeout(STATUS_TRY_MS, () => {
         req.destroy();
-        end(false);
+        end('no');
       });
     };
     tryOnce();
   });
 }
 
-async function restartAndReload() {
-  startServer();
+// Starts the server and waits for its first answer; then the page is loaded (loadPage) and the events channel opens. The first start, the
+// restart after an update (code 75) and a restart by the supervisor all come through here. A wait that ends because the server ended is
+// left to onServerEnded; one that runs out of time is a failed start (startFailed).
+async function bringUp({ loadPage }) {
+  if (quitting) return;
+  // A restart does not send this launch's token to whatever may have taken the port since the last server ended (the first start checks
+  // the port before the shell starts anything, portInUse). A busy port is a failed start with the same three choices.
+  if (answers > 0 && (await portInUse())) {
+    if (quitting) return;
+    void startFailed({}, { code: null, message: "Another program is using Plenum's port, so the server could not be started again." });
+    return;
+  }
+  const child = startServer();
+  const began = Date.now();
   try {
-    await waitForServer();
-    restartTried = false;
-    subscribeEvents();
-    if (win) win.loadURL(APP_URL);
+    await waitForServer(30_000, () => child.exited || child !== server || quitting);
   } catch (err) {
-    if (runStartFailed({ code: null, message: err.message })) return;
-    dialog.showErrorBox('Plenum', `${err.message}\n\nLog: ${logFile}`);
-    app.quit();
+    if (child.exited || child !== server || quitting) return;
+    void startFailed(child, { code: null, message: err.message });
+    return;
+  }
+  child.answered = true;
+  everAnswered = true;
+  restartTried = false;
+  answers += 1;
+  writeLog(answers === 1
+    ? `start: the server answered ${Date.now() - began} ms after it was started (${Date.now() - SHELL_STARTED} ms after the shell started)`
+    : `the server answered again ${Date.now() - began} ms after it was started`);
+  subscribeEvents();
+  if (loadPage) loadApp();
+}
+
+async function restartAndReload() {
+  await bringUp({ loadPage: true });
+}
+
+// Loads the app's page into the window. A load that fails is dealt with by onLoadFailed (did-fail-load), so the promise is not.
+function loadApp() {
+  if (!win) return;
+  try {
+    win.loadURL(APP_URL)?.catch?.(() => {});
+  } catch {
+    // The window is gone.
   }
 }
 
@@ -461,11 +670,15 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: windowButtons(startLook),
     show: false,
+    // Smoke mode: never shown, no taskbar button, never takes the focus (opacity 0 as well, in case a platform shows it anyway).
+    ...(SMOKE ? { opacity: 0, skipTaskbar: true, focusable: false } : {}),
     // preload.cjs gives the page its token (window.plenumShell.token). spellcheck is off because on Linux Electron downloads
     // Hunspell dictionaries from a Google-hosted server when it is on, and the Privacy Notice says Plenum makes no such request.
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs'), spellcheck: false },
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs'), spellcheck: false, ...(SMOKE ? { backgroundThrottling: false } : {}) },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (!SMOKE) win.show();
+  });
   // The page publishes its background as its theme colour. The window buttons follow it, so they
   // stay readable when Windows changes theme or the Theme button overrides it. Electron has the overlay on Windows and Linux only
   // (B-106): on macOS the window keeps its own buttons, so the call is skipped there and the background still follows the theme.
@@ -504,10 +717,130 @@ function createWindow() {
     quitting = true;
   });
   win.on('closed', () => {
+    clearTimeout(unresponsiveTimer);
+    unresponsiveTimer = null;
     win = null;
   });
+  watchWindow();
   win.loadFile(path.join(__dirname, 'splash.html'));
   callHooks('windowCreated', win);
+}
+
+// The window's own recovery (DECISIONS item 91): its renderer process gone, a window that stops responding, and a load of the app's page
+// that fails. Each one loads the page again by itself where that is safe, and asks the person only when it keeps happening.
+function watchWindow() {
+  const contents = win.webContents;
+  contents.on('did-finish-load', () => {
+    const url = typeof contents.getURL === 'function' ? contents.getURL() : '';
+    if (!String(url).startsWith(APP_URL)) return;
+    loadFailures = 0;
+    if (pageLoadedOnce) return;
+    pageLoadedOnce = true;
+    writeLog(`start: the window finished loading ${Date.now() - SHELL_STARTED} ms after the shell started`);
+    if (SMOKE) smokeLoaded();
+  });
+  // Smoke mode: an error the page prints goes to the log, so a run that fails says why.
+  if (SMOKE) contents.on('console-message', (_e, level, message) => { if (level >= 3) writeLog(`smoke: page error: ${String(message).slice(0, 200)}`); });
+  contents.on('render-process-gone', (_event, details) => onRendererGone(details));
+  contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    // -3 is a load that was stopped on purpose (a newer load replaced it).
+    if (isMainFrame === false || code === -3 || !String(url ?? '').startsWith(APP_URL)) return;
+    void onLoadFailed(code, description);
+  });
+  win.on('unresponsive', () => {
+    clearTimeout(unresponsiveTimer);
+    unresponsiveTimer = setTimeout(() => void onStillUnresponsive(), UNRESPONSIVE_MS);
+  });
+  win.on('responsive', () => {
+    clearTimeout(unresponsiveTimer);
+    unresponsiveTimer = null;
+  });
+}
+
+// The renderer process ended (a crash, the system ended it, it ran out of memory). The page is loaded again by itself, twice in a minute
+// at most; after that the person is asked, so a page that crashes at once does not loop.
+function onRendererGone(details) {
+  const reason = String(details?.reason ?? 'unknown');
+  writeLog(`the window's renderer process is gone (${reason}, exit code ${details?.exitCode ?? 'unknown'})`);
+  if (quitting || reason === 'clean-exit') return;
+  if (expectGone) {
+    expectGone = false;
+    return;
+  }
+  const now = Date.now();
+  while (pageReloads.length && now - pageReloads[0] >= RELOAD_WINDOW_MS) pageReloads.shift();
+  if (pageReloads.length < RELOADS_PER_WINDOW) {
+    pageReloads.push(now);
+    writeLog('loading the page again');
+    loadApp();
+    return;
+  }
+  void windowOffer("Plenum's window stopped working.", `It stopped ${RELOADS_PER_WINDOW + 1} times in a minute (${reason}). Reload loads the page again. Your chats are saved.`, ['Reload', 'Quit'], () => {
+    pageReloads.length = 0;
+    loadApp();
+  });
+}
+
+// The window has not answered for UNRESPONSIVE_MS: Wait gives it more time, Reload ends its renderer and loads the page again.
+async function onStillUnresponsive() {
+  unresponsiveTimer = null;
+  if (!win || quitting) return;
+  writeLog('the window is not responding');
+  await windowOffer("Plenum's window is not responding.", 'Wait gives it more time. Reload loads the page again; a message you typed and did not send may be lost.', ['Wait', 'Reload', 'Quit'], index => {
+    if (index === 0) {
+      // Still stuck after the wait: ask again in another UNRESPONSIVE_MS. The 'responsive' event cancels this.
+      unresponsiveTimer = setTimeout(() => void onStillUnresponsive(), UNRESPONSIVE_MS);
+      return;
+    }
+    expectGone = true;
+    try {
+      win?.webContents.forcefullyCrashRenderer?.();
+    } catch {
+      expectGone = false;
+    }
+    loadApp();
+  });
+}
+
+// One question about the window with the given buttons; the last one is Quit. onChoice runs for any other button (with its index).
+async function windowOffer(message, detail, buttons, onChoice) {
+  if (windowOfferOpen) return;
+  windowOfferOpen = true;
+  try {
+    const picked = await choose({ message, detail, buttons, defaultId: 0, cancelId: buttons.length - 1 });
+    if (picked === buttons.length - 1) quitApp(true);
+    else onChoice(picked);
+  } finally {
+    windowOfferOpen = false;
+  }
+}
+
+// Loading the app's own page failed (the server was not there yet, or went away). The server is checked, then the page is loaded again;
+// after LOAD_TRIES failures in a row the person is asked.
+async function onLoadFailed(code, description) {
+  writeLog(`the page could not be loaded (${String(description ?? '').slice(0, 80)} ${code})`);
+  if (loadRecovering || quitting) return;
+  loadRecovering = true;
+  try {
+    if (loadFailures >= LOAD_TRIES) {
+      const choice = await offerRecovery('Plenum could not open its window.', 'The page did not load.');
+      if (choice === 'quit') quitApp(true);
+      else if (choice === 'retry') {
+        loadFailures = 0;
+        loadApp();
+      }
+      return;
+    }
+    loadFailures += 1;
+    try {
+      await waitForServer(10_000, () => quitting);
+    } catch {
+      // The server is not answering; the supervisor or the start check deals with that. The page is tried again below either way.
+    }
+    if (!quitting) loadApp();
+  } finally {
+    loadRecovering = false;
+  }
 }
 
 // The state folder the server uses (lib/store.mjs HOME): the app state file, and the overlay of applied updates.
@@ -629,7 +962,7 @@ function eventsLost(req) {
 
 // Brings the window back from the tray, or from behind other windows.
 function showWindow() {
-  if (!win) return;
+  if (!win || SMOKE) return;
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -711,11 +1044,119 @@ function ensureTray() {
   return true;
 }
 
+// The build this is, for the log: the line GET /api/build-info gives (lib/build-info.mjs), read from build-info.json at the application root.
+// A development copy has no such file and says so.
+function buildLine() {
+  let version = '';
+  try {
+    version = String(app.getVersion());
+  } catch {
+    version = '';
+  }
+  const name = version ? `Plenum ${version}` : 'Plenum';
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(root, 'build-info.json'), 'utf8'));
+    if (info && typeof info.build === 'string' && /^\d{8}\.\d{4}$/.test(info.build)) {
+      const parts = [`build ${info.build}`];
+      if (typeof info.commit === 'string' && /^[0-9a-f]{4,40}$/.test(info.commit)) parts.push(info.commit);
+      if (info.dirty === true) parts.push('with local changes');
+      return `${typeof info.version === 'string' && info.version ? `Plenum ${info.version}` : name} (${parts.join(', ')})`;
+    }
+  } catch {
+    // No stamp: a development copy.
+  }
+  return `${name} (development copy)`;
+}
+
+// ----- the smoke mode (see SMOKE at the top) -----
+const SMOKE_LIMIT_MS = 90_000;
+
+// The first load of the app's page is done. A plain run ends here with code 0. With PLENUM_SMOKE_CRASH_SERVER=1 the run waits until the
+// page is live (its events channel is connected and the connection panel has loaded: the page opens the channel only after its first
+// reads and loads its panels after the server's list, and a server that ends before that is not a connection the page could lose), ends the first server once, and ends 0 only after the server was started again and the page
+// reconnected (smokeAwaitReconnect).
+function smokeLoaded() {
+  if (!SMOKE.crashServer) {
+    void smokeExit(0, 'the page loaded');
+    return;
+  }
+  void smokeCrashServer();
+}
+
+// Evaluates a small expression in the page. Resolves the string it gave, or '' when the page cannot answer.
+async function smokePage(code) {
+  try {
+    return String(await win.webContents.executeJavaScript(code));
+  } catch {
+    return '';
+  }
+}
+
+async function smokeCrashServer() {
+  while (!smokeDone && (await smokePage("String(window.MuseUI?.events?.connected === true && document.querySelector('.ext-conn-banner') !== null)")) !== 'true') {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  if (smokeDone) return;
+  writeLog('smoke: the page is connected; ending the first server once');
+  try {
+    server.kill();
+  } catch (err) {
+    void smokeExit(1, `the server could not be ended (${String(err?.message ?? err).slice(0, 80)})`);
+    return;
+  }
+  void smokeAwaitReconnect();
+}
+
+// Waits until the server has answered a second time and the page says it connected again (ext-connection.js writes how many times it
+// came back into the page's data-plenum-reconnects), then ends with 0.
+async function smokeAwaitReconnect() {
+  let ticks = 0;
+  while (!smokeDone) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    ticks += 1;
+    if (answers < 2 || !win) continue;
+    const seen = await smokePage(`'gone=' + (document.documentElement.dataset.plenumDowns ?? '0') + ' back=' + (document.documentElement.dataset.plenumReconnects ?? '0') + ' events=' + window.MuseUI?.events?.connected`);
+    if (Number(/back=(\d+)/.exec(seen)?.[1] ?? 0) >= 1) {
+      await smokeExit(0, 'the server was started again and the page reconnected');
+      return;
+    }
+    // A line every 10 seconds says what the page reports (how many times it noticed the server gone, and came back), for the person who reads
+    // the log of a run that does not end.
+    if (ticks % 33 === 0) writeLog(`smoke: waiting for the page to reconnect (it reports: ${seen || 'nothing'})`);
+  }
+}
+
+// Ends the smoke run with the code. The server is stopped first (cleanly when the run worked), because app.exit skips before-quit.
+async function smokeExit(code, why) {
+  if (smokeDone) return;
+  smokeDone = true;
+  quitting = true;
+  writeLog(`smoke: ending with code ${code}: ${why}`);
+  if (code === 0) await askServerToStop();
+  stopServer();
+  const finish = () => app.exit(code);
+  const timer = setTimeout(finish, 1000);
+  timer.unref?.();
+  const last = logStream;
+  logStream = null;
+  if (last) {
+    // The server's output may still be piped into the log while it ends; a write after the end is not an error worth a crash.
+    last.on('error', () => {});
+    last.end(() => finish());
+  } else finish();
+}
+
 async function main() {
   // The same id as build.appId in package.json, which the installer writes into its shortcuts.
   // With matching ids, a pinned taskbar icon and the running window are one icon, not two.
   if (process.platform === 'win32') app.setAppUserModelId('com.museconsole.desktop');
   openLog();
+  writeLog(`start: ${buildLine()}${SMOKE ? ' (smoke mode: nothing is shown)' : ''}`);
+  if (SMOKE) {
+    // A run that never ends is a failure too.
+    const watchdog = setTimeout(() => void smokeExit(1, 'the smoke run took too long'), SMOKE_LIMIT_MS);
+    watchdog.unref?.();
+  }
   // The encrypted keys sit beside the log, in the app's user-data folder. The vault is made before the server starts, because
   // the server asks for its keys the moment it is up.
   vault = createKeyVault({ safeStorage, file: path.join(app.getPath('userData'), 'keys.json') });
@@ -729,23 +1170,12 @@ async function main() {
   // B-111: a program that already listens on the port would answer the status check as if it were this app's server, and the
   // app would load it. So the port is checked first, and a busy one stops the start with a plain message.
   if (await portInUse()) {
-    dialog.showErrorBox('Plenum could not start', `Port ${PORT} is already in use by another program or another Plenum. Close it and start Plenum again.\n\nLog: ${logFile}`);
-    app.quit();
+    dialogs.showErrorBox('Plenum could not start', `Port ${PORT} is already in use by another program or another Plenum. Close it and start Plenum again.\n\nLog: ${logFile}`);
+    quitApp(true);
     return;
   }
-  startServer();
   pollTimer = setInterval(pollServer, POLL_MS);
-  try {
-    await waitForServer();
-    restartTried = false;
-    subscribeEvents();
-    if (win) win.loadURL(APP_URL);
-  } catch (err) {
-    if (!runStartFailed({ code: null, message: err.message })) {
-      dialog.showErrorBox('Plenum could not start', `${err.message}\n\nLog: ${logFile}`);
-      app.quit();
-    }
-  }
+  await bringUp({ loadPage: true });
   callHooks('ready');
 }
 
@@ -763,6 +1193,8 @@ app.on('before-quit', event => {
   stopServer();
   clearInterval(pollTimer);
   pollTimer = null;
+  clearTimeout(restartTimer);
+  clearTimeout(unresponsiveTimer);
   clearTimeout(eventsTimer);
   eventsReq?.destroy();
   eventsReq = null;

@@ -1,8 +1,10 @@
 // ext-model-info. Loaded by ext.js and adds itself through window.MuseUI. Each model in the model menu and the Advisor menu
 // gets a second line: what it costs, how much context it takes and whether it can use the project tools. A model whose provider
 // cannot answer yet says why first. A banner above the composer names the chosen model when its provider is not ready, with an
-// Open Accounts button. The data comes from GET /api/models/info. This file never changes an option's value, never removes an
-// option and never disables Send: a model that is not ready can still be chosen and sent.
+// Open Accounts button. A model the CLI's own list no longer has (offered: false in the catalog, DECISIONS item 91) says so at the end
+// of its menu line, and the same banner says it while that model is chosen. The data comes from GET /api/models/info. This file never
+// changes an option's value, never removes an option and never disables Send: a model that is not ready or not offered can still be
+// chosen and sent.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -51,13 +53,19 @@
     return [price, context, TOOL_WORDS[info.tools] ?? 'text only'].join(' · ');
   }
 
-  // What a menu choice says after its name: why its provider cannot answer, then its facts. '' when there is nothing to say.
+  // The catalog says a model is gone with offered: false. It stays in the menu and can still be chosen.
+  const goneRef = ref => (MuseUI.catalog ?? []).some(c => `${c.provider}:${c.id}` === ref && c.offered === false);
+  const NOT_OFFERED = 'not offered to this account';
+
+  // What a menu choice says after its name: why its provider cannot answer, then its facts, then that the model is no longer offered.
+  // '' when there is nothing to say.
   function partsFor(ref) {
     const state = stateOf(ref);
     const parts = [];
     if (state && !state.ready) parts.push(state.why);
     const info = infoOf(ref);
     if (info) parts.push(lineFor(info));
+    if (goneRef(ref)) parts.push(NOT_OFFERED);
     return parts.join(' · ');
   }
 
@@ -117,7 +125,8 @@
     decorateAll();
   }
 
-  // The banner above the composer. It is shown only while the chosen model's provider cannot answer.
+  // The banner above the composer. It is shown while the chosen model's provider cannot answer, and while the chosen model is one its
+  // provider no longer offers (app.js words that one, so the council seats say the same).
   const banner = document.createElement('div');
   banner.className = 'ext-model-banner';
   banner.setAttribute('role', 'status');
@@ -132,7 +141,13 @@
     const ref = MuseUI.el.model.value;
     const state = stateOf(ref);
     const blocked = Boolean(state) && !state.ready;
-    banner.hidden = !blocked;
+    const gone = blocked ? '' : (MuseUI.notOfferedWords?.(ref) ?? '');
+    banner.hidden = !blocked && !gone;
+    openBtn.hidden = !blocked;
+    if (gone) {
+      bannerText.textContent = gone;
+      return;
+    }
     if (!blocked) return;
     // Under plain Node the key comes from an environment variable and Accounts cannot save it, so the banner names the variable.
     const env = ENV_KEY[providerOf(ref)];
@@ -168,12 +183,27 @@
     paint();
   }
 
+  // A model that joined the catalog after the facts were read (a CLI's model list landed later, DECISIONS item 91) has no facts yet, so they
+  // are read again, once for each set of new models and not before the last read has ended, instead of at the next 60-second read.
+  const asked = new Set();
+  let askTimer = 0;
+  function askForNewModels() {
+    const fresh = [...MuseUI.el.model.querySelectorAll('option')].map(o => o.value).filter(v => v.includes(':') && !Object.hasOwn(models, v) && !asked.has(v));
+    if (!fresh.length || askTimer) return;
+    askTimer = setTimeout(() => {
+      askTimer = 0;
+      for (const v of fresh) asked.add(v);
+      load();
+    }, 300);
+  }
+
   // A menu can be filled again (the page builds its choices when the catalog arrives), so each one is decorated as it changes.
   // While a popup is open that waits until it closes (decorateWhenClosed).
   for (const select of [MuseUI.el.model, MuseUI.el.advisor]) {
     new MutationObserver(() => {
       decorateWhenClosed();
       paint();
+      askForNewModels();
     }).observe(select, { childList: true });
   }
   MuseUI.el.model.addEventListener('change', paint);
