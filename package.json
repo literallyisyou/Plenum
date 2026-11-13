@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Desktop console that runs Claude Code, Codex, Gemini CLI and Muse Code side by side with API models",
   "author": {
-    "name": "RealAlcibiades",
+    "name": "literallyisyou",
     "url": "https://github.com/literallyisyou"
   },
   "license": "SEE LICENSE IN LICENSE.txt",
@@ -48,7 +48,7 @@
   "build": {
     "appId": "com.museconsole.desktop",
     "productName": "Plenum",
-    "copyright": "Copyright © 2026 RealAlcibiades. All rights reserved.",
+    "copyright": "Copyright © 2026 literallyisyou. All rights reserved.",
     "publish": {
       "provider": "github",
       "owner": "literallyisyou",

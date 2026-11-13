@@ -1561,7 +1561,7 @@ describe('ui-host.js: where the page goes on each platform (H3)', () => {
   it('Android: the loader gets the app-data folder and the WebView in their real shapes; persist is noted and the base path is set then persisted in one go', async () => {
     const written = [];
     const filesystem = {
-      getUri: async () => ({ uri: 'file:///data/user/0/com.realalcibiades.plenum/files' }),
+      getUri: async () => ({ uri: 'file:///data/user/0/com.literallyisyou.plenum/files' }),
       writeFile: async arg => { written.push(arg); return {}; },
       readFile: async arg => { const hit = written.find(w => w.path === arg.path); if (!hit) throw new Error('none'); return { data: hit.data }; },
       rmdir: async arg => { written.push({ rmdir: arg.path }); },
@@ -1571,13 +1571,13 @@ describe('ui-host.js: where the page goes on each platform (H3)', () => {
     const webView = {
       setServerBasePath: async arg => { sequence.push(['set', arg.path]); },
       persistServerBasePath: async () => { sequence.push(['persist']); },
-      getServerBasePath: async () => ({ path: '/data/user/0/com.realalcibiades.plenum/files/plenum-ui/plenum-ui-x' }),
+      getServerBasePath: async () => ({ path: '/data/user/0/com.literallyisyou.plenum/files/plenum-ui/plenum-ui-x' }),
     };
     const adapter = webViewOver({ webView, filesystem });
     await adapter.persistServerBasePath({ path: 'plenum-ui/plenum-ui-x' });
     assert.deepEqual(sequence, [], 'persist alone calls nothing: the plugin persists the path it serves now');
     await adapter.setServerBasePath({ path: 'plenum-ui/plenum-ui-x' });
-    assert.deepEqual(sequence, [['set', '/data/user/0/com.realalcibiades.plenum/files/plenum-ui/plenum-ui-x'], ['persist']]);
+    assert.deepEqual(sequence, [['set', '/data/user/0/com.literallyisyou.plenum/files/plenum-ui/plenum-ui-x'], ['persist']]);
     assert.deepEqual(await adapter.getServerBasePath(), { path: 'plenum-ui/plenum-ui-x' }, 'back to the relative name androidStorage compares');
     const files = filesOver(filesystem);
     await files.write('plenum-ui/a/index.html', new Uint8Array([104, 105]));

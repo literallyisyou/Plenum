@@ -33,7 +33,7 @@ test('Info.plist parses and the app is named Plenum with the bundle identifier f
   assert.equal(info.CFBundleIdentifier, '$(PRODUCT_BUNDLE_IDENTIFIER)');
   const ids = [...pbx.matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);/g)].map((m) => m[1]);
   assert.ok(ids.length >= 2, 'both build configurations set a bundle identifier');
-  assert.ok(ids.every((id) => id === 'com.realalcibiades.plenum'), `bundle identifiers: ${ids.join(', ')}`);
+  assert.ok(ids.every((id) => id === 'com.literallyisyou.plenum'), `bundle identifiers: ${ids.join(', ')}`);
 });
 
 test('deployment target is 16.0 in every configuration and no 15.0 setting is left', () => {

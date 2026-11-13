@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum.isolatedpreview
+package com.literallyisyou.plenum.isolatedpreview
 
 import android.app.Activity
 import android.os.Build
@@ -139,8 +139,8 @@ class IsolatedPreviewActivity : Activity() {
     }
 
     companion object {
-        const val EXTRA_PATH = "com.realalcibiades.plenum.isolatedpreview.PATH"
-        const val EXTRA_TITLE = "com.realalcibiades.plenum.isolatedpreview.TITLE"
+        const val EXTRA_PATH = "com.literallyisyou.plenum.isolatedpreview.PATH"
+        const val EXTRA_TITLE = "com.literallyisyou.plenum.isolatedpreview.TITLE"
         private const val DATA_SUFFIX = "isolated-preview"
         private const val EXPIRED_PAGE =
             "<!doctype html><meta charset=\"utf-8\"><p>This preview is no longer available. Open the artifact again.</p>"

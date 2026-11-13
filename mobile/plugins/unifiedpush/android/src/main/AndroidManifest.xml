@@ -12,7 +12,7 @@
         <!-- The connector's PushService. Not exported: only the distributor's broadcasts reach it, through the connector.
              It runs only when a distributor delivers something; there is no socket and no foreground service. -->
         <service
-            android:name="com.realalcibiades.plenum.unifiedpush.UnifiedPushService"
+            android:name="com.literallyisyou.plenum.unifiedpush.UnifiedPushService"
             android:exported="false">
             <intent-filter>
                 <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />

@@ -2,12 +2,12 @@
 // This is the one place the native identifiers live. scripts/build-mobile.mjs writes mobile/www;
 // `npx cap sync` copies it into mobile/android and mobile/ios.
 //
-// Owner to confirm: appId (com.realalcibiades.plenum) is the value MOBILE.json names. Changing it
+// Owner to confirm: appId (com.literallyisyou.plenum) is the value MOBILE.json names. Changing it
 // after the first store upload is not possible, so confirm it before any upload.
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.realalcibiades.plenum',
+  appId: 'com.literallyisyou.plenum',
   appName: 'Plenum',
   webDir: 'www',
 

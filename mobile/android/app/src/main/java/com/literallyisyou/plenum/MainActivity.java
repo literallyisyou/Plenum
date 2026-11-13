@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum;
+package com.literallyisyou.plenum;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;

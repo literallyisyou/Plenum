@@ -13,10 +13,10 @@ apply plugin: 'com.android.application'
 def signingEnv = System.getenv('ANDROID_KEYSTORE_PATH')
 
 android {
-    namespace = "com.realalcibiades.plenum"
+    namespace = "com.literallyisyou.plenum"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.realalcibiades.plenum"
+        applicationId "com.literallyisyou.plenum"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode (project.hasProperty('plenumVersionCode') ? Integer.parseInt(project.property('plenumVersionCode').toString()) : 1)

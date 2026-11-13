@@ -110,10 +110,10 @@ function walk(dir, out = []) {
   return out;
 }
 
-const KOTLIN_UNIFIEDPUSH = 'plugins/unifiedpush/android/src/main/java/com/realalcibiades/plenum/unifiedpush';
-const KOTLIN_DICTATION = 'plugins/dictation/android/src/main/java/com/realalcibiades/plenum/dictation/DictationPlugin.kt';
-const KOTLIN_PREVIEW = 'plugins/isolated-preview/android/src/main/java/com/realalcibiades/plenum/isolatedpreview';
-const APP_JAVA = 'android/app/src/main/java/com/realalcibiades/plenum';
+const KOTLIN_UNIFIEDPUSH = 'plugins/unifiedpush/android/src/main/java/com/literallyisyou/plenum/unifiedpush';
+const KOTLIN_DICTATION = 'plugins/dictation/android/src/main/java/com/literallyisyou/plenum/dictation/DictationPlugin.kt';
+const KOTLIN_PREVIEW = 'plugins/isolated-preview/android/src/main/java/com/literallyisyou/plenum/isolatedpreview';
+const APP_JAVA = 'android/app/src/main/java/com/literallyisyou/plenum';
 
 // ---------------------------------------------------------------- UnifiedPush core
 
@@ -549,7 +549,7 @@ describe('capacitor.config.ts (the one place the native identifiers live)', () =
   const config = read('capacitor.config.ts');
 
   test('the appId, the app name and the web directory are as MOBILE.json decided', () => {
-    assert.match(config, /appId: 'com\.realalcibiades\.plenum'/);
+    assert.match(config, /appId: 'com.literallyisyou.plenum'/);
     assert.match(config, /appName: 'Plenum'/);
     assert.match(config, /webDir: 'www'/);
   });
@@ -690,7 +690,7 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     const service = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'UnifiedPushService.kt'), 'utf8');
     assert.match(service, /class UnifiedPushService : PushService\(\)/);
     const manifest = read('plugins/unifiedpush/android/src/main/AndroidManifest.xml');
-    assert.match(manifest, /android:name="com\.realalcibiades\.plenum\.unifiedpush\.UnifiedPushService"\s+android:exported="false"/);
+    assert.match(manifest, /android:name="com.literallyisyou.plenum\.unifiedpush\.UnifiedPushService"\s+android:exported="false"/);
     assert.match(manifest, /org\.unifiedpush\.android\.connector\.PUSH_EVENT/);
     assert.match(manifest, /org\.unifiedpush\.android\.distributor\.REGISTER/);
   });
@@ -741,16 +741,16 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     const hits = walk(MOBILE).filter(f => /\.(kt|java)$/.test(f) && fs.readFileSync(f, 'utf8').includes('FLAG_SECURE'));
     const rels = hits.map(f => path.relative(MOBILE, f).split(path.sep).join('/')).sort();
     assert.deepEqual(rels, [
-      'android/app/src/main/java/com/realalcibiades/plenum/PlenumPrivacyPlugin.java',
-      'plugins/isolated-preview/android/src/main/java/com/realalcibiades/plenum/isolatedpreview/IsolatedPreviewActivity.kt',
+      'android/app/src/main/java/com/literallyisyou/plenum/PlenumPrivacyPlugin.java',
+      'plugins/isolated-preview/android/src/main/java/com/literallyisyou/plenum/isolatedpreview/IsolatedPreviewActivity.kt',
     ]);
-    const privacy = read('android/app/src/main/java/com/realalcibiades/plenum/PlenumPrivacyPlugin.java');
+    const privacy = read('android/app/src/main/java/com/literallyisyou/plenum/PlenumPrivacyPlugin.java');
     assert.match(privacy, /getBoolean\(KEY_HIDE, true\)/, 'on by default, as MOBILE-UI 6.17 shows it checked');
     assert.match(privacy, /if \(hide\) \{\s*window\.addFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)/);
   });
 
   test('MainActivity registers the privacy plugin before the bridge starts and applies the setting on the first frame', () => {
-    const main = read('android/app/src/main/java/com/realalcibiades/plenum/MainActivity.java');
+    const main = read('android/app/src/main/java/com/literallyisyou/plenum/MainActivity.java');
     const register = main.indexOf('registerPlugin(PlenumPrivacyPlugin.class)');
     const bridge = main.indexOf('super.onCreate(savedInstanceState)');
     assert.ok(register >= 0 && bridge > register, 'registration comes before super.onCreate');
@@ -815,7 +815,7 @@ describe('native.js: the plugins the shell registers (H6)', () => {
     assert.ok(native.BiometricAuth && native.WebView && native.UnifiedPush && native.Dictation && native.IsolatedPreview && native.secureStorage && native.BarcodeScanner);
     // The scanner's native name is the barcode package's (read from its index.js); the app's own plugin is the Java class's @CapacitorPlugin name.
     assert.ok(registered.includes('CapacitorBarcodeScanner'));
-    assert.match(read('android/app/src/main/java/com/realalcibiades/plenum/PlenumPrivacyPlugin.java'), /@CapacitorPlugin\(name = "PlenumPrivacy"\)/);
+    assert.match(read('android/app/src/main/java/com/literallyisyou/plenum/PlenumPrivacyPlugin.java'), /@CapacitorPlugin\(name = "PlenumPrivacy"\)/);
   });
 
   test('the secure storage adapter gives store.js the shape it reads, over the package API', async () => {

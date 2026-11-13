@@ -25,7 +25,7 @@ ext {
 }
 
 android {
-    namespace = "com.realalcibiades.plenum.dictation"
+    namespace = "com.literallyisyou.plenum.dictation"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion

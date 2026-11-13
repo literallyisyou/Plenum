@@ -64,7 +64,7 @@ The app asks for no location, contacts, tracking or photo-library access (photos
 
 ## 8. Build facts
 
-- Bundle identifier `com.realalcibiades.plenum` (owner to confirm). Display name Plenum.
+- Bundle identifier `com.literallyisyou.plenum` (owner to confirm). Display name Plenum.
 - iOS 16.0 deployment target; iPhone only (`TARGETED_DEVICE_FAMILY = 1`).
 - Capacitor 8.5.3 with Swift Package Manager. `App/App.xcodeproj` is the project; there is no Podfile. Capacitor's SPM core is pinned exactly to 8.5.3.
 - Plugins (all MIT), as listed in `mobile/package.json`: @capacitor/app 8.1.2, @capacitor/barcode-scanner 3.1.3, @capacitor/browser 8.0.5, @capacitor/filesystem 8.1.5, @capacitor/haptics 8.0.2, @capacitor/local-notifications 8.3.1, @capacitor/network 8.0.1, @capacitor/share 8.0.3, @capacitor/text-zoom 8.0.1, @aparajita/capacitor-biometric-auth 10.0.0, @aparajita/capacitor-secure-storage 8.0.1. Each ships a `Package.swift` (checked in `check/ios-project.test.mjs`).

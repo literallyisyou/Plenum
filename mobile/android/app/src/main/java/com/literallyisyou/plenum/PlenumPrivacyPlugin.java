@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum;
+package com.literallyisyou.plenum;
 
 import android.app.Activity;
 import android.content.Context;

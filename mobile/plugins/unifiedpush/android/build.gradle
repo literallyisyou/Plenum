@@ -28,7 +28,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    namespace = "com.realalcibiades.plenum.unifiedpush"
+    namespace = "com.literallyisyou.plenum.unifiedpush"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion

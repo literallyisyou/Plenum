@@ -451,7 +451,7 @@ jobs:
       contents: read
     env:
       # The bundle identifier the owner confirms (MOBILE.json owner_todos). mobile/capacitor.config.ts holds the same value.
-      APP_BUNDLE_ID: com.realalcibiades.plenum
+      APP_BUNDLE_ID: com.literallyisyou.plenum
     steps:
       - name: Stop when the Apple secrets are only partly set
         env:

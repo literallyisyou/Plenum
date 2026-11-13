@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum.dictation
+package com.literallyisyou.plenum.dictation
 
 import android.content.Intent
 import android.os.Build

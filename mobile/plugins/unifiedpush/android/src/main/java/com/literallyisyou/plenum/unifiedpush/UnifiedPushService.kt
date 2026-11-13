@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum.unifiedpush
+package com.literallyisyou.plenum.unifiedpush
 
 import android.util.Base64
 import com.getcapacitor.JSObject

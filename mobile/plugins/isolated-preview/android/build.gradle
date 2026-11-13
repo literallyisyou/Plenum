@@ -20,7 +20,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    namespace = "com.realalcibiades.plenum.isolatedpreview"
+    namespace = "com.literallyisyou.plenum.isolatedpreview"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion

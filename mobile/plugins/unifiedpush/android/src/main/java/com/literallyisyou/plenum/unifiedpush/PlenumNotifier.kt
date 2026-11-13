@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum.unifiedpush
+package com.literallyisyou.plenum.unifiedpush
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

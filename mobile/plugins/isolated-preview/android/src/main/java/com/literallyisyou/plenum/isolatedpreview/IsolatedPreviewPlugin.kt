@@ -1,4 +1,4 @@
-package com.realalcibiades.plenum.isolatedpreview
+package com.literallyisyou.plenum.isolatedpreview
 
 import android.content.Context
 import android.content.Intent

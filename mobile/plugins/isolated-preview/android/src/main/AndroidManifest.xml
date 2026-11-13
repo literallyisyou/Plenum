@@ -6,7 +6,7 @@
              no access to the app's memory and no task in the app switcher (excludeFromRecents). The window is secure
              (FLAG_SECURE set by the activity), so the page cannot be captured. -->
         <activity
-            android:name="com.realalcibiades.plenum.isolatedpreview.IsolatedPreviewActivity"
+            android:name="com.literallyisyou.plenum.isolatedpreview.IsolatedPreviewActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:process=":isolatedpreview"
