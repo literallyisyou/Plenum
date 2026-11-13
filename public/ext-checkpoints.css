@@ -8,7 +8,7 @@
 .ext-checkpoints-toggle { flex: none; margin-left: auto; }
 .ext-checkpoints-toggle[aria-pressed="true"] {
   color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, var(--line-2));
-  background: color-mix(in srgb, var(--accent) 14%, var(--surface-3));
+  background: var(--accent-soft);
 }
 .ext-checkpoints-status { margin: 0 4px; color: var(--text-2); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .ext-checkpoints-status:empty { display: none; }
@@ -29,7 +29,7 @@
   display: flex; flex-direction: column; gap: 10px; min-width: 0;
   padding: 10px 12px; border-radius: 12px;
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  background: var(--fill-1);
 }
 .ext-checkpoints-line { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .ext-checkpoints-main { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -46,7 +46,7 @@
 .ext-checkpoints-diff-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .ext-checkpoints-diff-note.bad { color: var(--bad); }
 .ext-checkpoints-diff {
-  margin: 0; padding: 10px 12px; border-radius: 10px;
+  margin: 0; padding: 10px 12px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--code-bg); color: var(--text-2);
   font: 12px/1.55 var(--mono); white-space: pre; overflow: auto; max-height: 280px; min-width: 0;
 }

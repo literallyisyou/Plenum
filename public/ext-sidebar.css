@@ -14,11 +14,11 @@
   /* The menu is a fixed panel over the chat, so the chat and composer keep their layout behind it. */
   body.ext-side-open .sidebar {
     display: flex; position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 88vw); z-index: 30;
-    background: var(--bg-side); box-shadow: 0 0 40px rgba(0, 0, 0, 0.35); overflow-y: auto;
+    background: var(--bg-side); box-shadow: var(--shadow-3); overflow-y: auto;
   }
   body.ext-side-open .ext-side-close { display: inline-flex; align-self: flex-end; }
   /* Above the chat, below the toasts (40 in style.css). The drawer (21) sits lower than the menu, so ext-sidebar.js closes the menu when a drawer opens. */
-  body.ext-side-open .ext-side-scrim { display: block; position: fixed; inset: 0; z-index: 29; background: rgba(0, 0, 0, 0.4); }
+  body.ext-side-open .ext-side-scrim { display: block; position: fixed; inset: 0; z-index: 29; background: var(--scrim, rgba(0, 0, 0, 0.4)); }
   /* Under the title bar, as the pane is; the drive bar sits under the menu, and the drive pill (in the bar) stays visible. */
   html:not([data-surface="phone"]) body.ext-side-open .sidebar { top: var(--bar-now, var(--bar-h)); }
   html:not([data-surface="phone"]) body.ext-side-open .ext-side-scrim { top: var(--bar-now, var(--bar-h)); }

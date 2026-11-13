@@ -36,7 +36,7 @@
 .ext-agl-error-line { color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
 
 .ext-agl-wait { display: inline-flex; align-items: center; gap: 9px; margin: 0; color: var(--muted); font-size: 12.5px; }
-.ext-agl-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
-.ext-agl-text { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.ext-agl-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; padding: 16px 0; text-align: center; }
+.ext-agl-text { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; text-wrap: balance; }
 
 .ext-agl-stop:disabled, .ext-agl-stop-all:disabled { opacity: 0.5; cursor: default; }

@@ -7,11 +7,12 @@
 
 .ext-quota-ring {
   display: inline-grid; place-items: center; flex: none;
-  width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
+  width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-md);
   background: transparent; color: var(--text-2);
-  transition: background-color 0.14s;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.ext-quota-ring:hover, .ext-quota-ring[aria-expanded="true"] { background: var(--surface-2); }
+.ext-quota-ring:hover { background: var(--fill-2); color: var(--text); }
+.ext-quota-ring[aria-expanded="true"] { background: var(--fill-3); color: var(--text); }
 .ext-quota-ring svg { width: 20px; height: 20px; overflow: visible; }
 .ext-quota-track { fill: none; stroke: var(--line-2); stroke-width: 2.5; }
 .ext-quota-arc { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
@@ -28,9 +29,9 @@
 .ext-quota-pop {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40;
   display: grid; gap: 10px; width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 540px); overflow: auto;
-  padding: 12px; border: 1px solid var(--line-2); border-radius: 14px;
-  background: var(--surface); color: var(--text);
-  box-shadow: 0 18px 40px -16px var(--shade-2);
+  padding: 12px; border: 1px solid var(--line-2); border-radius: var(--r-lg);
+  background: var(--material-menu); -webkit-backdrop-filter: var(--blur-menu); backdrop-filter: var(--blur-menu); color: var(--text);
+  box-shadow: var(--shadow-2);
 }
 .ext-quota-pop[hidden] { display: none; }
 .ext-quota-pop:focus { outline: none; }
@@ -39,7 +40,7 @@
   .ext-quota-pop { position: fixed; top: 56px; bottom: 12px; left: 12px; right: 12px; width: auto; max-height: none; }
 }
 .ext-quota-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.ext-quota-pop-title { font-weight: 650; font-size: 14.5px; }
+.ext-quota-pop-title { font-weight: 600; font-size: 14.5px; }
 .ext-quota-cards { display: grid; gap: 10px; }
 .ext-quota-cards .card { padding: 11px 12px; }
 .ext-quota-card-body { gap: 8px; }
@@ -56,8 +57,8 @@
 /* The banner sits in the banner slot above the message box, with the other composer banners. */
 .ext-quota-banner {
   display: grid; gap: 8px; min-width: 0;
-  padding: 10px 12px; border-radius: 12px;
-  border: 1px solid var(--line-2); border-left: 3px solid var(--warn);
+  padding: 10px 12px; border-radius: var(--r-lg);
+  border: 1px solid var(--line); border-left: 3px solid var(--warn);
   background: var(--surface); color: var(--text-2); font-size: 13px;
 }
 .ext-quota-banner[data-kind="done"] { border-left-color: var(--accent); }
@@ -67,7 +68,9 @@
 .ext-quota-pick { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: 12.5px; }
 .ext-quota-pick select {
   min-width: 0; max-width: 280px; height: 30px; padding: 0 8px;
-  border: 1px solid var(--line-2); border-radius: 8px;
-  background: var(--surface-2); color: var(--text); cursor: pointer;
+  border: 1px solid var(--line-2); border-radius: var(--r-md);
+  background-color: var(--bg); color: var(--text); cursor: pointer;
 }
+.ext-quota-pick select:hover:not(:disabled) { border-color: var(--line-3); }
+.ext-quota-pick select:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ext-quota-pick select:disabled { opacity: 0.6; cursor: default; }

@@ -13,8 +13,8 @@
 .ext-review-source { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }
 .ext-review-refresh { flex: none; }
 .ext-review-plan {
-  margin: 0; padding: 7px 10px; border-radius: 9px; font-size: 12.5px; line-height: 1.45;
-  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+  margin: 0; padding: 7px 10px; border-radius: var(--r-md); font-size: 12.5px; line-height: 1.45;
+  color: var(--accent); background: var(--accent-soft);
 }
 .ext-review-plan[hidden] { display: none; }
 .ext-review-status { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -34,23 +34,23 @@
 }
 
 .ext-review-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.ext-review-group-title { margin: 4px 2px 2px; color: var(--muted); font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
-.ext-review-empty { margin: 6px 2px; color: var(--muted); font-size: 12.5px; }
+.ext-review-group-title { margin: 4px 0 2px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.ext-review-empty { margin: 6px 0; color: var(--muted); font-size: 12.5px; }
 
 .ext-review-row {
   display: flex; align-items: center; gap: 6px; min-width: 0;
-  padding: 4px 6px 4px 4px; border-radius: 9px; border: 1px solid transparent;
+  padding: 4px 6px 4px 4px; border-radius: var(--r-md); border: 1px solid transparent;
 }
-.ext-review-row:hover { background: var(--surface-2); }
-.ext-review-row.is-selected { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.ext-review-row:hover { background: var(--fill-1); }
+.ext-review-row.is-selected { background: var(--accent-soft); border-color: transparent; }
 .ext-review-row.is-viewed .ext-review-name { color: var(--muted); }
 .ext-review-pick {
   flex: 1 1 auto; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 4px 4px;
   border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer;
 }
 .ext-review-letter {
-  flex: none; width: 18px; height: 18px; border-radius: 5px; display: inline-grid; place-items: center;
-  font: 700 11px/1 var(--mono); color: var(--text-2); background: var(--surface-3);
+  flex: none; width: 18px; height: 18px; border-radius: var(--r-xs); display: inline-grid; place-items: center;
+  font: 600 11px/1 var(--mono); color: var(--text-2); background: var(--fill-3);
 }
 .ext-review-name { flex: 1 1 auto; min-width: 0; font: 12.5px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }
 .ext-review-dir { color: var(--muted); }
@@ -63,6 +63,7 @@
 .ext-review-file-meta { margin: 0; color: var(--muted); font-size: 12px; }
 .ext-review-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .ext-review-act.is-danger { color: var(--bad); }
+.ext-review-lines .ext-review-act, .ext-review-saved, .ext-review-editor { font-family: var(--ui); }
 
 .ext-review-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .ext-review-note.ext-review-meta { font-family: var(--mono); font-size: 11.5px; }
@@ -70,7 +71,7 @@
 /* The diff. A row per line; the gutter holds the old and new numbers and is the button that starts a comment. */
 .ext-review-lines {
   min-width: 0; max-height: 60vh; overflow: auto;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--code-bg);
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--code-bg);
   font: 12px/1.55 var(--mono); color: var(--text-2);
 }
 .ext-review-hunk {
@@ -87,7 +88,7 @@
 }
 .ext-review-ln:hover { color: var(--text); background: var(--surface-3); }
 .ext-review-ln-old, .ext-review-ln-new { display: inline-block; min-width: 3.4ch; }
-.ext-review-code { flex: 0 0 auto; padding: 0 10px 0 6px; white-space: pre; }
+.ext-review-code { flex: 1 0 auto; padding: 0 10px 0 6px; white-space: pre; }
 .ext-review-code.d-add { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .ext-review-code.d-del { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .d-hunk { color: var(--muted); }
@@ -96,7 +97,7 @@
 
 .ext-review-saved, .ext-review-editor {
   display: flex; flex-direction: column; gap: 6px; margin: 4px 0 6px 96px; padding: 8px 10px; min-width: 0;
-  border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text);
+  border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--surface); color: var(--text);
   font-size: 13px; line-height: 1.5; white-space: normal;
 }
 .ext-review-saved-text { margin: 0; color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -104,9 +105,11 @@
 .ext-review-saved .ext-review-saved-text { flex: 1 1 180px; }
 .ext-review-note-input {
   width: 100%; min-height: 44px; resize: vertical; padding: 7px 9px; box-sizing: border-box;
-  border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--text);
+  border-radius: var(--r-md); border: 1px solid var(--line-2); background-color: var(--bg); color: var(--text);
   font-family: inherit; font-size: 13px; line-height: 1.45;
 }
+.ext-review-note-input:hover { border-color: var(--line-3); }
+.ext-review-note-input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ext-review-editor-msg { margin: 0; color: var(--bad); font-size: 12px; }
 .ext-review-editor-msg:empty { display: none; }
 .ext-review-editor-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -114,10 +117,16 @@
 
 .ext-review-foot {
   position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface);
+  padding: 10px 14px; border-top: 1px solid var(--line); background: var(--bg-side);
 }
 .ext-review-count { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12.5px; }
 .ext-review-send { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ext-review-send:disabled { cursor: default; }
-.ext-review-open { display: inline-flex; align-items: center; gap: 6px; }
+.ext-review-open {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); font-weight: 600;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.ext-review-open:hover:not(:disabled) { background: var(--fill-2); color: var(--text); }
+.ext-review-open[aria-pressed="true"], .ext-review-open[aria-expanded="true"] { background: var(--fill-2); color: var(--accent); }
 .ext-review-open .badge { margin-left: 0; min-width: 18px; height: 18px; font-size: 10.5px; }

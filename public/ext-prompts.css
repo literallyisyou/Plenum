@@ -14,8 +14,8 @@
   margin: 0 4px;
   color: var(--muted);
   font: 600 11px/1.3 var(--ui);
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .ext-prompts-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .ext-prompts-entry .ext-prompts-note { margin: 0 4px; font-size: 12.5px; }
@@ -41,7 +41,7 @@
 .ext-prompts-desc { color: var(--muted); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
 .ext-prompts-text {
   max-height: 140px; overflow: auto;
-  padding: 9px 10px; border-radius: 10px;
+  padding: 9px 10px; border-radius: 8px;
   background: var(--code-bg); color: var(--text-2);
   font: 12px/1.5 var(--mono);
   white-space: pre-wrap; overflow-wrap: anywhere;
@@ -49,22 +49,22 @@
 
 /* The editor. Its fields follow the look of the other inputs in style.css, with the same focus ring. */
 .ext-prompts-form { gap: 12px; }
-.ext-prompts-heading { font: 600 14px/1.3 var(--display); color: var(--text); letter-spacing: -0.01em; }
+.ext-prompts-heading { font: 600 14px/1.3 var(--display); color: var(--text); letter-spacing: 0; }
 .ext-prompts-field { display: grid; gap: 6px; min-width: 0; }
 .ext-prompts-field > .field-label { color: var(--text-2); }
 .ext-prompts-form input, .ext-prompts-form textarea {
   width: 100%; min-width: 0;
   padding: 8px 10px;
-  border: 1px solid var(--line-2); border-radius: 9px;
-  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: 8px;
+  background-color: var(--bg); color: var(--text);
   font: 13px var(--ui);
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 .ext-prompts-form textarea { font: 12.5px/1.5 var(--mono); resize: vertical; min-height: 120px; }
 .ext-prompts-form input:focus, .ext-prompts-form textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: var(--ring);
 }
 .ext-prompts-form input:disabled { opacity: 0.6; cursor: default; }
 .ext-prompts-field .ext-prompts-note { font-size: 12px; }

@@ -12,7 +12,7 @@
 /* While a file is dragged over the message box, a veil says where it will land. */
 .composer.drop-ready {
   border-color: var(--accent);
-  box-shadow: var(--shadow-2), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: var(--shadow-1), var(--ring);
 }
 .composer.drop-ready::after {
   content: "Drop a file to attach it"; position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;

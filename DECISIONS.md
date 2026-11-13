@@ -1031,6 +1031,23 @@ Why: on 12 Nov the installed app would not start. A slow CLI read blocked /api/s
 
 What this does not change: LICENSE.txt, the approval default (ask first), the security and privacy floor, and the placeholders in the legal text.
 
+## 92. One calm look across the app (visual refresh, stylesheets only)
+
+**Decision.** On 12 Nov 2026 the owner asked for Plenum to look and work like a product from a first-rate company. The whole page was restyled in its stylesheets alone (`public/style.css` and 41 `public/ext-*.css` files): no markup, script or behaviour changed, no control got smaller, and nothing of the floor moved (Stop, the drive bar, the driving badge, the amber frame and the Phone indicator keep their rules).
+- **Restraint.** Neutral surfaces and one accent (the icon's periwinkle) for the single primary action, links, focus and selection. No gradient, glow or gloss without a meaning; the one gradient left is the word in the welcome heading.
+- **One scale.** Type sizes 11, 12, 13, 14, 15, 17, 22 and 32 with weights 400, 500 and 600; sentence case instead of upper-case labels; spacing on a 4 px grid; radii 6, 8, 12, 16 and the full pill.
+- **Depth with discipline.** Hairlines separate. A card on the page has an edge and no shadow; only what floats has a shadow (menus and toasts one level, drawers and dialogs the next), and only what floats over content is translucent.
+- **Calm controls and motion.** One primary button per view, every other button a quiet push button; fields, closed menus, switches and segmented controls look the same everywhere. Motion is 120, 180 or 240 ms, ease-out, named per component, and off under reduced motion.
+- **Dark is designed, not inverted.** A near-black page, each layer above it lighter, a faint light top edge on floating layers. About 250 text pairs were measured in both themes; all are 4.57 to 1 or better except disabled controls.
+- **Send sits at the composer's right edge**, and the composer's Stop with it, because it is the same button. Decided by the coordinator against the refresh's own rule that no Stop moves: the button keeps its size, its look while running and its place in the tab order.
+- **New tokens** in `style.css` (fills, rings, shadows, radii, type and spacing steps, durations, materials). No old token was removed, so stylesheets written before the refresh keep working. New page work uses the tokens and recipes of the design specification.
+
+**Reason.** The older look had grown panel by panel: several accents, glows and upper-case labels, shadows on cards, and controls that differed from one panel to the next. A person who uses the app all day reads calm, consistent surfaces faster, and the owner uses it to run his work.
+
+**Source.** The owner's request of 12 Nov 2026. The design specification and the before and after pictures of 40 scenes in both themes are kept with the test tree (`ultra/ui/DESIGN-SPEC.md`, `ultra/ui/before`, `ultra/ui/after`). Code: `public/style.css` and the `public/ext-*.css` files.
+
+**Status.** Built on 12 and 13 Nov 2026 in a copy of the project, reviewed by a second designer (two must-fix and twelve should-fix items, all applied), then copied into the project. The 65 test files that read a stylesheet give the same results before and after. Not done, because they need script or markup: the same floating list for every menu (only the model, effort, rounds and seat menus have it), real window translucency behind the sidebar, one row of actions under a reply, and the Review opener beside Browser and Agents. Not pictured, and so judged from the stylesheets only: a live drive, a running Send, the relay bar and the browser's driving badge. Not tested: 200 percent zoom.
+
 ## Open items
 
 - Claude CLI `--max-turns` and the CLAUDE_CODE_MAX_SUBAGENT_* variables need a signed-in run to confirm (agent runner item).

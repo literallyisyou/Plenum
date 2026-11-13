@@ -16,7 +16,7 @@
   display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; width: 100%;
   padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.ext-board-side-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.ext-board-side-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
 .ext-board-side-head .badge[hidden] { display: none; }
 /* The count and its word ("2 running") stay on one line: the badge is a pill, and a wrapped word fell outside it, unreadable. */
 .ext-board-side-head .badge { display: inline-flex; align-items: center; justify-content: center; gap: 0.3em; white-space: nowrap; }
@@ -35,10 +35,11 @@
 
 .ext-board-row {
   display: flex; flex-direction: column; gap: 2px; width: 100%; min-width: 0;
-  padding: 7px 9px; border: 1px solid transparent; border-radius: 8px;
+  padding: 7px 9px; border: 1px solid transparent; border-radius: var(--r-md);
   background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease);
 }
-.ext-board-row:hover { background: var(--surface-2); }
+.ext-board-row:hover { background: var(--fill-1); }
 .ext-board-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ext-board-row.is-wait { border-color: var(--warn); }
 .ext-board-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }

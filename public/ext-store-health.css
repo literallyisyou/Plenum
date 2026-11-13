@@ -4,9 +4,10 @@
   display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px 14px;
   margin: 10px 16px 0;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--bad) 42%, transparent);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--bad);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--bad) 9%, var(--surface));
+  background: var(--surface);
   color: var(--text);
   font-size: 13px;
   line-height: 1.45;

@@ -23,15 +23,15 @@
 /* Selects and text fields share one height and corner, so a column of options reads evenly. */
 .ext-tools input.ext-tools-input,
 .ext-tools select.ext-tools-select {
-  width: 100%; min-width: 0; height: 34px; margin: 0; padding: 0 10px; border-radius: 9px;
-  border: 1px solid var(--line-2); background: var(--bg); color: var(--text);
+  width: 100%; min-width: 0; height: 34px; margin: 0; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--line-2); background-color: var(--bg); color: var(--text);
   font: 13px var(--ui); outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 .ext-tools input.ext-tools-input::placeholder { color: var(--muted); opacity: 1; }
 .ext-tools input.ext-tools-input:focus,
 .ext-tools select.ext-tools-select:focus {
-  border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--accent); box-shadow: var(--ring);
 }
 .ext-tools select.ext-tools-select option { background: var(--surface); color: var(--text); }
 

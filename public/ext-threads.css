@@ -3,27 +3,29 @@
    means a run or news, and a provider's own colour marks the model of a tab. */
 
 /* ---------- the tab row ---------- */
+.ext-threads::-webkit-scrollbar { height: 8px; }
+.ext-threads::-webkit-scrollbar-thumb { border-width: 2px; }
 
 .ext-threads {
   flex: none; display: flex; align-items: center; gap: 4px; min-width: 0;
-  padding: 6px 16px 5px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  padding: 6px 16px 5px; overflow-x: auto; overflow-y: hidden;
   border-bottom: 1px solid var(--line);
 }
 .ext-threads[hidden] { display: none; }
 
 .ext-thread-tab {
   position: relative; flex: none; display: inline-flex; align-items: center; max-width: 230px; min-width: 0;
-  border: 1px solid transparent; border-radius: 10px;
-  transition: background-color 0.14s, border-color 0.14s;
+  border: 1px solid transparent; border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
-.ext-thread-tab:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.ext-thread-tab:hover { background: var(--fill-1); }
 .ext-thread-tab[data-selected="true"] {
-  background: var(--surface-2); border-color: var(--line-2); box-shadow: inset 0 1px 0 var(--sheen);
+  background: var(--fill-2); border-color: transparent; box-shadow: none;
 }
 
 .ext-thread-btn {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
-  padding: 6px 4px 6px 10px; background: transparent; border: 0; border-radius: 10px;
+  padding: 6px 4px 6px 10px; background: transparent; border: 0; border-radius: var(--r-md);
   color: var(--muted); font-weight: 600; font-size: 13px; line-height: 1.3; cursor: pointer;
 }
 .ext-thread-tab[data-selected="true"] .ext-thread-btn { color: var(--text); }
@@ -33,7 +35,6 @@
 .ext-thread-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .ext-thread-label .sw {
   flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--p, var(--muted));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p, var(--muted)) 20%, transparent);
 }
 .ext-thread-name { min-width: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -49,27 +50,27 @@
 .ext-thread-shield { width: 13px; height: 13px; }
 
 .ext-thread-more {
-  flex: none; width: 22px; height: 22px; margin-right: 4px; padding: 0; display: grid; place-items: center;
-  background: transparent; border: 0; border-radius: 7px; color: var(--muted); font-size: 15px; line-height: 1; font-weight: 700;
-  opacity: 0; transition: opacity 0.12s, background-color 0.12s, color 0.12s;
+  flex: none; width: 22px; height: 22px; margin-right: 4px; padding: 0 0 8px; display: grid; place-items: center;
+  background: transparent; border: 0; border-radius: var(--r-sm); color: var(--muted); font-size: 15px; line-height: 1; font-weight: 600;
+  opacity: 0; transition: opacity var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .ext-thread-tab:hover .ext-thread-more, .ext-thread-tab:focus-within .ext-thread-more, .ext-thread-tab[data-selected="true"] .ext-thread-more,
 .ext-thread-more[aria-expanded="true"] { opacity: 1; }
-.ext-thread-more:hover { background: var(--surface-3); color: var(--text); }
+.ext-thread-more:hover { background: var(--fill-3); color: var(--text); }
 
 .ext-thread-new {
   flex: none; display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; padding: 5px 10px;
-  background: transparent; border: 1px dashed var(--line-2); border-radius: 10px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-md);
   color: var(--text-2); font-size: 13px; font-weight: 600; cursor: pointer;
-  transition: background-color 0.14s, color 0.14s, border-color 0.14s;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.ext-thread-new:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-style: solid; }
+.ext-thread-new:hover:not(:disabled) { background: var(--fill-1); color: var(--text); }
 .ext-thread-new:disabled { opacity: 0.5; cursor: default; }
 .ext-thread-new .ic { width: 14px; height: 14px; }
 
 .ext-thread-rename {
   width: 150px; max-width: 100%; margin: 3px 4px 3px 6px; padding: 4px 8px;
-  background: var(--surface); color: var(--text); border: 1px solid var(--accent); border-radius: 8px; font-weight: 600; font-size: 13px;
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-md); box-shadow: var(--ring); outline: none; font-weight: 600; font-size: 13px;
 }
 
 /* Narrow windows: the tabs fold into "Main" with a chevron that lists the threads (UI-ARCH 8). */
@@ -86,7 +87,7 @@
 .ext-threads-header {
   flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0;
   padding: 7px 16px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--text-2);
-  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
 }
 .ext-threads-header[hidden] { display: none; }
 .ext-thread-readonly { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
@@ -100,15 +101,16 @@
 .ext-thread-menu {
   position: fixed; z-index: 50; min-width: 180px; max-width: min(300px, 90vw); padding: 5px;
   display: flex; flex-direction: column; gap: 1px;
-  background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-2);
+  background: var(--material-menu); -webkit-backdrop-filter: var(--blur-menu); backdrop-filter: var(--blur-menu);
+  border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow-2);
 }
 .ext-thread-menu-item {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 7px 10px;
-  background: transparent; border: 0; border-radius: 8px; color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+  background: transparent; border: 0; border-radius: var(--r-sm); color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
 }
-.ext-thread-menu-item:hover:not(:disabled), .ext-thread-menu-item:focus-visible { background: var(--surface-2); }
+.ext-thread-menu-item:hover:not(:disabled), .ext-thread-menu-item:focus-visible { background: var(--fill-2); }
 .ext-thread-menu-item:disabled { color: var(--muted); cursor: default; }
-.ext-thread-menu-item[aria-checked="true"] { font-weight: 700; }
+.ext-thread-menu-item[aria-checked="true"] { font-weight: 600; background: var(--accent-soft); }
 .ext-thread-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ext-thread-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 
@@ -119,10 +121,11 @@
 .ext-thread-form { display: flex; flex-direction: column; gap: 14px; margin-bottom: 8px; }
 .ext-thread-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ext-thread-name-input, .ext-thread-model {
-  width: 100%; min-width: 0; padding: 9px 11px; background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--line-2); border-radius: 10px; font-size: 13.5px;
+  width: 100%; min-width: 0; padding: 9px 11px; background-color: var(--bg); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: var(--r-md); font-size: 13.5px;
 }
-.ext-thread-name-input:focus, .ext-thread-model:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ext-thread-name-input:hover, .ext-thread-model:hover { border-color: var(--line-3); }
+.ext-thread-name-input:focus, .ext-thread-model:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ext-thread-check { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-2); cursor: pointer; }
 .ext-thread-plan { accent-color: var(--accent); }
 .ext-thread-file { display: none; }
@@ -131,12 +134,12 @@
 .ext-thread-extras { display: flex; flex-direction: column; gap: 12px; }
 
 .ext-thread-section { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
-.ext-thread-h { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.ext-thread-h { margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
 .ext-thread-switch { margin-bottom: 10px; }
 .ext-thread-warning {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; padding: 9px 12px;
-  border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: 10px;
-  background: color-mix(in srgb, var(--warn) 9%, var(--surface)); font-size: 12.5px; line-height: 1.5; color: var(--text-2);
+  border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: var(--r-lg);
+  background: var(--surface); font-size: 12.5px; line-height: 1.5; color: var(--text-2);
 }
 .ext-thread-warning[hidden] { display: none; }
 .ext-thread-warning-text { flex: 1 1 220px; min-width: 0; }
@@ -144,7 +147,7 @@
 .ext-thread-closed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .ext-thread-closed-row {
   display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 10px;
-  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--fill-1); border: 1px solid var(--line); border-radius: var(--r-md);
 }
 .ext-thread-closed-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; }
 .ext-thread-closed-when { flex: none; font-size: 12px; color: var(--muted); }
@@ -196,7 +199,6 @@
 }
 .ext-thread-pane-head .sw {
   flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--p, var(--muted));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p, var(--muted)) 20%, transparent);
 }
 .ext-thread-pane-name { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1.3 var(--ui); color: var(--text); }
 .ext-thread-pane-marks { flex: none; display: inline-flex; align-items: center; gap: 6px; }
@@ -250,7 +252,7 @@
 .app[data-settings-open] .ext-thread-split[data-on] :is(.ext-thread-divider, .ext-thread-beside, .ext-thread-pane-head) { visibility: hidden; }
 
 /* The tab row: the thread on the right looks open too, and the pane that has the focus has an accent line under its tab. */
-.ext-thread-tab[data-beside="true"] { background: var(--surface-2); border-color: var(--line-2); box-shadow: inset 0 1px 0 var(--sheen); }
+.ext-thread-tab[data-beside="true"] { background: var(--fill-2); border-color: transparent; box-shadow: none; }
 .ext-thread-tab[data-beside="true"] .ext-thread-btn { color: var(--text); }
 .ext-thread-tab[data-beside="true"] .ext-thread-more { opacity: 1; }
-.ext-thread-tab[data-pane-focus="true"] { box-shadow: inset 0 1px 0 var(--sheen), inset 0 -2px 0 var(--accent); }
+.ext-thread-tab[data-pane-focus="true"] { box-shadow: inset 0 -2px 0 var(--accent); }

@@ -5,9 +5,9 @@
   flex: none; align-self: center; width: 26px; height: 26px; padding: 0;
   display: grid; place-items: center;
   background: transparent; border: 0; border-radius: 8px; color: var(--muted);
-  transition: background-color 0.14s, color 0.14s;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.proj-gear:hover, .proj-gear:focus-visible { color: var(--text); background: var(--surface-2); }
+.proj-gear:hover, .proj-gear:focus-visible { color: var(--text); background: var(--fill-2); }
 .proj-gear .ic { width: 16px; height: 16px; stroke-width: 1.6; }
 :root[data-shell="desktop"] .proj-gear { -webkit-app-region: no-drag; }
 

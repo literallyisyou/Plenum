@@ -29,7 +29,7 @@
 .au-notes-body {
   margin-top: 8px; padding: 10px 12px; max-height: 240px; overflow: auto;
   font: 13px/1.55 var(--ui); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
 }
 .au-installed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 
