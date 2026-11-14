@@ -361,6 +361,14 @@ see its files. **Pause** holds every routine of that business; **Pause all** at 
 press **Resume all**. **Close** stops its routines and takes it off Today; its files and its record are kept, and you can open it
 again under Setup.
 
+### Set one up from a council's verdict
+
+- A council's verdict carries the button **Set up as a business**: Plenum makes a folder for each idea you keep, and the lead model sets the business up step by step, asking you in Businesses (and on a paired phone) for everything only you can do or decide.
+- Setup asks before every change unless you choose **Work on its own inside this folder**; in that mode commands run without a card and are not held to the folder.
+- Setup pauses by itself after 12 steps in a row; **Stop** on a setup holds until you press **Continue setup**, also across a restart.
+- The lead cannot change `BUSINESS.md`: it proposes a text, and only your Yes on that card makes it yours.
+- Never type a password in an answer: Plenum refuses text that looks like one.
+
 ### What waits for you
 
 **Today** lists everything that needs your answer, across all businesses, newest first. A lead puts an item there by ending its reply

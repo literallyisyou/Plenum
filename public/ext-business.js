@@ -30,6 +30,11 @@
 //   POST /api/decisions/answer                 { n, choice, note?, seen? }  seen is the sha256 GET /draft gave: every answer but the refusal
 //                                              to an item with a draft sends it. 409 with one sentence, shown as it is (the draft changed, it was
 //                                              not opened, the item no longer waits); the list and the draft are then read again
+//                                              An item with ask: true is a text question: the answer is what is typed (never empty), sent as
+//                                              { n, choice: 'Answer', note }. An item with does: true is a step only the person can do outside
+//                                              Plenum (link: where, shown as text and never opened from here; needs: what the lead needs back):
+//                                              its answers are Done, Not now and No. The server refuses a note that looks like a password, a
+//                                              key or a card number (400 with one sentence, shown as it is).
 //   POST /api/decisions/withdraw               { n }
 //   GET  /api/decisions/draft?n=               { name, text, cut, sha256 }  404 with one sentence when the file is gone
 //   GET  /api/programs/starts                  { starts: [{ id, program, label, model, folder, scope, title, text, type, lead, routine, sha256,
@@ -99,6 +104,12 @@
     bookSame: 'This is the text you saved. Nothing changed.',
     followUp: 'Acting on your answers',
     readFirst: 'Read the draft first. It is open below; then answer.',
+    askEmpty: 'Type your answer first, then press Send answer.',
+    noSecret: 'Do not type a password here, and no code or card number. Plenum refuses a text that looks like one.',
+    doLead: 'Only you can do this, outside Plenum. Nothing is opened, paid or sent from here.',
+    doWhere: 'Where',
+    doNeeds: 'The lead needs back',
+    linkCopied: 'The address is copied. Paste it into your own browser.',
     draftWait: 'The draft is still being read. Answer when it shows.',
     charterUnknown: 'Plenum has no record of the text you last confirmed. Read it, then confirm it.',
     charterSame: 'This is the text you confirmed.',
@@ -270,7 +281,7 @@
   const belowFull = () => { const t = phoneTier(); return t === 'approve' || t === 'read'; };
   // The controls a phone below Full may still use: the tabs and the business switcher, opening and closing a draft, a playbook or
   // BUSINESS.md (reads), copying text, and Stop. Everything else in the pane is switched off for it.
-  const READ_OK = /^(?:tab\||head\|sel$)|^(?:item|rt)\|[^|]*\|(?:draft|copy|bookclose|stop|keep)$|^fu\|.*\|stop$|^su\|charter\|open$|^su\|open\|/;
+  const READ_OK = /^(?:tab\||head\|sel$)|^(?:item|rt)\|[^|]*\|(?:draft|copy|linkcopy|bookclose|stop|keep)$|^fu\|.*\|stop$|^su\|charter\|open$|^su\|open\|/;
   function lockControls(el) {
     if (!belowFull()) return;
     for (const n of el.querySelectorAll('button, input, select, textarea')) {
@@ -459,6 +470,12 @@
     const note = str(ui.notes.get(n)).trim();
     const next = neighbourKey(n);
     const refusal = isRefusal(item, choice);
+    // A text question is answered by what is typed: an empty answer is not sent (the server refuses it as well).
+    if (item.ask === true && !refusal && !note) {
+      say(TEXT.askEmpty, true);
+      ui.focus = `item|${n}|note`;
+      return paint();
+    }
     const body = note ? { n, choice, note } : { n, choice };
     if (!refusal && str(item.draft)) {
       // A yes is tied to the draft he was shown: the hash that came with the text goes back as `seen`. A draft that was never opened
@@ -605,6 +622,18 @@
     ui.focus = ok ? `item|${item.n}|copy` : `item|${item.n}|box`;
     paint();
     if (!ok) root?.querySelector(`.biz-draft-box[data-n="${CSS.escape(String(item.n))}"]`)?.select();
+  }
+
+  // The address of a step only the person can do: copied as text, never opened from here.
+  async function copyLink(item) {
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(str(item.link));
+      ok = true;
+    } catch { ok = false; }
+    say(ok ? TEXT.linkCopied : 'The clipboard refused. Select the address and press Ctrl+C.', !ok);
+    ui.focus = ok ? `item|${item.n}|linkcopy` : `item|${item.n}|link`;
+    paint();
   }
 
   async function pauseAll(on) {
@@ -990,6 +1019,12 @@
     if (f.lead && !offers.includes(f.lead)) f.lead = '';
     const box = section(title, 'biz-first');
     if (lead) box.append(make('p', 'biz-note', lead));
+    // A council's verdict can be set up as a business with one press: Plenum makes the folder itself (public/ext-biz-setup.js).
+    if (typeof window.PlenumBizSetup?.pick === 'function') {
+      const from = make('div', 'biz-actions biz-from-verdict');
+      from.append(btn('ghost small', 'From a council verdict', 'first|verdict', () => window.PlenumBizSetup.pick()), make('span', 'biz-note', 'A lead sets it up step by step and asks you for what only you can do.'));
+      box.append(from);
+    }
     if (!free.length) {
       box.append(make('p', 'biz-calm', projects().length ? 'Every open folder already belongs to a business. Add a folder for the new one.' : 'A business lives in a folder. Add a folder first.'));
       if (typeof MU.openAddForm === 'function') box.append(btn('ghost small', 'Add a folder', 'first|add', () => MU.openAddForm()));
@@ -1056,7 +1091,8 @@
 
     const who = str(item.from?.label) || (str(item.from?.ref) ? modelLabel(item.from.ref) : '');
     const rt = routines().find(r => r.id === item.routine);
-    const where = rt ? `the routine ${str(rt.name)}` : str(item.routine) ? 'a routine' : 'a chat';
+    // A step of a business's setup names itself "Setup step N" (lib/setup.mjs): it is said as what it is, not as a routine.
+    const where = rt ? `the routine ${str(rt.name)}` : /^Setup step \d+$/.test(str(item.routine)) ? 'the setup of this business' : str(item.routine) ? 'a routine' : 'a chat';
     // Whose words the type is: the server's sentence, beside who asked.
     const from = make('p', 'biz-item-from', who ? `Asked by ${who} in ${where}.` : `Asked in ${where}.`);
     box.append(top, title, from);
@@ -1109,7 +1145,35 @@
       }
     }
 
+    // The proposal of the owner's instructions: what a Yes does is said in Plenum's own words (the server's sentence, from the module
+    // that acts on the Yes), never left to the model's title.
+    if (str(item.charterNote) && !only) box.append(make('p', 'biz-line biz-line-warn biz-item-charter', sentence(item.charterNote)));
     if (str(item.recommend)) box.append(make('p', 'biz-rec', `The model recommends: ${item.recommend}`));
+
+    // A text question (the answer is what is typed) and a step only the person can do (Done, Not now or No), unless only the refusal
+    // can answer the item.
+    const isAsk = item.ask === true && !only;
+    const isDo = item.does === true && !only;
+    if (isDo) {
+      const well = make('div', 'biz-do');
+      well.append(make('p', 'biz-note biz-do-lead', TEXT.doLead));
+      if (str(item.link)) {
+        // The address is text: it is never a link and never opened from here. The person copies it into his own browser.
+        const row = make('div', 'biz-do-row');
+        const link = make('code', 'biz-do-link', item.link);
+        link.tabIndex = 0;
+        link.dataset.fk = `item|${n}|link`;
+        link.setAttribute('aria-label', `The address for #${n}: ${item.link}`);
+        row.append(make('span', 'biz-do-key', TEXT.doWhere), link, btn('ghost small', 'Copy address', `item|${n}|linkcopy`, () => copyLink(item)));
+        well.append(row);
+      }
+      if (str(item.needs)) {
+        const row = make('div', 'biz-do-row');
+        row.append(make('span', 'biz-do-key', TEXT.doNeeds), make('span', 'biz-do-needs', item.needs));
+        well.append(row);
+      }
+      box.append(well);
+    }
 
     const opts = make('div', 'biz-opts');
     opts.setAttribute('role', 'group');
@@ -1120,18 +1184,39 @@
     const all = arr(item.options).map(String).filter(Boolean);
     const options = only ? (refuse ? [refuse] : []) : all;
     options.forEach((choice, i) => {
-      const b = btn('ghost small biz-opt', choice, `item|${n}|opt|${i}`, () => answer(item, choice));
-      if (refuse && choice === refuse) b.dataset.refuse = '';
+      const isRefuse = Boolean(refuse) && choice === refuse;
+      // The one answer of a text question sends what is typed.
+      const b = btn('ghost small biz-opt', isAsk && !isRefuse ? 'Send answer' : choice, `item|${n}|opt|${i}`, () => answer(item, choice));
+      if (isRefuse) b.dataset.refuse = '';
+      else if (isAsk) b.dataset.rec = '';
       else if (str(item.recommend) && choice.toLowerCase() === item.recommend.toLowerCase()) b.dataset.rec = '';
       b.disabled = busy;
       opts.append(b);
     });
     const foot = make('div', 'biz-item-foot');
-    const note = input('text', ui.notes.get(n) ?? '', `item|${n}|note`, v => { ui.notes.set(n, v); }, { maxlength: 500, placeholder: 'A note for the model (optional)', 'aria-label': `A note with your answer to #${n}` });
+    const hint = isAsk ? 'Your answer' : isDo && str(item.needs) ? 'What the lead needs back (optional)' : 'A note for the model (optional)';
+    const note = input('text', ui.notes.get(n) ?? '', `item|${n}|note`, v => { ui.notes.set(n, v); }, { maxlength: 500, placeholder: hint, 'aria-label': isAsk ? `Your answer to #${n}` : `A note with your answer to #${n}` });
     note.classList.add('biz-note-input');
+    if (isAsk) {
+      note.required = true;
+      // Enter in the field sends the answer, as the button does.
+      note.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); answer(item, all.find(c => c !== refuse) ?? 'Answer'); } });
+    }
     const no = btn('biz-quiet', 'Not needed', `item|${n}|no`, () => withdraw(item));
     no.title = 'Take this item off the list without an answer';
     no.disabled = busy;
+    if (isAsk || isDo) {
+      // What is typed here goes to a model: never a password. The field comes first, then the buttons.
+      const secret = make('p', 'biz-note biz-secret', TEXT.noSecret);
+      secret.id = uid('biz-n');
+      note.setAttribute('aria-describedby', secret.id);
+      const typed = make('div', 'biz-item-foot biz-item-typed');
+      typed.append(note);
+      box.append(typed, secret, opts);
+      foot.append(no);
+      box.append(foot);
+      return box;
+    }
     foot.append(note, no);
     box.append(opts);
     box.append(foot);
@@ -1369,6 +1454,13 @@
     for (const note of fileNotes()) panel.append(note);
     const held = holdBox();
     if (held) panel.append(held);
+    // The businesses that are being set up from a council's verdict, each with its state and Continue setup (public/ext-biz-setup.js).
+    try {
+      const su = window.PlenumBizSetup?.todayEl?.({ business: ui.sel === ALL ? '' : ui.sel });
+      if (su) panel.append(su);
+    } catch (err) {
+      console.error('Businesses: the setups could not be drawn.', err);
+    }
     if (D.biz.state === 'ok' && !open().length) {
       panel.append(firstForm('Start your first business', TEXT.noBusiness));
       if (businesses().length) panel.append(make('p', 'biz-note', 'Your closed businesses are under Setup. Open one again there.'));
@@ -2213,6 +2305,8 @@
   });
 
   MU.openBusinesses = () => MU.pane.open(TAB);
+  // The setups changed (public/ext-biz-setup.js read them again): Today is drawn again, and the list with it.
+  window.addEventListener('plenum:biz-setup', () => { if (shown()) { if (drawingWaits()) late = true; else paint(); refreshSoon(); } });
 
   // The phone's access can change while the pane is open (the computer raises or lowers it): the pane is drawn again with what it allows.
   try {

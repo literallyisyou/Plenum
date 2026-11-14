@@ -39,6 +39,7 @@ import { accrueReply, budgetState, checkBudget, spendOf } from './lib/budget.mjs
 import { findExtRoute } from './lib/routes/index.mjs';
 import { buildLine } from './lib/build-info.mjs';
 import { legalSummary, termsAccepted, termsGate } from './lib/legal.mjs';
+import { get as needsYouNotice } from './lib/needs-you.mjs';
 import { canStart as canStartDrive, DEFAULT_IDLE_MINUTES, hotkeyStatus, listDrives, normalizeIdleMinutes, normalizeStopOverride } from './lib/drive.mjs';
 import { bridge as computerBridge } from './lib/computer/bridge.mjs';
 import { createComputerRun } from './lib/computer/run.mjs';
@@ -536,6 +537,9 @@ function publicState({ messages = true } = {}) {
     approveAllCovers: approveAllCoversOf(st, null),
     // How many approval cards are waiting for Approve or Deny now. The desktop app counts it to alert the user (desktop/alerts.cjs).
     approvalsWaiting: pendingApprovals.size,
+    // The last notice that a business left new items on the owner's list: { seq, business, name, count, at } or null (lib/needs-you.mjs).
+    // The desktop app turns a new one into "<Business>: 2 things need you" (desktop/handlers/needs-you.cjs). A name and a count only.
+    needsYou: needsYouNotice(),
     effort: st.effort,
     theme: st.theme,
     // Whether the License Agreement is accepted (lib/legal.mjs). The page and the desktop app read legal.required.

@@ -3360,6 +3360,9 @@ function councilEl(cd, fresh = false) {
   const slot = document.createElement('div');
   slot.className = 'council-slot';
   article.append(head, q, cols);
+  // A saved council that has a verdict carries the time of its row, so a panel can name it to the server ("Set up as a business",
+  // public/ext-biz-setup.js). The time is a number the server wrote, never a model's text.
+  if (cd.saved && cd.done && cd.result && Number.isFinite(cd.ts)) article.dataset.verdictTs = String(cd.ts);
   for (const text of cd.notices ?? []) article.append(quietNote(text, 'council-note'));
   for (const a of cd.approvals ?? []) {
     const card = approvalEl(a, { reason: false });

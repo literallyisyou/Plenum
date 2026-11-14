@@ -221,3 +221,15 @@
   margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-left: 3px solid var(--accent-line); border-radius: var(--r-md);
   background: var(--surface); color: var(--text-2); overflow-wrap: anywhere;
 }
+
+/* A text question and a step only the person can do (14 Nov 2026). The field comes first, then the buttons. */
+.biz-item-typed { margin-top: var(--sp-2); }
+.biz-item-typed .biz-note-input { flex: 1 1 auto; min-width: 0; }
+.biz-secret { margin: var(--sp-1) 0 var(--sp-2); }
+.biz-do { display: grid; gap: var(--sp-1); margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.biz-do-lead { margin: 0; }
+.biz-do-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-do-key { color: var(--muted); flex: 0 0 auto; }
+.biz-do-link { font-family: var(--mono); overflow-wrap: anywhere; user-select: all; min-width: 0; }
+.biz-do-needs { overflow-wrap: anywhere; min-width: 0; }
+.biz-from-verdict { align-items: center; margin-bottom: var(--sp-3); }

@@ -1,0 +1,57 @@
+/* ext-biz-setup: setting a business up from a council's verdict. The fields, buttons, pills and cards are the Businesses pane's own
+   (ext-business.css) and the app's (style.css); the rules here only lay out the form in the drawer, the setup cards on Today, the
+   button under a verdict and the strip above a Setup chat. Colour and type come from the tokens, so both themes follow. Nothing sets a
+   fixed width, so the drawer and the pane hold everything at 360 px. */
+
+/* The button under a council's verdict. */
+.bzs-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+
+/* The form. */
+.bzs-form-root { display: grid; gap: var(--sp-4); min-width: 0; }
+.bzs-form { min-width: 0; }
+.bzs-q { display: grid; gap: var(--sp-1); min-width: 0; }
+.bzs-q-text { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.bzs-ideas, .bzs-modes { display: grid; gap: var(--sp-3); min-width: 0; margin: 0; padding: 0; border: 0; }
+.bzs-ideas > legend, .bzs-modes > legend { padding: 0; margin-bottom: var(--sp-1); }
+.bzs-idea {
+  display: grid; gap: var(--sp-3); min-width: 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface);
+}
+.bzs-idea[data-keep="false"] { background: transparent; }
+.bzs-idea-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.bzs-idea-top .biz-quiet { margin-left: auto; }
+.bzs-keep { font: 500 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.bzs-idea-text {
+  margin: 0; max-height: 132px; overflow: auto; padding: var(--sp-2) var(--sp-3); border-left: 3px solid var(--line-2, var(--line));
+  color: var(--text-2); font-size: var(--fs-body); line-height: var(--lh-body); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bzs-check-row, .bzs-mode { display: flex; align-items: flex-start; gap: var(--sp-2); min-width: 0; }
+.bzs-check-row input, .bzs-mode input { flex: 0 0 auto; margin-top: 3px; }
+.bzs-mode { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.bzs-mode:has(input:checked) { border-color: var(--accent-line); }
+.bzs-mode-words { display: grid; gap: var(--sp-1); min-width: 0; }
+.bzs-mode-name { font: 500 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.bzs-error { margin: 0; }
+.bzs-foot { padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+
+/* The verdicts to pick from. */
+.bzs-head { margin: 0; }
+
+/* The setup cards on Today. A setup card is information; only one that waits for the person keeps the amber edge of an item. */
+.biz-item.bzs-card { display: grid; gap: var(--sp-2); min-width: 0; border-color: var(--line); }
+.biz-item.bzs-card[data-state="waiting"] { border-color: color-mix(in srgb, var(--warn) 30%, var(--line)); }
+.biz-item.bzs-card[data-state="failed"] { border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
+/* The button that lets a setup go on is the card's main action: a quiet button with the accent's edge, as a recommended answer has. */
+.bzs-go { border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+.bzs-words, .bzs-last, .bzs-facts, .bzs-said { margin: 0; }
+.bzs-check { display: grid; gap: var(--sp-1); margin: 0; padding-left: var(--sp-5); color: var(--text-2); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.bzs-check-open { color: var(--warn); }
+.bzs-actions { margin-top: var(--sp-1); }
+
+/* "Waiting for you: K" above a Setup chat. */
+.bzs-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; padding: var(--sp-2) var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line)); border-radius: var(--r-md); background: var(--surface); color: var(--text);
+  font-size: var(--fs-body);
+}
+.bzs-strip-text { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
