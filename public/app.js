@@ -3835,6 +3835,7 @@ async function askCouncil(question) {
       stickBottom();
     });
   };
+  const sentRow = S.messages.at(-1);
   await runStream('/api/council', { ...scopeBody(), question: text, config, ...(files.length ? { images: files.map(({ name, mime, data }) => ({ name, mime, data })) } : {}) }, councilHandler(cd, paint), {
     tick: (secs, time) => {
       cd.clock = time;
@@ -3842,10 +3843,17 @@ async function askCouncil(question) {
       if (t) t.textContent = `Working · ${time}`;
     },
   });
-  // A question the server refused before it started (a file it cannot take, such as a scanned PDF) gets its files back in the composer,
-  // and its text when the box is still empty, so the person can fix the one file and ask again.
-  if (refusedBy && files.length && !pickedImages().length) window.MuseImages?.restore?.(files);
-  if (refusedBy && files.length && !el.input.value) {
+  // A question the server refused before it started (a seat's model it cannot use, a file it cannot take, the spend cap) was never
+  // saved, so the row this page drew for it goes, and the question comes back in the box when the box is still empty. Files come
+  // back in the composer too, so the person can fix the one thing and ask again.
+  if (!refusedBy) return;
+  const at = S.messages.lastIndexOf(sentRow);
+  if (at >= 0) {
+    S.messages.splice(at, 1);
+    renderChat();
+  }
+  if (files.length && !pickedImages().length) window.MuseImages?.restore?.(files);
+  if (!el.input.value) {
     el.input.value = mode === 'council' ? text : `/council ${text}`;
     autosize();
   }
@@ -3917,8 +3925,19 @@ function goneLine() {
   return line;
 }
 
-function showGone(select, line, ref) {
+// A seat can also hold a model that is not in the catalog at all (a saved council from before a model was renamed or removed). The
+// board says so in the same place, in plain words, before Send. An OpenRouter id is free text and is never in the catalog.
+function seatGoneWords(ref) {
   const words = notOfferedWords(ref);
+  if (words || typeof ref !== 'string' || !ref || !catalog.length) return words;
+  const provider = ref.split(':')[0];
+  if (provider === 'openrouter' || catalog.some(c => `${c.provider}:${c.id}` === ref)) return '';
+  const name = PROVIDER_REGISTRY.find(p => p.id === provider)?.name;
+  return `${name ?? 'Plenum'} does not offer this model any more. Pick another.`;
+}
+
+function showGone(select, line, ref) {
+  const words = seatGoneWords(ref);
   line.textContent = words;
   line.hidden = !words;
   if (words) select.setAttribute('aria-describedby', line.id);
@@ -5413,31 +5432,49 @@ function codexCard(c) {
 }
 
 // Gemini runs headless, so it can only edit files in Auto-approve mode. The card says so.
-function geminiCard(g) {
-  const ok = Boolean(g?.installed && g?.signedIn);
-  const pill = !g ? 'Unknown' : !g.installed ? 'Not installed' : g.signedIn ? 'Signed in' : 'Not signed in';
+// What the Gemini card says about the account. GET /api/accounts gives { installed, signedIn, email } and, when the server is new enough,
+// google (a Google sign-in is on this computer) and key (a run goes through the saved Google AI key). signedIn is true for either, so the
+// card tells them apart when it can: a person who only saved a key is not told that Gemini has a saved sign-in. With the older shape
+// (no google, no key) the card does not claim which of the two it is. Google no longer serves Gemini CLI on a Google AI Pro, Ultra or free
+// plan (DECISIONS item 89): that sentence is in every state that goes through a Google sign-in, and says so by name when Antigravity
+// (agy, from GET /api/accounts/cli) reported a plan.
+function geminiWords(g, agy) {
+  if (!g) return { pill: 'Unknown', ok: false, text: 'Gemini status is not available yet. Press Refresh.', plan: '' };
+  if (!g.installed) return { pill: 'Not installed', ok: false, text: '', plan: '' };
+  const email = g.email ? ` for ${g.email}` : '';
+  const known = typeof g.google === 'boolean' || typeof g.key === 'boolean';
+  const plan = g.key === true ? '' : agy?.signedIn === true && agy.tier
+    ? `Antigravity reports your Google plan as ${agy.tier}. Gemini CLI does not serve that plan any more, so use the Antigravity card for it, or save a Google AI key.`
+    : 'Gemini CLI does not serve Google AI Pro, Ultra or free plans any more. Use the Antigravity card for those, or save a Google AI key.';
+  if (g.key === true) return { pill: 'Using your key', ok: true, text: 'Gemini runs on the Google AI key saved in Accounts, and its requests are billed per token. It needs no Google sign-in.', plan };
+  if (g.google === true) return { pill: 'Signed in', ok: true, text: `Gemini has a saved Google sign-in${email}.`, plan };
+  if (!known && g.signedIn) return { pill: 'Signed in', ok: true, text: `Gemini is ready on this computer${email}.`, plan };
+  return { pill: 'Not signed in', ok: false, text: 'Sign in to your Google account. A sign-in window opens; choose "Sign in with Google" there, as Google shows it, then press Refresh here.', plan };
+}
+
+function geminiCard(g, agy) {
+  const words = geminiWords(g, agy);
+  const ok = words.ok;
+  const pill = words.pill;
   const card = cardShell('G', 'gemini', 'Gemini', 'Google account', pill, ok);
   card.dataset.card = 'gemini';
   const steps = g && !g.installed ? installSteps('gemini', g) : null;
-  card.append(para(!g
-    ? 'Gemini status is not available yet. Press Refresh.'
-    : !g.installed
-      ? (steps ? 'Gemini CLI is not installed.' : geminiInstall(g.installCommand || 'npm install --prefix "<your Muse Console tools folder>" @google/gemini-cli'))
-      : g.signedIn
-        ? `Gemini has a saved sign-in${g.email ? ` for ${g.email}` : ''}.`
-        : 'Sign in to your Google account. A sign-in window opens; choose "Sign in with Google" there, as Google shows it, then press Refresh here.'));
+  card.append(para(g && !g.installed
+    ? (steps ? 'Gemini CLI is not installed.' : geminiInstall(g.installCommand || 'npm install --prefix "<your Muse Console tools folder>" @google/gemini-cli'))
+    : words.text));
   if (steps) card.append(steps);
+  if (words.plan) card.append(quietNote(words.plan));
   card.append(para('Gemini runs headless, so it edits files only when Auto-approve or Approve all is on.'));
   const actions = document.createElement('div');
   actions.className = 'actions';
-  const signIn = button('primary small', g?.signedIn ? 'Sign in again' : 'Sign in to Gemini CLI');
+  const signIn = button('primary small', g?.google === true || (g?.signedIn && g?.google === undefined) ? 'Sign in again' : 'Sign in to Gemini CLI');
   signIn.disabled = !g?.installed;
   if (!g?.installed) signIn.title = 'Gemini CLI is not installed. Install it, press Refresh, then sign in.';
   signIn.addEventListener('click', async () => {
     try {
       await api('/api/accounts/gemini/login', {});
       toast('Sign-in window opened. Choose Sign in with Google there, then press Refresh.');
-      if (!g?.signedIn) watchCardSignIn(card, 'gemini', 'Gemini CLI', a => a?.gemini?.signedIn === true);
+      if (!ok) watchCardSignIn(card, 'gemini', 'Gemini CLI', a => a?.gemini?.signedIn === true);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -5461,7 +5498,7 @@ function geminiCard(g) {
 const BUILT_IN_AGENTS = [
   { id: 'claude', order: 10, card: ctx => claudeCard(ctx.accounts.claude) },
   { id: 'codex', order: 20, card: ctx => codexCard(ctx.accounts.codex) },
-  { id: 'gemini', order: 30, card: ctx => geminiCard(ctx.accounts.gemini) },
+  { id: 'gemini', order: 30, card: ctx => geminiCard(ctx.accounts.gemini, ctx.cli?.antigravity) },
   { id: 'muse', order: 40, card: ctx => museCard(ctx.accounts.muse) },
 ];
 const CODING_AGENTS = new Map();
@@ -5505,22 +5542,36 @@ async function renderAccounts(body) {
   body.append(para('Checking your accounts…'));
   const accountsPath = renderAccounts.fresh === true ? '/api/accounts?fresh=1' : '/api/accounts';
   renderAccounts.fresh = false;
+  // The two reads start together and each paints when it returns (DECISIONS item 107): the cards of Claude Code, Codex, Gemini CLI and Muse
+  // Code appear with GET /api/accounts, and Cursor, Grok Build and Antigravity say "Checking…" on their own cards until GET
+  // /api/accounts/cli answers. A CLI that is slow to answer holds up its own cards and no other. cli is null when that read failed.
+  const cliRead = api('/api/accounts/cli').catch(() => null);
   let a;
-  let cli = null;
   try {
-    // GET /api/accounts/cli is the coding agents added after the first four (Cursor now). A failed read leaves cli null, and its cards say so.
-    [a, cli] = await Promise.all([api(accountsPath), api('/api/accounts/cli').catch(() => null)]);
+    a = await api(accountsPath);
   } catch (err) {
     if (gen === drawerGen) body.replaceChildren(para(err.message));
     return;
   }
   // The drawer was closed or refreshed while the answer was on its way, so it is not painted here (B-62).
   if (gen !== drawerGen) return;
-  body.replaceChildren(codingAgentsGroup({ accounts: a, cli }));
-  body.append(Object.assign(document.createElement('p'), { textContent: 'Keys and sign-ins stay on this computer. Plenum sends them only to the provider they belong to.' }));
+  const foot = Object.assign(document.createElement('p'), { textContent: 'Keys and sign-ins stay on this computer. Plenum sends them only to the provider they belong to.' });
+  body.replaceChildren(codingAgentsGroup({ accounts: a, cli: null, cliPending: true }), foot);
   if (accountsFocus) {
     body.querySelector(`[data-card="${accountsFocus}"]`)?.scrollIntoView({ block: 'start' });
     accountsFocus = '';
+  }
+  const cli = await cliRead;
+  if (gen !== drawerGen) return;
+  // The pending cards give way to the real ones. The Gemini card names Antigravity's plan when it was told one, so it is drawn again then.
+  globalThis.MuseUI?.redrawAgentCards?.(cli);
+  const gem = cli?.antigravity?.signedIn === true && cli.antigravity.tier && !CODING_AGENTS.has('gemini') ? body.querySelector('[data-card="gemini"]') : null;
+  if (gem) {
+    const fresh = geminiCard(a.gemini, cli?.antigravity);
+    fresh.dataset.card = 'gemini';
+    const focused = gem.contains(document.activeElement);
+    gem.replaceWith(fresh);
+    if (focused) fresh.querySelector('button:not([disabled])')?.focus();
   }
 }
 
@@ -7407,11 +7458,20 @@ function advisorLine() {
   return `Advisor: ${S.advisor ? modelName(S.advisor) : 'off'}. Review every reply: ${S.advisorAuto ? 'on' : 'off'}.`;
 }
 
+// Until the saved state has arrived S holds defaults, so the commands that read or change the model, the Advisor or the effort wait,
+// as the menus and Send do (a person's model is never reported or switched from a default).
+function settingsNotLoaded() {
+  if (stateLoaded) return false;
+  toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
+  return true;
+}
+
 async function runCommand(line) {
   const match = line.match(/^\/(\S*)\s*([\s\S]*)$/);
   const rawName = match?.[1] ?? '';
   const arg = (match?.[2] ?? '').trim();
   try {
+    if (['model', 'advisor', 'effort'].includes(rawName.toLowerCase()) && settingsNotLoaded()) return;
     switch (rawName.toLowerCase()) {
       case 'help':
       case 'commands':

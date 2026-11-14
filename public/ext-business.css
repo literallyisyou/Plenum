@@ -1,0 +1,215 @@
+/* The Businesses pane (public/ext-business.js). Every colour, size, radius and time is a token from style.css, so both themes follow;
+   nothing is set inline. The pane is laid out for its own width (380 px and up beside the chat, the whole window under 861 px), so
+   there is no viewport query: rows wrap, long words break, and nothing is wider than the pane. Cards rest on the pane with a hairline
+   and no shadow; there is at most one primary button on screen (Create, Save or Switch on); amber marks what waits on the person. */
+
+.ext-biz { display: grid; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-6); min-width: 0; color: var(--text); font-size: var(--fs-body); line-height: var(--lh-body); }
+.ext-biz [hidden] { display: none !important; }
+.ext-biz p, .ext-biz h3, .ext-biz h4, .ext-biz h5 { margin: 0; }
+.ext-biz ul, .ext-biz ol, .ext-biz fieldset, .ext-biz legend { margin: 0; padding: 0; }
+.ext-biz fieldset { border: 0; min-width: 0; }
+.ext-biz ul, .ext-biz ol { list-style: none; }
+
+/* The head: the switcher and Pause all on one line, then the three tabs. */
+.biz-head { display: grid; gap: var(--sp-3); min-width: 0; }
+.biz-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-switcher { flex: 1 1 160px; min-width: 0; }
+.biz-pause-all { flex: none; }
+.biz-pause-all[aria-pressed="true"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 36%, var(--line)); }
+
+.biz-tabs { display: flex; height: var(--ctl); padding: 3px; gap: 2px; border-radius: var(--r-md); background: var(--fill-2); min-width: 0; }
+.biz-tab {
+  flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  padding: 0 var(--sp-2); border: 0; border-radius: 5px; background: transparent; color: var(--text-2);
+  font: 500 var(--fs-body)/1 var(--ui); white-space: nowrap; cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.biz-tab:hover { color: var(--text); }
+.biz-tab[aria-selected="true"] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px var(--shade-2), 0 0 0 1px var(--line); }
+.biz-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.biz-tab .badge { margin-left: 0; }
+
+/* Everything is paused: one flat amber strip. */
+.biz-banner {
+  padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--warn) 36%, var(--line)); border-left-width: 3px; border-left-color: var(--warn);
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); color: var(--text); overflow-wrap: anywhere;
+}
+
+/* What the last action did: one line that stays in view while the pane scrolls, so an answer given far down the list is seen. It is a
+   band as wide as the pane that rests against the pane's top edge: the content scrolls out under it the way it scrolls out under the
+   pane's tabs, so the line never lies half across a row or a button (it was a floating pill once, and it did). The pane's own colour
+   differs with the layout (beside the chat, or over the whole window), so the band is a card's surface between two hairlines. Empty
+   until something was done. */
+.biz-say {
+  position: sticky; top: 0; z-index: 2; margin: 0 calc(-1 * var(--sp-4)); padding: var(--sp-2) var(--sp-4);
+  border-block: 1px solid var(--line); background: var(--surface);
+  color: var(--ok); font-size: var(--fs-small); line-height: var(--lh-body); overflow-wrap: anywhere;
+}
+.biz-say:empty, .biz-notices:empty, .biz-note:empty { display: none; }
+.biz-bad { color: var(--bad) !important; }
+
+.biz-panel { display: grid; gap: var(--sp-5); min-width: 0; }
+.biz-sec { display: grid; gap: var(--sp-3); min-width: 0; }
+.biz-sec-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
+.biz-sec-head .badge { margin-left: 0; margin-right: auto; }
+.biz-sec-title { font: 600 var(--fs-read)/var(--lh-tight) var(--ui); color: var(--text); }
+.biz-note { color: var(--muted); font-size: var(--fs-small); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.biz-calm { color: var(--muted); font-size: var(--fs-body); line-height: var(--lh-body); overflow-wrap: anywhere; text-wrap: balance; }
+.biz-wait { display: flex; align-items: center; gap: var(--sp-2); }
+.biz-fail { display: grid; gap: var(--sp-2); justify-items: start; }
+.biz-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-pill { margin-left: 0; flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* A quiet text button for the secondary actions of a row (Not needed, Edit, Delete, Up, Down, Remove). Never a Stop button. */
+.biz-quiet {
+  min-height: var(--ctl); padding: 5px var(--sp-3); border: 1px solid transparent; border-radius: var(--r-md); background: transparent; color: var(--muted);
+  font: 400 var(--fs-body)/1.2 var(--ui); cursor: pointer; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.biz-quiet:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.biz-quiet:hover { background: var(--fill-2); color: var(--text); }
+.biz-quiet:active { background: var(--fill-3); }
+.biz-quiet:disabled { color: var(--faint); background: transparent; cursor: default; }
+
+/* The list: one card for each item that waits. */
+.biz-items, .biz-cards, .biz-rts { display: grid; gap: var(--sp-3); min-width: 0; }
+.biz-items:empty, .biz-cards:empty, .biz-rts:empty { display: none; }
+.biz-item, .biz-card, .biz-rt, .biz-made, .biz-first .biz-form, .biz-editor {
+  display: grid; gap: var(--sp-2); min-width: 0; padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
+}
+.biz-item { border-color: color-mix(in srgb, var(--warn) 30%, var(--line)); }
+.biz-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); min-width: 0; }
+.biz-item-n, .biz-age { color: var(--muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.biz-age { margin-left: auto; }
+.biz-item-title { font: 600 var(--fs-base)/var(--lh-tight) var(--ui); color: var(--text); overflow-wrap: anywhere; }
+.biz-item-from { color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-rec { color: var(--text-2); overflow-wrap: anywhere; }
+.biz-opts { display: flex; flex-wrap: wrap; gap: var(--sp-2); min-width: 0; }
+.biz-opt { flex: 1 1 88px; min-width: 0; min-height: var(--ctl); overflow-wrap: anywhere; }
+.biz-opt[data-rec] { border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+/* The server's own refusal: always the last button, and quieter than a yes. */
+.biz-opt[data-refuse] { color: var(--text-2); }
+.biz-about { margin: 0; }
+.biz-item-only { margin: 0; }
+.biz-sched-note { margin: 0; }
+/* BUSINESS.md on the Setup tab: its state, the text, the button that confirms it. */
+.biz-charter { display: grid; gap: var(--sp-2); min-width: 0; padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.biz-charter-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-charter-title { margin: 0; font-size: var(--fs-body); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.biz-charter-say { margin: 0; overflow-wrap: anywhere; }
+.biz-item-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-note-input { flex: 1 1 160px; }
+
+.biz-draft-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-draft-name { min-width: 0; color: var(--muted); font: var(--fs-small)/var(--lh-ui) var(--mono); overflow-wrap: anywhere; }
+.biz-draft { display: grid; gap: var(--sp-2); min-width: 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); }
+.biz-draft-text {
+  margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: var(--fs-body)/var(--lh-body) var(--ui); color: var(--text); user-select: text;
+}
+.biz-draft-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
+.biz-draft-box { width: 100%; min-width: 0; resize: vertical; font: var(--fs-small)/var(--lh-body) var(--mono); }
+
+/* A program that waits for a yes before it starts: the same card as an item, with what is started, where, and the task text. */
+.biz-start-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--sp-3); min-width: 0; margin: 0; }
+.biz-start-key { color: var(--muted); font-size: var(--fs-small); }
+.biz-start-val { margin: 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.biz-start-label { color: var(--text-2); font-size: var(--fs-small); font-weight: 600; }
+.biz-start-text { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); }
+.biz-start-until { margin: 0; }
+.biz-start .biz-opt:not([data-refuse]) { border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+/* Routines are held after a Stop: the sentence with the time, and the button that ends the hold. */
+.biz-hold {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line)); border-radius: var(--r-lg); background: color-mix(in srgb, var(--warn) 6%, var(--surface));
+}
+.biz-hold-text { flex: 1 1 200px; min-width: 0; margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+/* A business in a few lines. */
+.biz-card-head, .biz-rt-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-card-name, .biz-rt-name { flex: 1 1 120px; min-width: 0; font: 600 var(--fs-base)/var(--lh-tight) var(--ui); color: var(--text); overflow-wrap: anywhere; }
+.biz-card-purpose { color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-line { color: var(--text-2); overflow-wrap: anywhere; }
+.biz-line-warn { color: var(--warn); }
+.biz-line-bad { color: var(--bad); }
+.biz-use { display: grid; gap: var(--sp-1); min-width: 0; }
+.biz-use-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); min-width: 0; color: var(--text-2); }
+.biz-use-name { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.biz-use-pct { color: var(--muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.biz-meter { appearance: none; -webkit-appearance: none; flex: none; width: 72px; height: 4px; border: 0; border-radius: var(--r-full); background: var(--surface-3); overflow: hidden; }
+.biz-meter::-webkit-progress-bar { background: var(--surface-3); border-radius: var(--r-full); }
+.biz-meter::-webkit-progress-value { background: var(--accent); border-radius: var(--r-full); }
+.biz-meter[data-full]::-webkit-progress-value { background: var(--warn); }
+.biz-range { margin-left: auto; }
+.biz-hub { color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-link { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+
+/* What Create answered. */
+.biz-made { border-color: color-mix(in srgb, var(--ok) 36%, var(--line)); background: color-mix(in srgb, var(--ok) 6%, var(--surface)); justify-items: start; }
+.biz-made-line { color: var(--text); overflow-wrap: anywhere; }
+
+/* Forms: a label above each field. */
+.biz-form { display: grid; gap: var(--sp-4); min-width: 0; }
+.biz-first .biz-form, .biz-editor .biz-form { gap: var(--sp-3); }
+.biz-editor { gap: var(--sp-3); }
+.biz-field, .biz-set { display: grid; gap: 6px; min-width: 0; }
+.biz-label { font: 500 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.biz-input, .biz-select, .biz-draft-box {
+  width: 100%; min-width: 0; min-height: var(--ctl); padding: 6px 10px; box-sizing: border-box;
+  background-color: var(--bg); border: 1px solid var(--line-2); border-radius: var(--r-md); color: var(--text);
+  font: var(--fs-body)/var(--lh-ui) var(--ui); transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.biz-input:hover, .biz-select:hover { border-color: var(--line-3); }
+.biz-input:focus, .biz-select:focus, .biz-draft-box:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.biz-input:disabled, .biz-select:disabled { opacity: 0.5; }
+.biz-input[type="number"], .biz-input[type="time"] { width: 112px; font-variant-numeric: tabular-nums; }
+.biz-prompt { resize: vertical; min-height: 88px; }
+.biz-days { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3); min-width: 0; }
+.biz-day { display: inline-flex; align-items: center; gap: 6px; min-height: var(--ctl-sm); color: var(--text-2); cursor: pointer; }
+.ext-biz .switch-row small { display: block; color: var(--muted); font-size: var(--fs-small); }
+
+/* An ordered list of models. */
+.biz-leads { display: grid; gap: var(--sp-2); min-width: 0; }
+.biz-lead-list { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.biz-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-1); min-width: 0; padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3); border-top: 1px solid var(--line); }
+.biz-lead:first-child { border-top: 0; }
+.biz-lead-rank { flex: none; min-width: 2ch; color: var(--muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.biz-lead-name { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }
+
+/* Routines. */
+.biz-rt[data-on="false"] .biz-rt-name { color: var(--text-2); }
+.biz-rt-switch { flex: none; }
+.biz-rt-when, .biz-rt-last { color: var(--text-2); overflow-wrap: anywhere; }
+.biz-rt-when { color: var(--muted); font-size: var(--fs-small); }
+.biz-rt-held { color: var(--warn); overflow-wrap: anywhere; }
+/* Stop keeps the look and size of a push button, with the red of an action that ends work. */
+.biz-stop { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 36%, var(--line)); font-weight: 600; }
+
+/* The two lines a person reads before a routine is switched on. */
+.biz-arm { display: grid; gap: var(--sp-2); min-width: 0; padding: var(--sp-3); border-radius: var(--r-md); background: var(--fill-1); }
+.biz-notices { min-width: 0; }
+.biz-arm-title { font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.biz-facts { display: grid; gap: var(--sp-2); min-width: 0; }
+.biz-fact { display: grid; gap: var(--sp-2); min-width: 0; padding-left: var(--sp-3); border-left: 3px solid var(--line-3); }
+.biz-fact[data-state="warn"] { border-left-color: var(--warn); }
+.biz-fact[data-state="ok"] { border-left-color: var(--ok); }
+.biz-fact-text { color: var(--text); overflow-wrap: anywhere; }
+
+/* Setup. */
+.biz-form > .biz-sec + .biz-sec, .biz-files { padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.biz-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.biz-row-main { flex: 1 1 160px; display: grid; gap: 2px; min-width: 0; }
+.biz-row-name { font-weight: 600; overflow-wrap: anywhere; }
+.biz-row-sub { color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-limit { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-limit-name { flex: 1 1 120px; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.biz-limit .biz-input { width: 80px; }
+.biz-limit-now { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.biz-close { color: var(--bad); }
+.biz-file-list { display: grid; gap: var(--sp-1); }
+.biz-file { color: var(--text-2); overflow-wrap: anywhere; }
+.biz-save-row { padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+
+/* The unsaved-changes line sits beside Save and wraps under it on a narrow card; the dot on the Setup tab is part of its name. */
+.biz-unsaved { flex: 1 1 160px; margin: 0; }
+.biz-dot { color: var(--warn); }

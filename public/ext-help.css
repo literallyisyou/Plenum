@@ -1,0 +1,36 @@
+/* ext-help: the Help drawer (public/ext-help.js). Every colour and size is a token from style.css, so both themes follow; nothing is set
+   inline. The sidebar link reuses .side-link. */
+
+.ext-help-topics { display: grid; gap: 4px; min-width: 0; }
+.ext-help-topic { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.ext-help-summary {
+  padding: 9px 12px; cursor: pointer; border-radius: var(--r-md);
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+}
+.ext-help-summary:hover { background: var(--fill-1); }
+.ext-help-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ext-help-text { margin: 0; padding: 0 12px 10px; color: var(--text-2); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.ext-help-commands { justify-self: start; margin-top: 4px; }
+
+.ext-help-block { display: grid; gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.ext-help-head { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.ext-help-block > .ext-help-text { padding: 0; }
+.ext-help-line { margin: 0; font: 12.5px/1.45 var(--mono); color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
+
+.ext-help-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+.ext-help-bar [hidden] { display: none; }
+.ext-help-note { margin: 0; min-height: 16px; font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.ext-help-note:empty { display: none; }
+.ext-help-note.ext-help-bad { color: var(--bad); }
+
+.ext-help-report {
+  margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); color: var(--text-2);
+  font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.ext-help-report:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+@media (max-width: 480px) {
+  .ext-help-bar > button { flex: 1 1 calc(50% - 8px); }
+  .ext-help-report { max-height: 280px; }
+}

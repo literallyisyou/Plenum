@@ -744,9 +744,14 @@ describe('the registry', () => {
     const first = '{"v":1,"identity":';
     const second = '{"v":1,"devices":[';
     writeFileSync(path.join(dir, 'phones.json'), first);
-    assert.equal((await createRegistry({ storage: createFileStorage({ dir }) }).ready()).damaged, true);
+    const one = createRegistry({ storage: createFileStorage({ dir }) });
+    assert.equal((await one.ready()).damaged, true);
+    assert.deepEqual(readdirSync(dir), ['phones.json'], 'nothing is moved before the person says yes (Start fresh)');
+    await one.startFresh();
     writeFileSync(path.join(dir, 'phones.json'), second);
-    assert.equal((await createRegistry({ storage: createFileStorage({ dir }) }).ready()).damaged, true);
+    const two = createRegistry({ storage: createFileStorage({ dir }) });
+    assert.equal((await two.ready()).damaged, true);
+    await two.startFresh();
     assert.deepEqual(readdirSync(dir).sort(), ['phones.json.damaged', 'phones.json.damaged-2']);
     assert.equal(readFileSync(path.join(dir, 'phones.json.damaged'), 'utf8'), first, 'the first copy is untouched');
     assert.equal(readFileSync(path.join(dir, 'phones.json.damaged-2'), 'utf8'), second);
@@ -757,15 +762,21 @@ describe('the registry', () => {
     writeFileSync(path.join(dir, 'phones.json'), '{"v":1,"identity":');
     const registry = createRegistry({ storage: createFileStorage({ dir }) });
     const status = await registry.ready();
-    assert.equal(status.ok, true);
+    assert.equal(status.ok, false, 'an unreadable file waits for the person');
+    assert.equal(status.askFirst, true);
     assert.equal(status.damaged, true);
+    assert.deepEqual(readdirSync(dir), ['phones.json'], 'nothing is replaced before the yes');
+    await assert.rejects(() => registry.ensureIdentity(), error => error.status === 503);
+    await registry.startFresh();
     assert.deepEqual(readdirSync(dir), ['phones.json.damaged'], 'the old text is kept under another name');
     await registry.ensureIdentity();
     assert.ok(readdirSync(dir).includes('phones.json'));
     // A wrong version is damage too.
     const dir2 = tempDir();
     writeFileSync(path.join(dir2, 'phones.json'), JSON.stringify({ v: 99, devices: [] }));
-    assert.equal((await createRegistry({ storage: createFileStorage({ dir: dir2 }) }).ready()).damaged, true);
+    const wrongVersion = await createRegistry({ storage: createFileStorage({ dir: dir2 }) }).ready();
+    assert.equal(wrongVersion.damaged, true);
+    assert.equal(wrongVersion.askFirst, true);
     // A directory where the file should be cannot be read: nothing is created, and every change says why.
     const dir3 = tempDir();
     mkdirSync(path.join(dir3, 'phones.json'));

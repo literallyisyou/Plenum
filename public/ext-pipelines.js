@@ -575,7 +575,7 @@
       }
     });
     view.go = MuseUI.button('primary small', 'Run');
-    view.go.addEventListener('click', startRun);
+    view.go.addEventListener('click', () => startRun());
     view.stop = MuseUI.button('ghost small', 'Stop');
     view.stop.addEventListener('click', stopRun);
     const actions = make('div', 'pl-actions');
@@ -611,8 +611,18 @@
     const text = make('div', 'pl-out-text');
     const error = make('p', 'pl-out-error');
     error.hidden = true;
-    root.append(head, text, error);
-    return { root, pill, text, error };
+    // After a failed step: go on from it. The steps that worked are kept, so only this step and the ones after it are asked (and billed) again.
+    const retry = MuseUI.button('primary small', 'Retry step');
+    retry.title = 'Runs this step and the steps after it again. They are billed again; the steps that worked are kept and not run again.';
+    retry.addEventListener('click', () => resumeRun(i, false));
+    const skip = MuseUI.button('ghost small', 'Skip step');
+    skip.title = 'Leaves this step out and goes on with the next one, using the last reply that worked. The steps after it are billed.';
+    skip.addEventListener('click', () => resumeRun(i, true));
+    const actions = make('div', 'pl-actions');
+    actions.hidden = true;
+    actions.append(retry, skip);
+    root.append(head, text, error, actions);
+    return { root, pill, text, error, actions, skip };
   }
 
   // Brings the controls, the status line, the final reply and the step outputs up to date with the run.
@@ -635,6 +645,9 @@
       if (near) out.text.scrollTop = out.text.scrollHeight;
       out.error.hidden = !s.error;
       out.error.textContent = s.error;
+      // Retry and Skip show on a step that failed, once the run has ended. A stopped step offers neither: the person stopped it.
+      out.actions.hidden = busy || s.status !== 'failed';
+      out.skip.hidden = i === 0 || i === run.steps.length - 1;
     });
     const last = run.steps.at(-1);
     const finalText = last?.status === 'done' ? last.text : '';
@@ -662,7 +675,7 @@
       text = run.error;
       bad = true;
     } else if (failed >= 0) {
-      text = `Step ${failed + 1} failed, so the steps after it did not run.`;
+      text = `Step ${failed + 1} failed, so the steps after it did not run. Retry it to go on from there; the steps that worked are kept.`;
       bad = true;
     } else if (run.steps.some(s => s.status === 'stopped')) {
       text = 'Stopped.';
@@ -689,10 +702,24 @@
   // nothing when the page had no thread yet.
   const threadPart = r => (r.thread ? { thread: r.thread } : {});
 
-  async function startRun() {
+  // Goes on from a failed step: Retry runs it again, Skip leaves it out. The message, the project and the thread are the first run's, and
+  // the reply of the last step that worked goes with the request, so the steps before this one are not asked again.
+  function resumeRun(i, skip) {
+    const current = run;
+    if (!current || current.active || current.steps[i]?.status !== 'failed') return;
+    let from = -1;
+    for (let j = i - 1; j >= 0 && from < 0; j--) if (current.steps[j].status === 'done' && current.steps[j].text.trim()) from = j;
+    if (i > 0 && from < 0) {
+      flash = { text: 'There is no earlier reply to go on from. Run the pipeline again from the start.', bad: true };
+      return paintRun();
+    }
+    return startRun({ at: i, skip, previousStep: from, previousText: from >= 0 ? current.steps[from].text : '' });
+  }
+
+  async function startRun(resume = null) {
     if (!run || run.active) return;
-    const project = MuseUI.state.activeProject;
-    const message = draftMessage.trim();
+    const project = resume ? run.project : MuseUI.state.activeProject;
+    const message = resume ? run.message : draftMessage.trim();
     flash = null;
     if (!project) flash = { text: 'Add a project folder first.', bad: true };
     else if (!message) flash = { text: 'Write a message first.', bad: true };
@@ -700,10 +727,12 @@
 
     const current = run;
     current.project = project;
-    // The thread is taken now. Stop and Keep use this one, whichever thread is on screen later.
-    current.thread = MuseUI.state.activeThread || null;
+    // The thread is taken now. Stop and Keep use this one, whichever thread is on screen later. A retry keeps the first run's.
+    if (!resume) current.thread = MuseUI.state.activeThread || null;
     current.message = message;
-    current.steps = current.steps.map(s => ({ ...s, status: 'waiting', text: '', error: '' }));
+    // A retry keeps the steps before the failed one as they are (their replies are the proof of what ran); the rest start again.
+    const first = resume ? resume.at : 0;
+    current.steps = current.steps.map((s, i) => (i < first ? s : { ...s, status: 'waiting', text: '', error: '' }));
     current.active = true;
     current.started = true;
     current.kept = false;
@@ -715,7 +744,13 @@
     try {
       const res = await MuseUI.request('/api/pipelines/run', {
         method: 'POST',
-        body: { project, ...threadPart(current), name: current.name, message },
+        body: {
+          project,
+          ...threadPart(current),
+          name: current.name,
+          message,
+          ...(resume ? { fromStep: resume.at, skipFailed: resume.skip, ...(resume.at > 0 ? { previousText: resume.previousText, previousStep: resume.previousStep } : {}) } : {}),
+        },
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -758,6 +793,10 @@
     const s = Number.isInteger(ev.step) ? current.steps[ev.step] : null;
     if (ev.type === 'step-start' && s) {
       s.status = 'writing';
+    } else if (ev.type === 'step-skipped' && s) {
+      s.status = 'skipped';
+      s.text = '';
+      s.error = '';
     } else if (ev.type === 'delta' && s) {
       s.status = 'writing';
       s.text += ev.text;

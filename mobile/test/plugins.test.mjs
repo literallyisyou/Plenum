@@ -549,7 +549,7 @@ describe('capacitor.config.ts (the one place the native identifiers live)', () =
   const config = read('capacitor.config.ts');
 
   test('the appId, the app name and the web directory are as MOBILE.json decided', () => {
-    assert.match(config, /appId: 'com.literallyisyou.plenum'/);
+    assert.match(config, /appId: 'com\.literallyisyou\.plenum'/);
     assert.match(config, /appName: 'Plenum'/);
     assert.match(config, /webDir: 'www'/);
   });
@@ -690,7 +690,7 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     const service = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'UnifiedPushService.kt'), 'utf8');
     assert.match(service, /class UnifiedPushService : PushService\(\)/);
     const manifest = read('plugins/unifiedpush/android/src/main/AndroidManifest.xml');
-    assert.match(manifest, /android:name="com.literallyisyou.plenum\.unifiedpush\.UnifiedPushService"\s+android:exported="false"/);
+    assert.match(manifest, /android:name="com\.literallyisyou\.plenum\.unifiedpush\.UnifiedPushService"\s+android:exported="false"/);
     assert.match(manifest, /org\.unifiedpush\.android\.connector\.PUSH_EVENT/);
     assert.match(manifest, /org\.unifiedpush\.android\.distributor\.REGISTER/);
   });

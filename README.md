@@ -49,12 +49,16 @@ Applied updates are kept in Plenum's state folder, never in the install folder, 
 - /api/status never waits for a CLI or a model list. It returns what it last read and refreshes in the background. When something changes, the page is told by a 'providers' event and asks again. Model lists for Codex, Antigravity and Muse Code are read from the CLIs themselves. A model a CLI no longer offers is shown with a note and a way to pick another. Plenum does not switch your model for you.
 - Every build says which one it is. 'npm run stamp' (node scripts/stamp-build.mjs) writes build-info.json (version, build as UTC YYYYMMDD.HHmm, commit, dirty, builtAt); the release workflow runs it before the build. GET /api/build-info and the log line read like 'Plenum 0.6.0 (build 20261113.0412, 0af7276)', and a development copy reads 'Plenum 0.6.0 (development copy)'.
 - The repository now lives at https://github.com/literallyisyou/Plenum.
+- The desktop app writes its log to `server.log` in its data folder. Every line the app writes starts with its time. At 5 MB the file is renamed `server.log.1` (the one before is replaced) and a new one starts. A full disk or a locked file stops the log from writing and does not stop Plenum; the log opens the file again after 30 seconds and then says how many lines it lost. The user name in a path is replaced by `~`, and keys and the launch token never reach the file. Every end of the server process is one line with its kind, its exit code and the last thing it printed on stderr. [Help](#help-and-diagnostics) can open the folder.
+- The start does not wait for the Windows registry. The app reads the registry's variables for the server while the window opens, both keys at once, and gives up on a reading after 1.5 seconds; the server then starts with the variables the app already has.
+- If you open Plenum a second time while the first copy is still quitting, the first copy opens Plenum again once it has finished quitting (it does not when Windows is ending the session). If Plenum is running with no window, opening it again makes a window.
+- The boxes the app shows when it cannot start or the server stops (Try again, Open log, Quit) have a **Copy details** button. It puts the words of the box, the build and the last lines of the log on the clipboard, with your user name in paths hidden, and asks the same question again.
 
 ### Background services, Start with Windows and Plenum Hub in the background
 
 Open **Settings > General > Background services**. Each row is one thing Plenum runs or needs: Plenum itself, your sign-ins, and Plenum Hub with its helper. A row says in a word whether it runs, says why in a sentence, and has one button when there is something to do: **Open Accounts**, **Start**, **Start anyway**, **Start the helper**, **Set up the hub**, **Check again**. Plenum itself opens no window for these, and the section starts no CLI.
 
-- **Plenum Hub.** Plenum starts the hub and its helper for you, hidden, through the hub's own starter. If the hub was never set up on this computer, **Set up the hub** lets the hub install and build in the background, and the row shows its progress. If the hub runs in Docker and Docker Desktop is closed, the button reads **Start anyway** and the row says first that Docker will open its own window (you can switch that off in Docker Desktop's settings, General, "Open Docker Dashboard when Docker Desktop starts"). If a start did not work, the row says why in the hub's own words and keeps the button, so you can try again once you have done what it asks. Plenum never stops the hub. A hub that runs without Docker says "It runs on this computer, without Docker.", never says that Docker is closed or missing, and offers **Start**, not **Start anyway**. When the hub's helper runs, the row says whether it is set to start with Windows; Plenum does not change that.
+- **Plenum Hub.** Plenum starts the hub and its helper for you, hidden, through the hub's own starter. If the hub was never set up on this computer, **Set up the hub** lets the hub install and build in the background, and the row shows its progress. If the hub runs in Docker and Docker Desktop is closed, the button reads **Start anyway** and the row says first that Docker will open its own window (you can switch that off in Docker Desktop's settings, General, "Open Docker Dashboard when Docker Desktop starts"). If a start did not work, the row says why in the hub's own words and keeps the button, so you can try again once you have done what it asks. Plenum never stops the hub. A hub that runs without Docker says "It runs on this computer, without Docker.", never says that Docker is closed or missing, and offers **Start**, not **Start anyway**. When the hub's helper runs, the row says whether it is set to start with Windows; Plenum does not change that. If you quit Plenum while it is still starting the hub, the hub's starter is left running and Plenum ends only its own other processes.
 - **Bring Plenum Hub up when Plenum starts.** With this on, Plenum checks the hub about 20 seconds after it starts and brings it and its helper up when that needs no window: the hub is set up and either runs without Docker or Docker is already running. If the hub runs in Docker and Docker Desktop is still starting, as it usually is right after you sign in to Windows, Plenum looks again once a minute for ten minutes and brings the hub up as soon as Docker runs. It is on by itself while **Connect agents** is on (Settings > Agents > Plenum Hub) until you change it here. Nothing is started before you have accepted the License Agreement.
 - **Start with Windows.** In the installed app on Windows, turn this on and Plenum starts in the tray when you sign in to Windows, with no window until you open it from the tray icon or start Plenum again. Keep **Keep in tray on close** on (Settings > General > Desktop) so that Plenum keeps running in the tray. The portable and zip builds do not offer this. Start with Windows has not yet been confirmed through a real sign-in to Windows.
 
@@ -75,7 +79,7 @@ npm start
 
 ## Setup wizard
 
-The first time Plenum opens with no saved key and no CLI signed in, the setup wizard opens by itself. It has four steps: a welcome, the CLI sign-ins (Claude Code, Codex, Gemini CLI, Muse Code, Cursor, Grok Build and Antigravity), the API keys, and a summary. A row whose CLI is not installed shows how to install it, with a Copy button for each command; if the row still says Not installed after the install, restart Plenum. Each sign-in button opens that CLI's own sign-in window. While you finish the sign-in there, the row says "Waiting for sign-in"; Plenum checks every few seconds for three minutes and shows the sign-in by itself, and Check again reads it at once. The Claude Code, Codex, Gemini CLI, Muse Code, Cursor, Grok Build and Antigravity cards in Accounts do the same. A key is typed into a password box, sent once and cleared.
+The first time Plenum opens with no saved key and no CLI signed in, the setup wizard opens by itself. It has four steps: a welcome, the CLI sign-ins (Claude Code, Codex, Gemini CLI, Muse Code, Cursor, Grok Build and Antigravity), the API keys, and a summary. A row whose CLI is not installed shows how to install it, with a Copy button for each command; if the row still says Not installed after the install, restart Plenum. Each sign-in button opens that CLI's own sign-in window. While you finish the sign-in there, the row says "Waiting for sign-in"; Plenum checks every few seconds for three minutes and shows the sign-in by itself, and Check again reads it at once. The Claude Code, Codex, Gemini CLI, Muse Code, Cursor, Grok Build and Antigravity cards in Accounts do the same. A key is typed into a password box, sent once and cleared. The three requests behind the rows (keys, sign-ins, the CLIs added later) each draw their rows when their answer arrives, and Cursor, Grok Build and Antigravity say Checking until theirs does. The last step names the model that will answer ("Plenum will answer with <name>."); when the chosen model cannot answer yet, it says why and offers **Use <name>**, which changes the model only when you press it.
 
 **Skip for now** closes the wizard, and it may open again on a later visit. Any other way of closing it by hand (Finish, Escape, the close button, or a click on the dimmed background) means it stays closed. Opening Settings (Ctrl+,) or Read the terms also closes it, without a choice, so it may open again. The **Setup** entry in the side menu, above Accounts, always reopens it. The wizard is in `public/ext-setup.js`.
 
@@ -92,7 +96,7 @@ Open **Accounts** in the sidebar (or click any status item at the bottom of the 
 - **Claude:** Claude runs through the Claude CLI (`claude`), signed in with your Claude account, so it uses your Claude plan rather than an API key. **Sign in to Claude Code** opens a terminal running `claude auth login`; finish in your browser, then press **Refresh**. Plenum looks for the Claude, Codex and Gemini CLIs on PATH first, then in its own tools folder. Install or update them with `npm install --prefix "<full path to your home folder>\.muse-console\tools" @anthropic-ai/claude-code @openai/codex @google/gemini-cli` on Windows, or `npm install --prefix "<full path to your home folder>/.muse-console/tools" @anthropic-ai/claude-code @openai/codex @google/gemini-cli` on macOS and Linux. Write the full folder, not %USERPROFILE% or $HOME. The Accounts card shows the exact command for this computer, using MUSE_CONSOLE_HOME when it is set. You sign in once. The CLI keeps the sign-in, not Plenum. If the CLI is not installed, the card asks for an Anthropic API key instead and Claude uses the API.
 - **Muse Code:** **Sign in to Muse Code** opens a terminal running `muse login`. Approve the code in your browser, then press **Refresh**. `META_API_KEY`, if set on the computer, is passed to Muse Code. Muse Code is installed with its own installer; Plenum gives no install command for it.
 - **Codex:** **Sign in to Codex** opens a terminal running `codex login`.
-- **Gemini:** **Sign in to Gemini CLI** opens the Gemini CLI's own sign-in, which uses a Google account.
+- **Gemini:** **Sign in to Gemini CLI** opens the Gemini CLI's own sign-in, which uses a Google account. The card says which one Gemini is using: a saved Google sign-in, or a saved Google AI key (**Using your key**: billed per token, no Google sign-in needed). Gemini CLI does not serve Google AI Pro, Ultra or free plans any more; the card says so and points to the Antigravity card (naming your plan once that card has reported it) or to a saved Google AI key.
 - **Grok Build:** **Sign in to Grok Build** opens a terminal running `grok login` (SuperGrok or X Premium Plus). Install it with `irm https://x.ai/cli/install.ps1 | iex` (Windows PowerShell) or `curl -fsSL https://x.ai/cli/install.sh | bash` (macOS, Linux). In Ask first, Grok Build asks Plenum before it edits or runs a command, and it joins every multi-model role. Plenum cannot see whether it is signed in until it runs.
 - **Antigravity:** for a Google AI Pro, Ultra or Plus plan. Install it with `irm https://antigravity.google/cli/install.ps1 | iex` (Windows PowerShell) or `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS, Linux), in your own terminal, then restart Plenum. **Sign in to Antigravity** opens a terminal running `agy acp --login`; finish in your browser, then press **Refresh**. The card shows your plan. Plenum reads the account's model list from Antigravity without sending a prompt, at most every 30 minutes, and lists each model as `antigravity:<model>`, for example **Gemini 4 Hydrogen High (Antigravity)**; `antigravity:default` keeps Antigravity's own choice. In Ask first, Antigravity asks Plenum before it edits or runs a command, and it joins every multi-model role, read-only in an empty folder like Grok Build. No Google key reaches it, so its runs stay on your plan. Gemini 4 Hydrogen is also on the Google AI key as `googleai:gemini-4-hydrogen` (short name `hydrogen`), billed per token.
 
@@ -102,7 +106,7 @@ A card for a CLI that is not installed shows the install steps with a Copy butto
 
 A CLI you install while Plenum is open is found when you press **Refresh**; you do not have to restart Plenum first (Antigravity's card still says to restart). (Windows, in the desktop app: Plenum reads the PATH again from the registry when a CLI is not found. If a CLI still shows Not installed after Refresh, restart Plenum.)
 
-Plenum asks each CLI whether it is signed in when you open Accounts or the setup guide, and waits about 3 seconds for the answer. A CLI that is slower keeps the answer Plenum last had, and the new one shows on the next Refresh. If Claude Code or Codex does not answer at all, its card says **Sign-in unknown** and that Plenum could not check it just now, and it is not shown as signed out. Press **Refresh** to check again.
+Plenum asks each CLI whether it is signed in when you open Accounts or the setup guide, and waits about 3 seconds for the answer. A CLI that is slower keeps the answer Plenum last had, and the new one shows on the next Refresh. If Claude Code or Codex does not answer at all, its card says **Sign-in unknown** and that Plenum could not check it just now, and it is not shown as signed out. Press **Refresh** to check again. Accounts draws the cards of Claude Code, Codex, Gemini CLI and Muse Code when the first answer arrives; the Cursor, Grok Build and Antigravity cards say Checking… until theirs does, so a slow CLI holds up only its own cards.
 
 Keys are never written to the state file. Where they are kept is described in [Where keys are kept](#where-keys-are-kept).
 
@@ -225,15 +229,15 @@ The API finder earns Plenum no commission, and it stores no prices on disk.
 
 ## Council, quick compare and pipelines
 
-- **Council** (`/council <question>`, or the council board above the message box). Two to four seats each take a role, such as Architect, Skeptic or Engineer, and answer. Seats critique each other over one to three rounds (two by default), then a moderator writes the verdict. If the moderator leaves a section out, the card shows the rest and names the section it left out. **Add seat** on the board adds a seat (up to four), and the × on a seat removes it (down to two); a new seat takes a role and a CLI the council does not have yet, Gemini CLI first. Each seat's model, role and effort can be changed on the board. A question can carry files, as a chat message can (see [Attachments](#attachments)); every seat and the moderator read them. The **Folder** menu on the board sets where the seats work. **Text only**: they answer from the question alone. **Read the folder** (the default): every seat and the moderator open and search the project's files and change nothing. **Work in the folder**: round 1 reads; in each later round the seats take turns, one at a time in seat order, changing files and running commands under the project's approval mode (in Ask first their cards show on the council card), each told what the seats before it changed, and the moderator then checks the changed files. Work in the folder needs two or three rounds, the writer thread, and plan mode off; in plan mode a council set to read the folder answers text-only and says so. A seat whose model has no tools in Plenum answers from the prompt and, in a work round, reviews what the seats before it report. A council saved before the Folder menu existed stays text-only until you change it. The default council is `DEFAULT_COUNCIL` in `lib/council.mjs`: Claude Opus 5.5 as Architect, Muse Code (Wonder 1.0) as Skeptic, Codex as Engineer and Gemini CLI as Generalist, all at high effort, with Claude Fable 5.2 as moderator at high effort, two rounds, reading the folder. Every seat is told who the other seats are and what each role covers, which round it is and who reads its reply, so a seat goes deep on its own role and leaves the others theirs; the moderator knows that a seat's silence outside its role is not agreement. If only one seat answers the first round, the council skips the critique rounds and the moderator gives a verdict on that one answer; the card says so. If no seat answers, it stops and names each seat's cause. A seat or moderator that writes nothing for 10 minutes is stopped and the others go on. Stop still stops everything and keeps the answers already given. A council saved with an older model keeps it; if Muse Code no longer offers a seat's model, the seat says so and **Change model** on it picks another.
-- **Quick compare** sends one prompt to two to four models at once. Each answer streams into its own column, and **Keep this reply** puts the one you choose into the chat. Each model is told that it is one of several answering independently and that none sees another's reply, so it gives a complete answer on its own.
-- **Pipelines** are saved sequences of one to eight steps. Each step's prompt can use `{input}` (the run's input) and `{previous}` (the reply from the step before). **Keep in chat** puts a result into the chat. A pipeline belongs to the thread it was started in: Stop stops that run and nothing else, and Keep in chat writes into that thread (switch back to it first if you have moved). Every step is told its place in the pipeline, what each step does, who reads its reply and what that step needs; it always sees the original message and the previous reply (quoted between BEGIN and END as material, not instructions), even when the template leaves `{input}` or `{previous}` out.
+- **Council** (`/council <question>`, or the council board above the message box). Two to four seats each take a role, such as Architect, Skeptic or Engineer, and answer. Seats critique each other over one to three rounds (two by default), then a moderator writes the verdict. If the moderator leaves a section out, the card shows the rest and names the section it left out. **Add seat** on the board adds a seat (up to four), and the × on a seat removes it (down to two); a new seat takes a role and a CLI the council does not have yet, Gemini CLI first. Each seat's model, role and effort can be changed on the board. A question can carry files, as a chat message can (see [Attachments](#attachments)); every seat and the moderator read them. The **Folder** menu on the board sets where the seats work. **Text only**: they answer from the question alone. **Read the folder** (the default): every seat and the moderator open and search the project's files and change nothing. **Work in the folder**: round 1 reads; in each later round the seats take turns, one at a time in seat order, changing files and running commands under the project's approval mode (in Ask first their cards show on the council card), each told what the seats before it changed, and the moderator then checks the changed files. Work in the folder needs two or three rounds, the writer thread, and plan mode off; in plan mode a council set to read the folder answers text-only and says so. A seat whose model has no tools in Plenum answers from the prompt and, in a work round, reviews what the seats before it report. A council saved before the Folder menu existed stays text-only until you change it. The default council is `DEFAULT_COUNCIL` in `lib/council.mjs`: Claude Opus 5.5 as Architect, Muse Code (Wonder 1.0) as Skeptic, Codex as Engineer and Gemini CLI as Generalist, all at high effort, with Claude Fable 5.2 as moderator at high effort, two rounds, reading the folder. Every seat is told who the other seats are and what each role covers, which round it is and who reads its reply, so a seat goes deep on its own role and leaves the others theirs; the moderator knows that a seat's silence outside its role is not agreement. If only one seat answers the first round, the council skips the critique rounds and the moderator gives a verdict on that one answer; the card says so. If no seat answers, it stops and names each seat's cause. A seat or moderator that writes nothing for 10 minutes is stopped and the others go on. Stop still stops everything and keeps the answers already given. A council saved with an older model keeps it; if Muse Code no longer offers a seat's model, the seat says so and **Change model** on it picks another. A seat or the moderator whose model is not in the catalog at all says "<Provider> does not offer this model any more. Pick another." before you send. A question the server refuses before it starts (a model it cannot use, a file it cannot take, the spend limit) is taken out of the chat and goes back into the message box. The answers the seats have given are saved as they come: if Plenum is ended before the verdict, the chat shows those answers and says the council was cut off.
+- **Quick compare** sends one prompt to two to four models at once. Each answer streams into its own column, and **Keep this reply** puts the one you choose into the chat. Each model is told that it is one of several answering independently and that none sees another's reply, so it gives a complete answer on its own. A column that failed has **Retry this column**, which asks only that model again with the same message, effort and pictures; it is billed again, and the other columns are not asked.
+- **Pipelines** are saved sequences of one to eight steps. Each step's prompt can use `{input}` (the run's input) and `{previous}` (the reply from the step before). **Keep in chat** puts a result into the chat. A pipeline belongs to the thread it was started in: Stop stops that run and nothing else, and Keep in chat writes into that thread (switch back to it first if you have moved). Every step is told its place in the pipeline, what each step does, who reads its reply and what that step needs; it always sees the original message and the previous reply (quoted between BEGIN and END as material, not instructions), even when the template leaves `{input}` or `{previous}` out. When a step fails, the steps that worked keep their replies, and the failed step offers **Retry step** (it and the steps after it run again and are billed again) and **Skip step** (the step is left out and the next one gets the last reply that worked; not offered on the first or the last step).
 
 Council seats and the moderator, relay hops, quick-compare seats and pipeline steps can use Claude, Muse Code, Codex, Gemini or an API model. Each CLI seat runs in its read-only setting in these roles (Codex in its read-only sandbox, Gemini in plan mode, Muse Code in an empty scratch folder, Claude with no tools), and no seat, hop or step is given the project's tools, unless you allow it in Agents > Limits: a seat, the moderator, a hop, a column or a step can then start read-only agents (Researcher, for example) that read the project and report back, within the numbers you set; the seat itself stays text-only, and Codex, Gemini and Muse Code seats cannot start agents. A council set to read or work in the folder is the exception: each seat and the moderator runs as an agent of the project in the project folder, with every gate an agent has (the credential guard, the deny list, the cards, Stop and the spend limit), Codex in its read-only sandbox, Gemini in plan mode and Muse Code with writes off while they read, and Cursor, Grok Build and Antigravity in an empty folder, as their read-only agents run. Such a seat also gets the project's AGENTS.md and your global rules.
 
 ## Relay
 
-A relay passes a finished reply from one seat to another. Start one with **Relay…** on the council board, or with `/relay`. Auto relay is off by default. When it is on, each hop waits for a countdown (3 seconds by default). A route stops at its hop limit (no limit by default), at the first error (by default), or when you press **Stop** on the relay bar. **Pause** and **Stop** control a running route, and **Relay log** lists the last hops. Each hop is told that it is one of several models working for one person, the order of the relay and its own place in it, who reads its reply next, and the person's original request; it builds on the reply it receives, names any claim it rejects, and starts with one line saying what it kept, changed or added.
+A relay passes a finished reply from one seat to another. Start one with **Relay…** on the council board, or with `/relay`. Auto relay is off by default. When it is on, each hop waits for a countdown (3 seconds by default). A route stops at its hop limit (no limit by default), at the first error (by default), or when you press **Stop** on the relay bar. **Pause** and **Stop** control a running route, and **Relay log** lists the last hops. Each hop is told that it is one of several models working for one person, the order of the relay and its own place in it, who reads its reply next, and the person's original request; it builds on the reply it receives, names any claim it rejects, and starts with one line saying what it kept, changed or added. A hop that fails or is stopped is kept in the chat with its reason or "Stopped.", and its text is not passed on to the next hop.
 
 ### Your team
 
@@ -254,6 +258,52 @@ Open **Settings > Agents > Team**. For each kind of work (Find, Research, Code, 
 
 **Short both ways.** The worker gets a short brief and is asked to keep its reply short. A long reply is cut for the lead, with a line that says how much was cut.
 
+### Handing work to a program or a hub agent
+
+A lead can hand a task to a **program** instead of a model: Claude Code, Codex, Muse Code, Gemini CLI, Antigravity, Cursor or Grok
+Build on this PC, or an agent you added by its name on **Plenum Hub**. The task then runs inside that program, with that program's own
+abilities, and its result comes back to the lead as a hand-off result. Open **Settings > Agents > Programs**.
+
+- **Each program has one line, "Best at"**, that you can edit. The lead reads these lines and picks by them; you can also name the
+  program yourself in your message. Plenum never switches silently to another program: if the one named is not installed, needs
+  sign-in, is switched off or is at its plan limit, the lead is told so with the programs that can run now, in your order.
+- **Each row shows what is true now**: Ready, At its plan limit, Needs sign-in, Not installed, Switched off, Not checked yet. Change
+  the order with the arrows; the switch takes a program out; **Model** is Automatic or one you choose.
+- **A program never gets more rights than the chat that asked**: the same folders and the same approval mode. Programs that ask before
+  each step (Claude Code, Antigravity, Cursor, Grok Build) send each step to Plenum first. Codex, Gemini CLI and Muse Code cannot
+  ask before they act, so in a folder on **Ask first** a hand-off to one of them starts only after your yes on a card at the top of
+  **Businesses > Today**. The card shows the program, the model, the folder, the scope, the agent type, who asked and the whole task
+  text, and your yes is tied to that text. With no answer in five minutes, a no, Stop, or a text over 60,000 characters, it is not
+  started, and the lead is told so in words. Codex in Ask first also starts without your own Codex settings file, so the MCP servers
+  set there are not loaded. In **Auto-approve** and **Approve all** a hand-off starts at once, and an editing task may use the
+  program's connected services. A business that does not allow models billed per token never runs a hand-off on an API-key route.
+  Plenum lists what these programs changed. The card is answered at the computer; the phone has no Businesses pane.
+- **Claude Code in a hand-off** runs with the tools of the task's agent type only. None of your own Claude Code skills, MCP servers or
+  settings are loaded.
+- **Stop** ends the program and everything it started. Nothing shows on screen but Plenum.
+- **An agent on Plenum Hub** (for example your Muse or Grok Bot in its own program, or on another computer): add it under **Agents on
+  Plenum Hub** with its name on the hub, what to call it, what it is best at and how many minutes to wait (10 to start with, 60 at
+  most). Plenum creates a task for it on the hub, waits for its answer and takes that as the result. Plenum opens nothing on this PC
+  for it. **Connect agents to the hub** must be on.
+  - The row says whether the hub's helper can start the agent. With hands-off mode on in the hub, the helper starts it by itself and
+    Plenum does not ask a second time. With hands-off off, Plenum asks the helper to start it when a task is handed over. A run the
+    helper starts has the hub's tools only (no shell, no files on this PC, no web) and ends within 10 minutes.
+  - **Stopping a hand-off** cancels its task on the hub at once. A run the helper had already started ends by itself within 10 minutes;
+    to stop it at once, pause the agent in Plenum Hub.
+  - What the agent answers is another agent's text, not yours: the lead is told so, as with every hub message.
+- **The result** goes on the business's record when the chat belongs to a business (which program, the title, whether it worked, a
+  short text, the files it changed), and the brief counts hand-offs by program.
+
+### The sharing switch
+
+**Results in the business room** lists your businesses that have a room on Plenum Hub, each with a switch that is **off** until you
+turn it on. Switched on for a business, Plenum posts a short result line in that business's room after a task that ran in a program
+on this PC (the title, the answer and the changed files), so other agents of that business build on it; and the title and the
+instructions of a task handed to an agent on Plenum Hub go into that room. A room is received by every agent that is a member of it,
+on other computers too, and any agent on the hub can read a room that is not private, so the switch is yours for each business.
+While it is off, none of that goes to a room: such a task goes to the agent alone. The hub tells which members acknowledged a
+message; Plenum never claims that it was read.
+
 ## Plenum Hub
 
 Plenum Hub connects Plenum to the hub program on this computer (Tabletalk Hub, in the `agent-relay-hub` folder), where agents send each other messages, hand over tasks and share notes and files. Open **Settings › Agents › Plenum Hub**.
@@ -267,6 +317,116 @@ Plenum Hub connects Plenum to the hub program on this computer (Tabletalk Hub, i
 - **Check now** asks the hub and its starter once. **Addresses** holds the two addresses, the starter's folder, **Reset** and **Test connection** (it asks the hub whether it is up and the starter what waits for you; it uses no key). Only a hub on this computer is accepted.
 
 If the hub is down, not set up, paused, older than Plenum expects or cannot give a model its key, the reply goes ahead without the hub and the chat says so once. It says so again only after the cause was over and came back.
+
+## Businesses
+
+A business in Plenum is a folder with your instructions, a plan and playbooks, plus a small record that Plenum keeps. Models work in
+that folder, at the times you set, inside the limits you set, and ask you before anything leaves this PC. Open the **Businesses** pane
+from the title bar (the list icon; it shows how many things wait for you).
+
+A project that belongs to no business behaves exactly as before.
+
+### What a business is
+
+- **A folder you already have in Plenum** (a project). One folder is the business's home; up to four folders can belong to it. A folder
+  that is, contains or lies inside another business's folder is refused, with a sentence that names that business.
+- **Five things in the folder**, as plain files any model can read cold:
+  `BUSINESS.md` (your instructions: what is sold, to whom, the rules), `STATE.md` (what is in progress, kept short), `PLAN.md` (a
+  checklist), `playbooks/` (one file for each recurring job) and `outbox/` (drafts of anything that would go outside).
+- **A record in Plenum's data folder**, not in the program folder, so an update keeps it: `businesses.json` (the list),
+  `business-log/<id>.jsonl` (what happened: every turn, run, skip, answer of yours, hand-off and flag; lines are added, never changed)
+  and `business-charter.json` (the fingerprint of the `BUSINESS.md` text you last confirmed).
+- **Lead models** in your order. The first that can run now leads a routine. Plenum never uses a model you did not list.
+- **Two limits a day**: how many routine runs (12 to start with) and how many minutes of model time (180 to start with). When one is
+  reached, the next routine is skipped and the record says why.
+
+A lead working in a business's folder is told, at the start of every chat turn, the text of `BUSINESS.md` and `STATE.md`, the last
+three finished turns, and how to ask you something. It is told to stay inside this business's folders.
+
+### Make one
+
+1. Open **Businesses**. With no business yet, **Today** shows the form.
+2. Give it a **name** and one sentence on **what it does**.
+3. Choose the **folder** (one of your Plenum projects) and the **lead model**.
+4. Choose a **template**: **Blank** (the files and nothing else), **Fixed-scope service** (three routines: Morning intake, Delivery,
+   Exception digest) or **Daily research** (Daily cycle, Daily report). A template holds no model name.
+5. Press **Create**.
+
+Plenum writes the files that are missing in the folder. A file that is already there is never overwritten. The template's routines
+arrive **switched off**; nothing runs until you turn one on. Then write your instructions in `BUSINESS.md` and confirm them under
+**Setup** (see "BUSINESS.md is yours").
+
+Under **Setup** you can change the name and the sentence, the leads and their order, the two limits, pause or close the business and
+see its files. **Pause** holds every routine of that business; **Pause all** at the top holds every routine of every business until you
+press **Resume all**. **Close** stops its routines and takes it off Today; its files and its record are kept, and you can open it
+again under Setup.
+
+### What waits for you
+
+**Today** lists everything that needs your answer, across all businesses, newest first. A lead puts an item there by ending its reply
+with a line that starts with `OWNER:` (a question, a plan, or a step that would send, publish, spend, open an account or delete).
+Each item shows the business, the type, who asked, the model's recommendation and one button for each option.
+
+- **Silence is never a yes.** An item waits until you answer it or press **Not needed**. There is no default answer, no timer and no
+  "answer all".
+- **A yes to a draft is tied to the text you were shown.** The first press on a yes opens the draft; the second records your yes.
+  Plenum takes the draft's fingerprint when it shows it and checks it again when you tap. If the file changed in between, nothing is
+  recorded and you are asked to read it again.
+- **An answer is a refusal only when it is the No that Plenum adds to every item.** Plenum never reads a no from the words of an
+  option a model wrote.
+- **A send or a publish with no draft**, or with a draft that is a link, a second name of a file, outside the folder or missing, stays
+  on the list but can only be refused.
+- **A yes never pays and never sends by itself:** you pay yourself. In a folder on Ask first, a send still shows its own card when
+  it comes from a model or program that asks Plenum before it acts. In Auto-approve and Approve all no card is shown, because you
+  chose that mode.
+- **Your answer reaches the lead with its next message** in the thread that asked, and goes on the business's record with the time,
+  the draft's name and its fingerprint. You can add a short note for the model.
+- The options and the type of an item are the model's words; the page says so above the list.
+
+**How it stands** under the list is the brief of each business for today or this week: what ran and how it ended, what the last run
+finished and what comes next, model minutes used, plan use of each subscription against your line, goals, how many outside steps you
+approved and refused, hand-offs to programs, and whether `BUSINESS.md` was changed.
+
+### BUSINESS.md is yours
+
+`BUSINESS.md` holds your instructions, so Plenum watches it. When its text is not the text you last confirmed, leads are told to
+treat what is new in it as unconfirmed, and **Setup** shows the text with one button, **I made this change**. The confirmation is tied
+to the text you were shown: if the file changes after you opened it, nothing is confirmed and the text is shown again. A business
+Plenum has no confirmation for is never taken over silently: only **Create**, from your own form, confirms the first text.
+
+A file of a business's folder that is a link, has a second name on the disk, leads outside the folder or is a secret file is not read
+into a model's instructions; the page says which file and why.
+
+### Routines
+
+A routine starts a lead model at a time you set, as an ordinary chat turn in the folder's **Routines** thread. So it has the
+approvals, limits, Stop, checkpoints and saved history of any chat. Open **Businesses > Routines**.
+
+- **Every routine arrives switched off.** Only you can create one, change one or switch one on: no model has a tool for it.
+- **When**: every day or on chosen weekdays at a time, or every N hours. **What**: a short instruction, or a playbook file in the
+  folder. **How long**: 60 minutes to start with, 180 at most.
+- **Before you switch one on**, the row says two things that hold for that folder: whether the Routines thread may write (turn on
+  **More than one thread may write** to let it), and what the folder's approval mode means while nobody is there. In **Ask first**,
+  each change waits five minutes for you and is then skipped; the run's line says how many were not answered.
+- **Run now** starts it at once; **Stop** ends a run; the row shows the last run, how it ended and what it finished. A follow-up
+  run that answers one of your items is listed as running too, with its own **Stop**.
+- **After Stop all, or Stop on a chat a routine started, no routine starts by itself for 30 minutes.** The Routines tab says until
+  when. **Resume routines**, or **Run now** on a routine, ends the wait sooner.
+- **A changed playbook waits for you.** If the playbook file is not the text the routine was saved with, the routine is held and you
+  are asked; **Keep** shows you the new text and accepts only that text. A playbook is read only when it is a regular file with one
+  name, no link, inside the business's folder.
+- **Plan use.** A run by itself is not started when its lead is at or past your stop line. If no fresh reading can be had, the last
+  reading counts until that plan's window resets, and the reason says how old it is. For a subscription Plenum cannot read without
+  sending a prompt, the run starts and its line says that plan use was not known.
+- **Missed times.** After sleep, a restart or an update, a routine whose time passed runs once if it is not more than six hours
+  late; otherwise it is skipped and the record says so. A run that was cut off by a restart is
+  marked as cut off.
+- **Nothing runs by itself** while everything is paused, while the business is paused or closed, before the License Agreement is
+  accepted, or when Plenum's server is not the one on its port. The Routines tab and **Settings > General > Background services** say
+  when the scheduler is off and why: that section has a **Routines** row and, while no business exists, a **Businesses** row that says
+  "No business yet." with **Start your first business**.
+
+Routines run only while Plenum is running. With **Start with Windows** on, Plenum starts in the tray and the scheduler with it.
 
 ## Plan mode and queued follow-ups
 
@@ -305,7 +465,7 @@ When a model drives the screen or the in-app browser, a bar sits above the messa
 - **The stop key** is **Ctrl+Alt+Esc** (**Control+Option+Esc** on a Mac). It works from any app, but only while a run is driving something: Plenum registers it when a run starts and releases it when the run ends. On Linux a desktop may already use that key, so `driveStopKey` in the state file can name another key with at least two modifiers, such as `Ctrl+Shift+F12`.
 - **Time limits count only the time the model is driving.** The bar turns amber when 5 actions or 60 seconds are left. A run left paused for the pause limit ends by itself. The limit is 60 minutes by default, and **Settings › Safety › Computer use** sets it from 5 minutes to 8 hours.
 
-The in-app browser uses the same bar and controls. The badge, the drive bar and the stop key go away when the reply ends. The one exception is a password, code or card field that the model left for you: the browser stays paused until you have typed it (in the page, or with Type it for me) and pressed Resume, or pressed Stop.
+When a click opens a new tab or a pop-up is blocked, the model is told which, with the new tab's number, so it does not click again. The in-app browser uses the same bar and controls. The badge, the drive bar and the stop key go away when the reply ends. The one exception is a password, code or card field that the model left for you: the browser stays paused until you have typed it (in the page, or with Type it for me) and pressed Resume, or pressed Stop.
 
 ## Computer use
 
@@ -374,7 +534,7 @@ While a model acts, the drive bar above the composer shows what it is doing, wit
 
 - **Claude.** Opus 5.5, Sonnet 5.5, Haiku 5.5 and Opus 5 use Claude's computer tools through the Anthropic API, so an Anthropic API key must be saved. The key is needed even when chat runs through the Claude CLI; with no key, Claude Code reaches the computer through the bridge instead. Claude Fable 5.2 and Fable 5.1 are listed as untested.
 - **OpenAI and Google AI.** Their computer-use tools run through the OpenAI and Gemini APIs, with that provider's key saved. A safety check the provider asks for appears as a card marked as OpenAI's or Google's. The switches under Limits and checks decide which checks are acknowledged without a card.
-- **Other API models that take pictures.** Plenum's generic screenshot-and-act loop runs them, and the dialog marks them **generic loop**. The notice in the chat says the model was not trained for computer use, so expect misclicks and retries.
+- **Other API models that take pictures.** Plenum's generic screenshot-and-act loop runs them, and the dialog marks them **generic loop**. The notice in the chat says the model was not trained for computer use, so expect misclicks and retries. When a provider refuses or fails a request in any of these runs, the run says what happened and what to do (add credit, wait, pick another model); Plenum does not send a step again by itself, so you send again.
 - **CLI agents.** Claude Code, Codex, Gemini CLI, Cursor and Grok Build reach the computer through the Plenum bridge while a run you started is live, through the same cards and Stop (see [CLI agents](#cli-agents)). Muse Code has no bridge.
 
 Every model goes through the same checks, cards, limits and run log. Text-only models are listed disabled, with the reason.
@@ -399,7 +559,8 @@ Each run is kept in the state folder, under `computer/runs`. It holds every scre
 - **Undo.** `/clear`, `/compact` and Edit keep the chat they replaced. An **Undo** line above the message box puts it back until you send the next message, and it survives a restart. `/clear` on a chat of four or more messages asks first.
 - **Cut-off replies.** When an API model stops at its output limit, the reply gets a note and a **Continue** button, which asks it to carry on. The Claude, Codex, Gemini and Muse Code CLIs report no such stop.
 - **Lost connection.** If the page cannot reach Plenum's server, a banner says so and clears when the server is back. A failed message gets **Retry** (puts it back in the message box) and **Copy error**. A restart of the server keeps the message, so its **Retry** still works; reloading the page does not.
-- **Model menu.** Each model shows whether it is ready (signed in, or a key is set), its price per million tokens, its context window and whether it can use tools. Choosing a model that is not ready shows a banner that says what to do.
+- **Model menu.** Each model shows whether it is ready (signed in, or a key is set), its price per million tokens, its context window and whether it can use tools. Choosing a model that is not ready shows a banner that says what to do. When another program is ready, the banner also offers **Use <name>** (Claude, Codex, Gemini, Muse Code, Cursor, Grok Build, Antigravity, then a ready API provider, in that order): it sets that model for the thread when you press it, says so, and never happens by itself.
+- **Unsent text.** What you have typed in the message box is kept for each thread on this computer, in the browser's own storage (it is never sent to the server), and comes back with a note and **Discard** after a reload or an update, when the box is empty. Sending clears it. Not kept: pictures and files, the queued follow-ups, a line that starts with `/`, and text that holds a key or the launch token. Drafts older than 30 days, or of chats that are gone, are dropped.
 - **Command palette.** Typing `/` lists matching commands with a hint for their arguments. Some have a second name: `/stop` runs `/cancel`, `/reset` runs `/clear`, `/switch` runs `/project`, `/forget` runs `/remove`, `/limits` runs `/usage`, and `/keys` and `/login` open Accounts. The Commands panel has a filter box.
 - **Narrow windows.** Below 860 px the sidebar folds into a menu button at the top left. The desktop window can be as narrow as 480 px.
 
@@ -413,6 +574,7 @@ Each run is kept in the state folder, under `computer/runs`. It holds every scre
 - **Auto-compact** (under **Roles**): a menu, a dial and a number box for each model in use, in tokens. **Model default** changes nothing; **Limit** (from 10,000 tokens to the model's context window) compacts a chat into a summary before a message goes, as `/compact` does, once the thread holds that many tokens; **Off** never does. A chat shows a notice when it is compacted, and Undo puts the old thread back. Claude Code and Codex are told the same number of tokens for their own compaction (Off turns Claude Code's off too; Codex has no off switch). A CLI in Native session mode compacts its own session, so Plenum leaves it alone, and a CLI in Transcript mode is sent at most about 37,500 tokens of the chat in one prompt, so above that the oldest messages are left out until the chat is compacted. **Add another model** gives any other model a row.
 - **Team** (under **Agents**): your ordered list of models for each kind of work, as described in [Your team](#your-team).
 - **Plenum Hub** (under **Agents**): the hub's state, the two switches, what waits for you and the agents of your models, as described in [Plenum Hub](#plenum-hub).
+- **Programs** (under **Agents**): the programs and hub agents a lead can hand a task to, as described in [Handing work to a program or a hub agent](#handing-work-to-a-program-or-a-hub-agent).
 - **Backups** (under **General**): the dated copies of your chats and settings, as described in [Known limits](#known-limits).
 - **Background services** (under **General**): what Plenum runs and needs, the **Bring Plenum Hub up when Plenum starts** and **Start with Windows** switches, as described in [Background services](#background-services-start-with-windows-and-plenum-hub-in-the-background).
 - **Updates:** the installed version, **Check now**, **Restart to update**, the **Check for new versions** switch and the channel, as described in [New versions](#new-versions). Checks run only in the desktop app; a plain `npm start` run says that update checks are not available.
@@ -423,7 +585,7 @@ Each change saves at once, and the line under it says **Saved** or why the chang
 
 A phone can show the same Plenum as this window: chat, models, approvals, agents, review and Stop. You pair a phone once, from **Settings › Phones › Add phone**. Pairing happens only at this computer: a window that screen capture does not show asks you to check a six-digit code against the phone and press **Allow**. No model, tool or other program can pair a phone, press Allow or raise a phone's tier. On Linux Electron cannot keep a window out of screen capture, so the code is never shown there; pair with Copy link.
 
-- **Ways to reach this computer.** The same network (off until you turn on **Allow phones on this network**; Windows may ask before Plenum can listen), your own Tailscale (after you agree in Settings › Phones, Plenum runs `tailscale serve` with your Tailscale; switching the phone link off removes only the Tailscale share that Plenum set up, and shares of other programs on this computer are left alone), or a relay you deploy to your own Cloudflare account from the `relay/` folder. Plenum runs no server for phones, and its developer receives nothing from them.
+- **Ways to reach this computer.** The same network (off until you turn on **Allow phones on this network**; Windows may ask before Plenum can listen), your own Tailscale (after you agree in Settings › Phones, Plenum runs `tailscale serve` with your Tailscale; switching the phone link off removes only the Tailscale share that Plenum set up, and shares of other programs on this computer are left alone; Plenum first reads what Tailscale already serves, and if another program serves something on https port 443 it does not replace it and says so; while the link is on it looks again every two minutes and sets its own share again if another program took it away), or a relay you deploy to your own Cloudflare account from the `relay/` folder. Plenum runs no server for phones, and its developer receives nothing from them.
 - **Encryption.** Each phone link is encrypted end to end with X25519 key exchange and ChaCha20-Poly1305 (the Noise protocol). The web page a phone opens on the same network is plain http, so an active attacker on that network can alter it. Use Tailscale or the relay on networks you do not trust.
 - **What a phone can do.** At the **Full** tier a phone can do what this window can. Actions a phone starts, approves or stops are your actions, as the License Agreement says. **Approve and watch** lets a phone watch, approve and stop, and **Read only** lets it watch and stop. Tiers are set here, at the computer.
 - **Indicator.** While a phone is connected, the title bar shows **Phone connected** and the tray shows how many. No setting hides it. Every action a phone takes is labelled with that phone's name in the activity list, the approvals and the history.
@@ -431,7 +593,8 @@ A phone can show the same Plenum as this window: chat, models, approvals, agents
 - **Notifications.** Off until you turn them on, and each kind has its own switch. They show the project name and a short status. **Include the first line** adds the first line of a card, which can name files and commands. A phone browser gets them from its own push service (Google, Apple or Mozilla); an Android phone can use UnifiedPush through the app you choose, such as ntfy.
 - **Keys and removal.** The phone link's keys are in `phones.json` in the desktop app's user-data folder, encrypted by the operating system. Under plain `node` they are plain files in the state folder, and Settings › Phones says so. Remove a phone under Settings › Phones: its connection closes at once and its key is deleted here. Keep phones locked, and remove a lost one.
 - **Stop from a locked phone.** The lock screen's Stop everything and a notification's Stop all reach the computer without unlocking the phone. They use a Stop key that can only stop runs on that computer, and Remove revokes it with the phone.
-- **When the phones file cannot be saved or read.** Stop from a phone and connecting do not wait for the file: they work while a save fails, and Plenum saves again by itself. Settings › Phones shows a red line while the last save failed, and the line goes when the save has worked. If the file cannot be read when Plenum starts, phones come back by themselves when it can (Plenum reads again after 2, 5, 15, then every 60 seconds), and turning "Let phones connect" on reads it at once. A phones file that Plenum cannot use is never written over: it is kept beside the new one as `phones.json.damaged`.
+- **When the phones file cannot be saved or read.** Stop from a phone and connecting do not wait for the file: they work while a save fails, and Plenum saves again by itself. Settings › Phones shows a red line while the last save failed, and the line goes when the save has worked. If the file cannot be read when Plenum starts, phones come back by themselves when it can, if it is only locked or not ready (Plenum reads again after 2, 5, 15, then every 60 seconds), and turning "Let phones connect" on reads it at once. A phones file that Plenum cannot read at all (it cannot be decrypted, or is not a phones file) is never replaced by itself: Settings › Phones says so and offers **Start fresh**, which asks first, keeps the old file beside the new one as `phones.json.damaged` and starts again, so every phone must pair again.
+- **A relay that goes silent.** While the relay link is open, Plenum sends it a small ping every 20 seconds and counts any answer as life. After two pings with no answer in 10 seconds it drops that link, says "Your relay stopped answering, so Plenum is connecting again." in Settings › Phones and connects again. This is meant to keep Stop from a phone working after the computer has slept; it has been tested with a stand-in relay only.
 - **Reconnecting.** The phone dials all its ways together, a quarter of a second apart, and uses the first one that opens, starting with the address that worked last time. Away from the home Wi-Fi, reconnecting and Stop take a second or two.
 - **Changing how phones connect.** Only the computer can turn phones on or off, change the ways phones reach it or use Remove all. A phone with Full control can still remove a single phone.
 - **Relay room.** If your relay turns this computer away, Settings › Phones offers New room. Phones paired before then use the relay again after you pair them again.
@@ -440,11 +603,21 @@ A phone can show the same Plenum as this window: chat, models, approvals, agents
 
 ## Side panes
 
-The side pane is the column to the right of the chat. Panels put their tabs into it, such as Artifacts, the Browser, Review and Agents, and only one tab shows at a time. **Back to the chat** hides the column and keeps the tabs. **Close pane** closes the tab that is showing. Drag the pane's left edge to resize it, double-click the edge to reset it, or focus the edge and use the arrow keys. The pane starts at 440 px. It is never narrower than 380 px, and never wider than the smaller of 60% of the window and the window less 480 px, so the chat keeps room. Below 860 px the pane covers the window below the title bar, and **Back to the chat** returns to the chat. The width is kept only for the life of the page. The Review tab shows the changes of the thread on screen (its isolated copy when it has one) and follows you when you switch threads; review comments are kept for each thread. If git takes too long, the pane says so ("Git took too long to read the changes"); try again, or look at the repository in your terminal.
+The side pane is the column to the right of the chat. Panels put their tabs into it, such as Artifacts, the Browser, Review, Agents and Businesses, and only one tab shows at a time. **Back to the chat** hides the column and keeps the tabs. **Close pane** closes the tab that is showing. Drag the pane's left edge to resize it, double-click the edge to reset it, or focus the edge and use the arrow keys. The pane starts at 440 px. It is never narrower than 380 px, and never wider than the smaller of 60% of the window and the window less 480 px, so the chat keeps room. Below 860 px the pane covers the window below the title bar, and **Back to the chat** returns to the chat. The width is kept only for the life of the page. The Review tab shows the changes of the thread on screen (its isolated copy when it has one) and follows you when you switch threads; review comments are kept for each thread. If git takes too long, the pane says so ("Git took too long to read the changes"); try again, or look at the repository in your terminal.
 
 ## Keyboard shortcuts
 
-Press **Ctrl+/** (**Cmd+/** on a Mac) for the full list. The main ones: **Enter** sends (or queues during a run), **Shift+Enter** adds a line, **Esc** closes a list and then stops the run, **/** focuses the message box, **Up** in an empty box recalls your last message, **Ctrl+K** switches project, **Ctrl+Shift+P** turns plan mode on or off, **Ctrl+Shift+C** turns council mode on or off, **Ctrl+Shift+A** opens Accounts, **Ctrl+Shift+B** opens the Agents tab, **Ctrl+Shift+\\** turns split view on or off (**Ctrl+1** and **Ctrl+2** go to its two message boxes in the desktop app), and **Ctrl+Enter** starts a quick compare or a pipeline. Ctrl+K and Ctrl+/ work even in a text field. Ctrl+Shift letters work from the message box but not from other text fields. The approval modes (Ask first, Auto-approve and Approve all) have no shortcut on purpose. **Ctrl+Alt+Esc** (**Control+Option+Esc** on a Mac) stops a computer or browser run from any app while a run is driving something; see [Model-driven runs: pause and stop](#model-driven-runs-pause-and-stop). In the desktop app the Ctrl+/ list shows this key too, with your own key if you changed it.
+Press **Ctrl+/** (**Cmd+/** on a Mac) for the full list. The main ones: **Enter** sends (or queues during a run), **Shift+Enter** adds a line, **Esc** closes a list and then stops the run, **/** focuses the message box, **Up** in an empty box recalls your last message, **Ctrl+K** switches project, **Ctrl+Shift+P** turns plan mode on or off, **Ctrl+Shift+C** turns council mode on or off, **Ctrl+Shift+A** opens Accounts, **Ctrl+Shift+B** opens the Agents tab, **Ctrl+Shift+\\** turns split view on or off (**Ctrl+1** and **Ctrl+2** go to its two message boxes in the desktop app), and **Ctrl+Enter** starts a quick compare or a pipeline. Ctrl+K and Ctrl+/ work even in a text field. Ctrl+Shift letters work from the message box but not from other text fields. The approval modes (Ask first, Auto-approve and Approve all) have no shortcut on purpose. **Ctrl+Alt+Esc** (**Control+Option+Esc** on a Mac) stops a computer or browser run from any app while a run is driving something; see [Model-driven runs: pause and stop](#model-driven-runs-pause-and-stop). In the desktop app the Ctrl+/ list shows this key too, with your own key if you changed it. The page can be used with the keyboard and a screen reader: a drawer takes the focus when it opens and keeps Tab inside it while Stop stays reachable, the conversation is not read out again while a reply streams, and short events (a reply finished, a run stopped, an approval waiting, a failure) are spoken once each. If Plenum is slow to start, plain words under the title bar say so.
+
+## Help and diagnostics
+
+Press **F1**, or **Help** in the sidebar above Commands, to open the Help drawer. It has short topics (start a chat, stop a run, ask first and approvals, models and sign-in, settings, keyboard shortcuts), **About** (the build you run, as in [Starting, health and build identity](#starting-health-and-build-identity)) and **Diagnostics**.
+
+- **Diagnostics is a report you read before you copy it.** It is plain text, shown in the drawer. **Copy diagnostics** and **Save as a file** are your own presses; nothing is sent anywhere. **Open log folder** shows `server.log` in the file manager in the desktop app; under plain `npm start` the drawer says where the log is.
+- **What it holds.** Versions (Plenum's build, Node, Electron, Chrome, the operating system), which CLIs are found and the version each prints for `--version` (Plenum never sends a CLI a prompt for this), yes or no for each tool and each saved key, counts and sizes, the data folder and app folder as paths, a project only by its last folder's name, and the last 50 error lines of the log, each cut short.
+- **What it never holds.** A key, the launch token, a chat, a prompt, the content of a file, a project's path beyond its last folder's name, your user name, an e-mail address, a phone's name or pairing data, or a hub key. One redaction cleans all of it: keys and the launch token by value and by shape, e-mail addresses, any path outside Windows' own folders and Plenum's data and app folders (cut to its last name), and a long quoted run in an error line (40 characters or more). A short word of your own inside an error line cannot be recognised, which is why the report is shown whole before you copy it.
+- **Errors the page itself caught** are reported to the server (the message, the file and the line only, at most 20 a minute) and appear in the log and in the report.
+- Before the License Agreement is accepted, a report can still be made, without looking for any tool.
 
 ## Checkpoints
 
@@ -615,6 +788,20 @@ If two projects share a folder name, `/project` and `/remove` refuse that name a
 - Fable 5.2 and Fable 5.1 are untested for the computer toolset.
 - In split view the right pane has no attachments, / commands, Council, Rewind, Regenerate, Send to, Build this or artifact buttons; Swap sides gives its thread the full message box. Notices raised by a right-pane run appear above the left message box, and a run of the right thread started in another window shows when it ends.
 - If Plenum says it hit an unexpected problem, try again. The message names an id (E- and six characters); look for it in the file `server.log` in Plenum's data folder to see what went wrong. The log never holds keys.
+- Businesses: sign-ins and the browser profile are shared by all your businesses; they are not kept apart yet. The Businesses pane
+  says so.
+- No channel sends for you yet (email, messages, posts). A lead prepares the text in `outbox/`, asks you, and after your yes the
+  sending step is a tool call that shows its own card, or you send it yourself.
+- There is no money ledger and no spending limit per business beyond the project's spend limit; a yes to a spend means you pay
+  yourself.
+- The Businesses pane sums up the record (the brief); it has no page that lists the record line by line. The file is
+  `business-log/<id>.jsonl` in Plenum's data folder.
+- Routines run only while Plenum runs; a time that passed while the PC was off is caught up within the routine's catch-up window, or
+  skipped with a line on the record.
+- A hub agent that the hub's helper starts works with the hub's tools only, for 10 minutes at most.
+- Plenum writes a list of the programs it starts (`children.json` in its data folder; no prompt, key or environment is in it) and takes each line out when the program ends. Stop waits, for 2.5 seconds at most, until the program's whole process tree has ended. The clean-up at the next start, which would end programs that a crashed Plenum left running and clear their temp folders, is built and switched off: it runs only with the environment variable `PLENUM_SWEEP=1`, because ending a process by a recorded process id can hit another program when Windows reuses the id. So after a crash, or after Plenum is ended in Task Manager, a CLI that Plenum had started can keep running until you end it yourself.
+- A failed relay hop or council seat cannot be retried alone; a failed Quick compare column and a failed pipeline step can.
+- Unsent text is kept in the browser's own storage on this computer; the queued follow-ups and the split view's own message box are not kept.
 
 ## Tests
 

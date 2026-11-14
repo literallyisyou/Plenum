@@ -9,8 +9,13 @@
 // answered is started again by the policy in desktop/server-supervisor.cjs while the window stays, a start that fails offers Try again,
 // Open log and Quit, and the window loads its page again when its renderer is gone or its load failed. A hidden smoke mode (see SMOKE
 // below) lets a test start the whole shell with nothing on screen.
-const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, shell: electronShell, utilityProcess } = require('electron');
-const { execFileSync } = require('node:child_process');
+// DECISIONS item 123 (shell hardening): the log is desktop/log.cjs (a time on every line, a size cap with rotation, a failed write cannot take
+// the shell down), the registry's variables are read without making the start wait (desktop/registry-env.cjs), the four switches are kept in a
+// cache (see settingsNow) instead of parsing the whole state file at every event, a second launch during a quit opens Plenum again once it has
+// ended (relaunchAfterQuit), the question boxes can copy their details (desktop/error-box.cjs), and a quit leaves alone a hub launcher that is
+// still starting the hub (hubLaunchers).
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, shell: electronShell, utilityProcess } = require('electron');
+const { execFile, execFileSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -21,6 +26,10 @@ const { tooltipFor } = require('./alerts.cjs');
 const { createSseParser } = require('./sse.cjs');
 const { loadHandlers, handleMessage, runHooks } = require('./handler-loader.cjs');
 const { createSupervisor, smokeMode, RESTART_EXIT_CODE } = require('./server-supervisor.cjs');
+const { createLog, makeRedactor } = require('./log.cjs');
+const { createRegistryEnv } = require('./registry-env.cjs');
+const { createChooser } = require('./error-box.cjs');
+const { parseTable, doomedWithout } = require('./process-tree.cjs');
 
 // When the shell started, for the start lines in the log (the server answered after, the window loaded after).
 const SHELL_STARTED = Date.now();
@@ -78,8 +87,20 @@ let tray = null;
 let server = null;
 let vault = null;
 let quitting = false;
-let logStream = null;
 let logFile = '';
+// The log (desktop/log.cjs). The user's name in a path and the launch token are hidden in everything it writes.
+const redact = makeRedactor({
+  user: (() => {
+    try {
+      return os.userInfo().username;
+    } catch {
+      return '';
+    }
+  })(),
+  home: os.homedir(),
+  secrets: () => [TOKEN],
+});
+const log = createLog({ fs, redact });
 // The poll timer, and whether a poll is running now. The poll is the fallback while the events channel is down.
 let pollTimer = null;
 let polling = false;
@@ -128,19 +149,55 @@ let unresponsiveTimer = null;
 let windowOfferOpen = false;
 let smokeDone = false;
 
+// Set when a second launch comes while this copy is quitting (see onSecondInstance); will-quit then starts Plenum again, once. sessionEnding:
+// Windows is ending the session, and nothing is started again then. mainStarted: main() has run, so a window may be made again.
+let relaunchAfterQuit = false;
+let sessionEnding = false;
+let mainStarted = false;
+// The hub launchers (pids) that the server said are running now. A quit does not end them (see stopServer).
+const hubLaunchers = new Set();
+const MAX_HUB_LAUNCHERS = 8;
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second launch (for example from the shortcut) shows the window, even when it is hidden in the tray.
-  app.on('second-instance', () => showWindow());
+  // A second launch (for example from the shortcut) shows the window, even when it is hidden in the tray, and opens it again when
+  // there is none. During a quit it asks this copy to start again once it has ended.
+  app.on('second-instance', () => onSecondInstance());
   // macOS: a click on the Dock icon re-activates the app. The window may be hidden to the tray, so bring it back.
   // Windows and Linux never send this, so it changes nothing there.
   app.on('activate', () => showWindow());
+  app.on('will-quit', () => startAgainAfterQuit());
   app.whenReady().then(main);
 }
 
+// A second launch. The person opened Plenum while this copy was still quitting (it waits up to SHUTDOWN_WAIT_MS for the server): the new
+// copy found the lock taken and ended, so nothing would open. This copy remembers it and starts Plenum again after it has ended.
+function onSecondInstance() {
+  if (quitting) {
+    relaunchAfterQuit = true;
+    writeLog('a second launch came while Plenum was quitting; Plenum opens again once this copy has ended');
+    return;
+  }
+  showWindow();
+}
+
+// will-quit: the server has been stopped (before-quit does that). Starts Plenum again, once, when a second launch asked for it during
+// the quit. Never in smoke mode and never when Windows is ending the session. The lock is let go first, or the new copy would find it taken.
+function startAgainAfterQuit() {
+  if (!relaunchAfterQuit || sessionEnding || SMOKE) return;
+  relaunchAfterQuit = false;
+  try {
+    app.releaseSingleInstanceLock?.();
+    // The start with Windows keeps the window hidden; a person who opened Plenum wants to see it.
+    app.relaunch({ args: process.argv.slice(1).filter(arg => arg !== '--background') });
+  } catch (err) {
+    writeLog(`Plenum could not be started again after the quit: ${String(err?.message ?? err).slice(0, 200)}`);
+  }
+}
+
 function writeLog(line) {
-  logStream?.write(`${line}\n`);
+  log.line(String(line));
 }
 
 // Calls the handlers' hooks with this name. The shell is the first argument of every hook.
@@ -237,37 +294,18 @@ function openLog() {
   const dir = app.getPath('userData');
   fs.mkdirSync(dir, { recursive: true });
   logFile = path.join(dir, 'server.log');
-  logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  logStream.write(`\n--- started ${new Date().toISOString()} ---\n`);
+  log.open(logFile);
+  log.raw(`\n--- started ${new Date().toISOString()} ---\n`);
 }
 
-// Reads environment variables straight from the registry. An app started from the Start menu can
-// miss PATH or API key changes made after Explorer started (for example by the Muse Code installer
-// or setx), so the server gets the current values.
-function registryEnv() {
-  const sources = ['HKCU\\Environment', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'];
-  const vars = {};
-  for (const key of sources) {
-    let out = '';
-    try {
-      out = execFileSync('reg', ['query', key], { encoding: 'utf8', windowsHide: true });
-    } catch {
-      continue;
-    }
-    for (const line of out.split(/\r?\n/)) {
-      const m = line.match(/^\s+(\S+)\s+REG_\w+\s+(.*)$/);
-      if (!m) continue;
-      const value = m[2].replace(/%([^%]+)%/g, (_, name) => process.env[name] ?? `%${name}%`);
-      if (m[1].toLowerCase() === 'path') vars.Path = [vars.Path, value].filter(Boolean).join(';');
-      else vars[m[1]] = value;
-    }
-  }
-  return vars;
-}
+// The environment variables of the registry (desktop/registry-env.cjs): an app started from the Start menu can miss PATH or API key
+// changes made after Explorer started (for example by the Muse Code installer or setx), so the server gets the current values. Both keys
+// are read at once with a time limit and the answer never fails; it is asked for when the app starts (main), so only the server's fork waits.
+const registry = createRegistryEnv({ execFile });
 
 // On Windows the server gets the registry values and this process's own, merged.
-function windowsEnv() {
-  const env = registryEnv();
+function windowsEnv(registryVars) {
+  const env = { ...(registryVars ?? {}) };
   for (const [key, value] of Object.entries(process.env)) {
     if (key.toLowerCase() === 'path') continue;
     env[key] = value;
@@ -284,9 +322,10 @@ function windowsEnv() {
 // The environment the server starts with. It is built here and carries no API key: the saved keys reach the server over its
 // channel instead. A key that is still in the environment (for example one an older version saved to the Windows user
 // environment) is left out, and the Accounts panel offers to import it.
-function serverEnv() {
+// registryVars: what registry.get() gave (bringUp waits for it before the fork); none means this process's environment alone.
+function serverEnv(registryVars) {
   // Smoke mode (a test) gives the server this process's environment as it is: the registry's PATH and variables are the real computer's.
-  const env = stripKeys(process.platform === 'win32' && !SMOKE ? windowsEnv() : { ...process.env });
+  const env = stripKeys(process.platform === 'win32' && !SMOKE ? windowsEnv(registryVars) : { ...process.env });
   // A utility process is started by Electron itself and must not be told to run as plain Node.
   for (const name of Object.keys(env)) {
     if (name.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete env[name];
@@ -297,11 +336,11 @@ function serverEnv() {
   return env;
 }
 
-function startServer() {
+function startServer(registryVars) {
   // server-entry.cjs loads server.mjs, which is an ES module.
   const child = utilityProcess.fork(path.join(__dirname, 'server-entry.cjs'), [], {
     cwd: root,
-    env: serverEnv(),
+    env: serverEnv(registryVars),
     serviceName: 'Plenum server',
     // Its output goes to the log. A utility process has no stdin; it ends with the app.
     stdio: 'pipe',
@@ -310,8 +349,12 @@ function startServer() {
   // answered: this server has answered a start check. exited: its process has ended (the start check stops waiting for it).
   child.answered = false;
   child.exited = false;
-  child.stdout.pipe(logStream, { end: false });
-  child.stderr.pipe(logStream, { end: false });
+  // What the server prints goes to the log as it comes; the end of its stderr is kept for the line that says why it ended.
+  child.stderrTail = '';
+  log.attach(child.stdout);
+  log.attach(child.stderr, text => {
+    child.stderrTail = (child.stderrTail + text).slice(-600);
+  });
   child.on('message', message => {
     if (message?.type === 'shutdown-done') {
       shutdownDone?.();
@@ -321,8 +364,14 @@ function startServer() {
   });
   child.on('exit', code => {
     child.exited = true;
+    // One line for every end of a server: what kind it was, the code, and the last thing it printed on stderr (the cause, when it has one).
+    const kind = quitting ? 'during a quit' : code === RESTART_EXIT_CODE ? 'asked for a restart' : child !== server ? 'an older server' : child.answered ? 'after it had answered' : 'before it answered';
+    const why = String(child.stderrTail ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' | ').replace(/\s+/g, ' ').slice(0, 300);
+    writeLog(`the server process ended ${kind} (exit code ${code})${why ? `; it last printed: ${why}` : ''}`);
     if (child !== server) return;
     server = null;
+    // A launcher of the hub that the server told us about (hubLaunchers) belongs to this server: it is not spared at the next stop.
+    hubLaunchers.clear();
     // The server's phones are gone with it, so the tray stops saying so.
     setPhonesConnected([]);
     callHooks('serverExited', code);
@@ -426,24 +475,9 @@ async function offerRecovery(message, detail) {
   }
 }
 
-// One message box: resolves with the index of the button chosen. A box that cannot be shown falls back to the plain error box and
-// counts as the last button, which is Quit in every box of this app.
-async function choose({ title = 'Plenum', message, detail, buttons, defaultId = 0, cancelId = buttons.length - 1, type = 'warning' }) {
-  writeLog(`dialog: ${message} [${buttons.join(' / ')}] ${String(detail ?? '').split(/\r?\n/)[0].slice(0, 300)}`.trimEnd());
-  try {
-    if (typeof dialogs.showMessageBox !== 'function') throw new Error('no message box');
-    const result = await dialogs.showMessageBox({ type, title, message, detail, buttons, defaultId, cancelId, noLink: true });
-    const n = Number(result?.response);
-    return Number.isInteger(n) && n >= 0 && n < buttons.length ? n : cancelId;
-  } catch {
-    try {
-      dialogs.showErrorBox(title, `${message}\n\n${detail ?? ''}`);
-    } catch {
-      // Nothing can be shown; the log has the message.
-    }
-    return cancelId;
-  }
-}
+// One message box: resolves with the index of the button chosen. It has a "Copy details" button before the last one (desktop/error-box.cjs).
+// A box that cannot be shown falls back to the plain error box and counts as the last button, which is Quit in every box of this app.
+const choose = createChooser({ dialogs: () => dialogs, clipboard, log: writeLog, describe: () => buildLine(), tail: () => log.tail(), redact });
 
 // Ends the app. A normal quit goes through before-quit (the server is stopped cleanly). In smoke mode the exit code says whether the run
 // worked: failed is true for every quit that follows a problem.
@@ -468,6 +502,12 @@ async function onServerMessage(child, message) {
   if (child !== server || !message || typeof message !== 'object' || typeof message.type !== 'string') return;
   // The phones connected now also show in the tray. The phones handler (desktop/handlers/phones.cjs) gets the same message for its notice.
   if (message.type === 'phones-indicator') setPhonesConnected(message.connected);
+  // The hub's launcher (lib/hub-starter.mjs, the command `up`) is running or has ended: { type: 'hub-launcher', pid, state: 'started' | 'ended' }.
+  // Only the shell's own bookkeeping, no handler is asked.
+  if (message.type === 'hub-launcher') {
+    noteHubLauncher(message);
+    return;
+  }
   await handleMessage(handlers, message, desktopShell, { post: reply => tell(child, reply), log: writeLog });
 }
 
@@ -513,6 +553,36 @@ function serverChildPids(pid) {
     .map(([childPid]) => childPid);
 }
 
+// The hub launcher's pid, as the server reports it. A pid that is not a plain process number is ignored; the list is short.
+function noteHubLauncher(message) {
+  const pid = message?.pid;
+  if (!Number.isInteger(pid) || pid < 5 || pid > 4_194_304) return;
+  if (message.state === 'started') {
+    if (hubLaunchers.size < MAX_HUB_LAUNCHERS) hubLaunchers.add(pid);
+  } else if (message.state === 'ended') hubLaunchers.delete(pid);
+}
+
+// Windows: ends the server and what it started, except a hub launcher that is still starting the hub and what that started. The table of
+// processes comes from one hidden PowerShell call (wmic is gone from Windows 11). Returns true when it did that; false when the table could
+// not be read, and the caller ends the whole tree as before (a run left behind is worse than a launcher ended).
+function endServerTreeSparing(serverPid, spared) {
+  let table = '';
+  try {
+    table = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.ParentProcessId }"], { encoding: 'utf8', windowsHide: true, timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return false;
+  }
+  const doomed = doomedWithout(parseTable(table), serverPid, spared);
+  if (!doomed || !doomed.includes(serverPid)) return false;
+  try {
+    execFileSync('taskkill', ['/f', ...doomed.flatMap(pid => ['/pid', String(pid)])], { windowsHide: true, stdio: 'ignore' });
+  } catch {
+    // Some of them had ended already; taskkill still ended the others.
+  }
+  writeLog(`a quit left the hub's launcher running (pid ${spared.join(', ')}); the server and its other processes were ended`);
+  return true;
+}
+
 function stopServer() {
   if (!server) return;
   const child = server;
@@ -531,6 +601,8 @@ function stopServer() {
       }
     }
   }
+  // A hub launcher that is still starting the hub is left running: a quit must not end what `up` is doing (DECISIONS item 118).
+  if (process.platform === 'win32' && hubLaunchers.size > 0 && endServerTreeSparing(child.pid, [...hubLaunchers])) return;
   try {
     // taskkill /t also ends anything the server started (for example a run_command process).
     execFileSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
@@ -623,8 +695,11 @@ async function bringUp({ loadPage }) {
     void startFailed({}, { code: null, message: "Another program is using Plenum's port, so the server could not be started again." });
     return;
   }
-  const child = startServer();
+  // The only thing the fork waits for: the registry's variables (read since the app started, at most 1.5 s; none in smoke mode).
+  const registryVars = process.platform === 'win32' && !SMOKE ? (await registry.get()).vars : undefined;
+  if (quitting) return;
   const began = Date.now();
+  const child = startServer(registryVars);
   try {
     await waitForServer(30_000, () => child.exited || child !== server || quitting);
   } catch (err) {
@@ -706,6 +781,8 @@ function createWindow() {
   // With "trayOnClose" on, closing the window hides it to the tray and the server keeps running.
   // A quit (the tray's Quit, or app.quit from anywhere) is never blocked.
   win.on('close', event => {
+    // The cache of the switches is looked at again for the next time (a switch changed in the last second is not in it yet).
+    noteSettingsMayHaveChanged();
     if (quitting || !trayOnClose()) return;
     if (!ensureTray()) return;
     event.preventDefault();
@@ -722,6 +799,7 @@ function createWindow() {
   // Windows is ending the session, which cannot be stopped, so the window must not hide to the tray now.
   win.on('session-end', () => {
     quitting = true;
+    sessionEnding = true;
   });
   win.on('closed', () => {
     clearTimeout(unresponsiveTimer);
@@ -860,24 +938,115 @@ function stateFile() {
   return path.join(stateDir(), 'state.json');
 }
 
-// Reads "trayOnClose" from the app state file. It is read at close time, so a change applies without restarting.
-// Missing or unreadable means off.
-function trayOnClose() {
-  try {
-    return JSON.parse(fs.readFileSync(stateFile(), 'utf8')).trayOnClose === true;
-  } catch {
-    return false;
-  }
+// The four switches ("trayOnClose", "finishedAlerts", "keepAwake", "approvalAlerts") are kept here. Before, each state event and each
+// window close parsed the whole state file (4.8 MB on the owner's PC, and it changes all through a run). Now the file is read once, lazily,
+// at the first question (so a window closed early still honours trayOnClose), and after that the server's own answer is used: GET
+// /api/desktop-settings (lib/routes/desktop-settings.mjs), asked once for a burst of state events. A switch the page changes is saved
+// by the server, which sends a state event, so the cache is up to date a moment later. Defaults: the first three on, tray off; only an
+// explicit false turns one of the three off and only an explicit true turns the tray on.
+const SETTINGS_DEFAULTS = { finishedAlerts: true, keepAwake: true, approvalAlerts: true, trayOnClose: false };
+const SETTINGS_DEBOUNCE_MS = 250;
+const SETTINGS_MIN_GAP_MS = 1_000;
+const SETTINGS_TRY_MS = 1_500;
+let settingsCache = null;
+let settingsFetchedAt = 0;
+let settingsTimer = null;
+let settingsFetching = false;
+let settingsAgain = false;
+
+function settingsFrom(st) {
+  const o = st && typeof st === 'object' ? st : {};
+  return { finishedAlerts: o.finishedAlerts !== false, keepAwake: o.keepAwake !== false, approvalAlerts: o.approvalAlerts !== false, trayOnClose: o.trayOnClose === true };
 }
 
-// "finishedAlerts", "keepAwake" and "approvalAlerts" come from the same file. All default to on, so only an explicit false turns one off.
-function alertSettings() {
-  try {
-    const st = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
-    return { finishedAlerts: st.finishedAlerts !== false, keepAwake: st.keepAwake !== false, approvalAlerts: st.approvalAlerts !== false };
-  } catch {
-    return { finishedAlerts: true, keepAwake: true, approvalAlerts: true };
+// The switches now: from the cache, read from the state file once when it is first needed. A missing or unreadable file gives the defaults.
+function settingsNow() {
+  if (!settingsCache) {
+    try {
+      settingsCache = settingsFrom(JSON.parse(fs.readFileSync(stateFile(), 'utf8')));
+    } catch {
+      settingsCache = { ...SETTINGS_DEFAULTS };
+    }
   }
+  return settingsCache;
+}
+
+function trayOnClose() {
+  return settingsNow().trayOnClose;
+}
+
+function alertSettings() {
+  const { finishedAlerts, keepAwake, approvalAlerts } = settingsNow();
+  return { finishedAlerts, keepAwake, approvalAlerts };
+}
+
+// A state event (or a window close) happened: the switches are asked of the server once, after a short wait, however many events follow,
+// and at most once a second. A request still running makes the next one wait for it. Nothing runs during a quit.
+function noteSettingsMayHaveChanged() {
+  if (quitting) return;
+  if (settingsFetching) {
+    settingsAgain = true;
+    return;
+  }
+  if (settingsTimer) return;
+  const wait = Math.max(SETTINGS_DEBOUNCE_MS, settingsFetchedAt + SETTINGS_MIN_GAP_MS - Date.now());
+  settingsTimer = setTimeout(() => {
+    settingsTimer = null;
+    void fetchSettings();
+  }, wait);
+  settingsTimer.unref?.();
+}
+
+// Asks the server for the four switches. An answer that is not four booleans, an error and a slow server change nothing.
+function fetchSettings() {
+  settingsFetching = true;
+  return new Promise(resolve => {
+    let finished = false;
+    let guard = null;
+    const finish = answer => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(guard);
+      settingsFetching = false;
+      settingsFetchedAt = Date.now();
+      if (answer && typeof answer === 'object') {
+        const next = { ...settingsNow() };
+        for (const key of Object.keys(SETTINGS_DEFAULTS)) if (typeof answer[key] === 'boolean') next[key] = answer[key];
+        settingsCache = next;
+      }
+      if (settingsAgain) {
+        settingsAgain = false;
+        noteSettingsMayHaveChanged();
+      }
+      resolve();
+    };
+    guard = setTimeout(() => finish(null), SETTINGS_TRY_MS + 500);
+    guard.unref?.();
+    try {
+      const req = http.get({ host: '127.0.0.1', port: PORT, path: '/api/desktop-settings', headers: apiHeaders() }, res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          if (body.length < 4096) body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            finish(res.statusCode === 200 ? JSON.parse(body) : null);
+          } catch {
+            finish(null);
+          }
+        });
+        res.on('error', () => finish(null));
+      });
+      req.setTimeout(SETTINGS_TRY_MS, () => {
+        req.destroy();
+        finish(null);
+      });
+      req.on('error', () => finish(null));
+    } catch {
+      finish(null);
+    }
+  });
 }
 
 // Asks the server for its state. Resolves null when it does not answer in time, so a slow server changes nothing.
@@ -908,6 +1077,7 @@ function fetchState() {
 // Takes the server's state (from an event, or from the poll below) and hands it to the state hooks (the alerts, in desktop/handlers/).
 function onState(st) {
   callHooks('state', st);
+  noteSettingsMayHaveChanged();
 }
 
 // The fallback: runs every POLL_MS, and does nothing while the events channel is up. A poll that gets no answer changes nothing.
@@ -969,10 +1139,28 @@ function eventsLost(req) {
 
 // Brings the window back from the tray, or from behind other windows.
 function showWindow() {
-  if (!win || SMOKE) return;
+  if (SMOKE) return;
+  if (!win) {
+    reopenWindow();
+    return;
+  }
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+}
+
+// There is no window (it was destroyed, or this is a second launch on a copy that lost its window): makes one and loads the page. Not
+// before main() has made the first window and not while quitting.
+function reopenWindow() {
+  if (!mainStarted || quitting) return;
+  writeLog('the window was made again');
+  createWindow();
+  // A window made on purpose is shown, also when this copy was started with Windows (--background keeps only the first one hidden).
+  const made = win;
+  made.once('ready-to-show', () => {
+    if (win === made && !SMOKE) made.show();
+  });
+  if (everAnswered && server) loadApp();
 }
 
 // The tray menu. "Show waiting approval" is enabled only while an approval card waits, and then it says how many. The items a handler
@@ -1144,13 +1332,8 @@ async function smokeExit(code, why) {
   const finish = () => app.exit(code);
   const timer = setTimeout(finish, 1000);
   timer.unref?.();
-  const last = logStream;
-  logStream = null;
-  if (last) {
-    // The server's output may still be piped into the log while it ends; a write after the end is not an error worth a crash.
-    last.on('error', () => {});
-    last.end(() => finish());
-  } else finish();
+  // The server's output may still arrive while it ends; the log ignores a write after its end.
+  log.end(() => finish());
 }
 
 async function main() {
@@ -1158,6 +1341,8 @@ async function main() {
   // With matching ids, a pinned taskbar icon and the running window are one icon, not two.
   if (process.platform === 'win32') app.setAppUserModelId('com.museconsole.desktop');
   openLog();
+  // The registry's variables are read now, while the window and the port check go on (desktop/registry-env.cjs); bringUp waits for them.
+  if (process.platform === 'win32' && !SMOKE) void registry.get();
   writeLog(`start: ${buildLine()}${SMOKE ? ' (smoke mode: nothing is shown)' : ''}`);
   if (SMOKE) {
     // A run that never ends is a failure too.
@@ -1173,6 +1358,7 @@ async function main() {
   // The handler modules are loaded before the window, so their window hook sees the window made here.
   handlerModules = [];
   handlers = loadHandlers({ dir: path.join(__dirname, 'handlers'), log: writeLog, load: loadHandlerModule });
+  mainStarted = true;
   createWindow();
   // B-111: a program that already listens on the port would answer the status check as if it were this app's server, and the
   // app would load it. So the port is checked first, and a busy one stops the start with a plain message.
@@ -1203,6 +1389,8 @@ app.on('before-quit', event => {
   clearTimeout(restartTimer);
   clearTimeout(unresponsiveTimer);
   clearTimeout(eventsTimer);
+  clearTimeout(settingsTimer);
+  settingsTimer = null;
   eventsReq?.destroy();
   eventsReq = null;
   callHooks('beforeQuit');

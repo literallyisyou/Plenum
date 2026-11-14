@@ -590,8 +590,16 @@ function createBrowser(options = {}) {
       const href = typeof url === 'string' && url.length <= MAX_URL && isHttp(url) ? url : null;
       if (href && tabs.size < MAX_TABS) {
         // A pop-up becomes a tab. A person who clicked gets the tab in front; while the model drives it stays behind.
-        openTab(href, { select: !agentDriving && disposition !== 'background-tab' });
+        const made = openTab(href, { select: !agentDriving && disposition !== 'background-tab' });
+        // The page that opened it remembers, so the reply to the click that did it can say so (see where()).
+        if (made.ok) {
+          if (!Array.isArray(tab.opened)) tab.opened = [];
+          if (tab.opened.length < 5) tab.opened.push({ tab: made.tab, url: cut(href, 300) });
+        } else {
+          tab.blocked = (tab.blocked | 0) + 1;
+        }
       } else {
+        tab.blocked = (tab.blocked | 0) + 1;
         send({ kind: 'popup-blocked', url: cut(url, 300), reason: href ? 'tab-limit' : 'not-http' });
       }
       return { action: 'deny' };
@@ -1257,7 +1265,12 @@ function createBrowser(options = {}) {
     } catch {
       // Gone.
     }
-    return { ok: true, tab: tab.id, url, title, ...(tab.error ? { error: tab.error } : {}), ...extra };
+    // Tabs the page opened and pop-ups that were refused since the action began (the reply is read once, so it starts again empty).
+    const opened = Array.isArray(tab.opened) ? tab.opened.slice(0, 5) : [];
+    const blocked = tab.blocked | 0;
+    tab.opened = [];
+    tab.blocked = 0;
+    return { ok: true, tab: tab.id, url, title, ...(tab.error ? { error: tab.error } : {}), ...(opened.length ? { opened } : {}), ...(blocked > 0 ? { blocked } : {}), ...extra };
   }
 
   const scriptFail = (reply, fallback) => fail(line(reply && reply.message, 240) || fallback);
@@ -1295,6 +1308,12 @@ function createBrowser(options = {}) {
     const expect = cleanExpect(message.expect);
     return serial(async () => {
       try {
+        // A click, a typed Enter or a key may open a tab or a pop-up that is blocked. What the page did before this action is not this
+        // action's doing, so the record starts empty, and where() hands what arrived during it to the reply.
+        if (action === 'click' || action === 'type' || action === 'type-secret' || action === 'press') {
+          tab.opened = [];
+          tab.blocked = 0;
+        }
         switch (action) {
           case 'click': {
             let prep = null;

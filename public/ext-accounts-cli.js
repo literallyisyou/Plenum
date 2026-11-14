@@ -6,6 +6,8 @@
 // Two helpers for the setup guide (ext-setup.js) are kept here as well, beside the commands and the cards they share:
 // MuseUI.cliInstallBlock(id, info), the install steps for a CLI that is missing, and MuseUI.watchSignIn(opts), which reads the
 // sign-in status until a sign-in that was started shows. Both only read and draw; neither starts a sign-in.
+// Accounts paints as each request returns: a card built with ctx.cliPending says it is checking, and MuseUI.redrawAgentCards(cli) puts the
+// real cards in place when GET /api/accounts/cli answers.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI, and its codingAgents group, before the extra panels load. Without them there is nothing to attach to.
@@ -39,6 +41,14 @@
     if (c.signedIn === true) return { text: 'Signed in', ok: true };
     if (c.signedIn === false) return { text: 'Not signed in', ok: false };
     return { text: 'Sign-in unknown', ok: false };
+  }
+
+  // The card while GET /api/accounts/cli has not answered yet (ctx.cliPending: app.js paints Accounts as each request returns). It says so and
+  // offers nothing; MuseUI.redrawAgentCards puts the real card in its place when the answer comes.
+  function pendingCard(mark, id, name, account) {
+    const card = MuseUI.cardShell(mark, id, name, account, 'Checking…', false);
+    card.append(MuseUI.para('Checking this sign-in…'));
+    return card;
   }
 
   // The two install commands, one for each system, each set as code so it can be copied.
@@ -307,6 +317,7 @@
 
   // The Cursor card. ctx is { accounts, cli } from app.js renderAccounts; only cli is used here.
   function cursorCard(ctx) {
+    if (ctx?.cliPending === true) return pendingCard('U', 'cursor', 'Cursor', 'Cursor account');
     const c = ctx?.cli?.cursor ?? null;
     const state = pillOf(c);
     const card = MuseUI.cardShell('U', 'cursor', 'Cursor', 'Cursor account', state.text, state.ok);
@@ -363,6 +374,7 @@
 
   // The Grok Build card. The same ctx as Cursor's. Its sign-in is the CLI's own `grok login`, and the API key for Grok stays on the xAI card.
   function grokCard(ctx) {
+    if (ctx?.cliPending === true) return pendingCard('K', 'grok', 'Grok Build', 'SuperGrok or X Premium Plus');
     const g = ctx?.cli?.grok ?? null;
     const state = pillOf(g);
     const card = MuseUI.cardShell('K', 'grok', 'Grok Build', 'SuperGrok or X Premium Plus', state.text, state.ok);
@@ -400,6 +412,7 @@
   // The Antigravity card. Its state comes from the last read of the account's models (lib/antigravity.mjs): signed in when the read
   // worked, not signed in when Antigravity said authentication is required. tier is the plan Antigravity named, such as Google AI Pro.
   function antigravityCard(ctx) {
+    if (ctx?.cliPending === true) return pendingCard('A', 'antigravity', 'Antigravity', 'Google AI Pro, Ultra or Plus');
     const a = ctx?.cli?.antigravity ?? null;
     const state = pillOf(a);
     const card = MuseUI.cardShell('A', 'antigravity', 'Antigravity', 'Google AI Pro, Ultra or Plus', state.text, state.ok);
@@ -440,5 +453,13 @@
   }
   // The card builders by id, for redrawCard.
   const CARDS = { cursor: cursorCard, grok: grokCard, antigravity: antigravityCard };
+  // Puts the real card in place of each pending one when GET /api/accounts/cli answers (cli is null when that read failed, and the cards say
+  // so). A card that is no longer on the page is skipped. Called by app.js renderAccounts.
+  MuseUI.redrawAgentCards = cli => {
+    for (const id of Object.keys(CARDS)) {
+      const card = document.querySelector(`[data-card="${id}"]`);
+      if (card) redrawCard(id, card, cli ?? null);
+    }
+  };
   MuseUI.codingAgents.add({ id: 'antigravity', order: AGY_ORDER, card: antigravityCard });
 })();

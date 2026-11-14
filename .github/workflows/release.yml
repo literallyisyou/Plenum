@@ -44,9 +44,15 @@ jobs:
     name: Phone tests
     uses: ./.github/workflows/phone-tests.yml
 
+  # The core check (core.yml: npm ci and npm run check on Windows): every source file of the app parses and every import resolves.
+  # prepare waits for it as well, so a tag whose server or shell does not even load gets no draft and no build.
+  core:
+    name: Core check
+    uses: ./.github/workflows/core.yml
+
   prepare:
     name: Create the draft release
-    needs: suites
+    needs: [suites, core]
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.check.outputs.tag }}
@@ -103,6 +109,62 @@ jobs:
             echo "repo=$owner/$repo"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
+
+      # electron-updater offers an update only when its version is HIGHER than the installed one, so a rebuild published under the
+      # same version (or a lower one) is never offered to anybody. A tag must therefore be strictly greater than every published
+      # release (semantic versions, a pre-release such as -beta.1 sorting below its release), and its tag must not be published yet.
+      # A draft for the same tag is fine: that is a re-run, and the builds attach to it. A failed list stops the release, never lets it by.
+      - name: Check the tag is newer than every published release
+        shell: bash
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+          REPO: ${{ steps.check.outputs.repo }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! list=$(gh release list --repo "$REPO" --limit 1000 --json tagName,isDraft); then
+            echo "::error::The list of releases on $REPO could not be read, so the tag could not be compared with them. Run the workflow again."
+            exit 1
+          fi
+          LIST="$list" node - <<'JS'
+          const tag = process.env.TAG;
+          const parse = (text) => {
+            const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(text));
+            return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.') : [] } : null;
+          };
+          const compare = (a, b) => {
+            for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+            if (!a.pre.length || !b.pre.length) return a.pre.length === b.pre.length ? 0 : a.pre.length ? -1 : 1;
+            for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+              const x = a.pre[i], y = b.pre[i];
+              if (x === undefined) return -1;
+              if (y === undefined) return 1;
+              if (x === y) continue;
+              const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+              if (xn && yn) return Number(x) < Number(y) ? -1 : 1;
+              if (xn !== yn) return xn ? -1 : 1;
+              return x < y ? -1 : 1;
+            }
+            return 0;
+          };
+          const fail = (text) => { console.log(`::error::${text}`); process.exit(1); };
+          const mine = parse(tag);
+          if (!mine) fail(`Tag ${tag} is not a version number such as v0.6.1 or v0.6.1-beta.1. Delete the tag and tag again.`);
+          let releases;
+          try { releases = JSON.parse(process.env.LIST?.trim() || '[]'); } catch { fail('The list of releases could not be read. Run the workflow again.'); }
+          const published = releases.filter((r) => !r.isDraft);
+          if (published.some((r) => r.tagName === tag)) {
+            fail(`${tag} is already published. A published tag is never built again: raise the version in package.json, commit, and tag the new version.`);
+          }
+          let newest = null;
+          for (const r of published) {
+            const v = parse(r.tagName);
+            if (v && (!newest || compare(v, newest.v) > 0)) newest = { name: r.tagName, v };
+          }
+          if (newest && compare(mine, newest.v) <= 0) {
+            fail(`Tag ${tag} is not newer than the newest published release, ${newest.name}. Installed apps are offered an update only when its version is higher than theirs, so a rebuild under this version would reach nobody. Raise the version in package.json, commit, and tag the new version.`);
+          }
+          console.log(newest ? `Tag ${tag} is newer than the newest published release, ${newest.name}.` : `No release is published yet, so ${tag} is the first.`);
+          JS
 
       # The app shows these notes as plain text under "What changed in <version>" (see the header): edit them in the draft.
       - name: Create the draft release
@@ -222,6 +284,20 @@ jobs:
       - name: Build the phone shell
         shell: bash
         run: npm run mobile:build
+
+      # Windows only: the unpacked app is built first and started once in its hidden smoke mode (scripts/smoke-packaged.mjs: an
+      # allow-list environment, a free port, sealed folders, nothing shown). The Build step below attaches the installers to the draft,
+      # so a build that does not even start stops here, before anything is attached. This unpacked copy is built without the signing
+      # certificate; it is the same files as the installer's, and the Build step makes the signed one.
+      - name: Build the unpacked Windows app
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: npx electron-builder --win --x64 --dir --publish never
+
+      - name: Start the packaged Windows app once (hidden smoke start)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: node scripts/smoke-packaged.mjs --exe release/win-unpacked/Plenum.exe
 
       # Each platform sees only its own certificate secrets. WIN_CSC_LINK would otherwise fall back to CSC_LINK.
       # forceCodeSigning is added only when that platform's certificate secret is set, so a broken certificate

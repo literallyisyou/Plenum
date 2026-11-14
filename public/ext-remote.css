@@ -76,3 +76,13 @@
   .remote-device-actions > .ghost { flex: 0 0 auto; }
   .remote-line > .primary, .remote-line > .ghost { max-width: 100%; }
 }
+
+/* The relay address box has the height of the other boxes of a settings page (it was the browser's 24 px). */
+.remote-root .field input[type="url"] {
+  width: 100%; min-width: 0; height: 34px; padding: 0 9px; border-radius: var(--r-md); border: 1px solid var(--line-2); background-color: var(--bg); outline: none;
+  font-size: 13px; color: var(--text);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.remote-root .field input[type="url"]:hover { border-color: var(--line-3); }
+.remote-root .field input[type="url"]:focus { border-color: var(--accent); box-shadow: var(--ring); }
+.remote-root .field input[type="url"]:disabled { opacity: 0.5; }

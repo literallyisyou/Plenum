@@ -224,11 +224,13 @@
       text = run.error;
       bad = true;
     } else if (run && run.seats.some(s => s.status === 'done')) {
-      text = 'Keep the reply you want to continue from. The chat gets your prompt and that reply.';
+      text = run.seats.some(s => s.status === 'failed')
+        ? 'Keep the reply you want to continue from, or retry a failed column (it is billed again). The chat gets your prompt and that reply.'
+        : 'Keep the reply you want to continue from. The chat gets your prompt and that reply.';
     } else if (run && run.seats.every(s => s.status === 'stopped')) {
       text = 'Stopped before any reply finished.';
     } else if (run) {
-      text = 'No model returned a reply. Each column says why.';
+      text = 'No model returned a reply. Each column says why. A failed column can be retried; that is billed again.';
     }
     view.status.textContent = text;
     view.status.className = bad ? 'cmp-status bad' : 'cmp-status';
@@ -277,10 +279,14 @@
     error.hidden = true;
     const keep = MuseUI.button('primary small', 'Keep this reply');
     keep.addEventListener('click', () => keepReply(seat));
+    // A failed column can be asked again on its own: the same message, effort and pictures, the same chat. The other columns stay as they are.
+    const retry = MuseUI.button('ghost small', 'Retry this column');
+    retry.title = 'Asks this model again with the same message. It is billed again; the other columns are not asked.';
+    retry.addEventListener('click', () => retryColumn(seat));
     const foot = make('div', 'cmp-col-foot');
-    foot.append(keep);
+    foot.append(keep, retry);
     root.append(head, text, error, foot);
-    return { seat, root, pill, text, error, keep };
+    return { seat, root, pill, text, error, keep, retry };
   }
 
   function updateColumn(col, current) {
@@ -295,6 +301,9 @@
     col.error.hidden = !seat.error;
     col.error.textContent = seat.error;
     col.keep.disabled = seat.status !== 'done' || current.active || current.kept;
+    // A failed column has nothing to keep: it offers Retry instead.
+    col.keep.hidden = seat.status === 'failed' && !current.active;
+    col.retry.hidden = seat.status !== 'failed' || current.active || current.kept;
   }
 
   // ---------- running a compare ----------
@@ -321,11 +330,19 @@
       prompt,
       seats: chosen.map((ref, i) => ({ id: SEAT_IDS[i], ref, label: labelFor(ref), status: 'waiting', text: '', error: '' })),
       images: pictures.map(({ name, size }) => ({ name, size })),
+      // What was sent, kept so one failed column can be asked again with exactly the same request.
+      sent: { seats: [...chosen], effort, pictures: pictures.map(({ name, mime, data }) => ({ name, mime, data })) },
       active: true,
       kept: false,
       error: '',
     };
     run = current;
+    return execute(current, null);
+  }
+
+  // Sends the request of `current` and folds the stream into its columns. With `only` (a column's letter) just that column is asked again.
+  async function execute(current, only) {
+    const { project, prompt, sent } = current;
     userStopped = false;
     controller = new AbortController();
     paint();
@@ -336,9 +353,10 @@
           project,
           ...threadPart(current),
           prompt,
-          seats: chosen,
-          effort,
-          ...(pictures.length ? { images: pictures.map(({ name, mime, data }) => ({ name, mime, data })) } : {}),
+          seats: sent.seats,
+          effort: sent.effort,
+          ...(sent.pictures.length ? { images: sent.pictures } : {}),
+          ...(only ? { only } : {}),
         },
         signal: controller.signal,
       });
@@ -359,12 +377,26 @@
       current.active = false;
       // A seat that never finished is stopped when the user stopped the run, and failed otherwise.
       for (const s of current.seats) {
+        if (only && s.id !== only) continue;
         if (s.status === 'done' || s.status === 'failed' || s.status === 'stopped') continue;
         s.status = userStopped ? 'stopped' : 'failed';
         s.error = userStopped ? '' : (current.error || 'The connection ended before this reply finished.');
       }
       paint();
     }
+  }
+
+  // Asks one failed column again. The column starts empty and the others keep their replies; the run counts as running until it ends.
+  function retryColumn(seat) {
+    const current = run;
+    if (!current || current.active || current.kept || seat.status !== 'failed' || !current.seats.includes(seat)) return;
+    flash = null;
+    current.error = '';
+    seat.status = 'waiting';
+    seat.text = '';
+    seat.error = '';
+    current.active = true;
+    return execute(current, seat.id);
   }
 
   function stopRun() {

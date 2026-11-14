@@ -1,0 +1,42 @@
+# The core check, as a reusable workflow: every source file of the app is parsed and every relative import is checked (npm run check,
+# scripts/check.mjs). It runs on Windows because that is where the installed app runs. It runs on every push to main and every pull
+# request, and release.yml calls it before it creates a draft release, so no tag is drafted or built while the app's own files do not
+# load. No secrets, no write access, no network beyond npm ci.
+name: Core check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Syntax and imports (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install the root packages
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Check every source file and every import
+        run: npm run check

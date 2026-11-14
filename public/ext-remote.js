@@ -41,6 +41,7 @@
     refused: 'Your relay turned this computer away. Someone else may have claimed this room. Start a new room to use the relay again.',
     unreachable: 'Cannot reach your relay. Check the address and your connection.',
     offline: 'The relay connection dropped. Plenum keeps trying.',
+    silent: 'Your relay stopped answering, so Plenum is connecting again.',
     dropped: 'The relay connection dropped. Plenum keeps trying.',
     replaced: 'Another copy of Plenum connected to this room in its place.',
     'bad-address': 'The relay address is not valid. Save an https address.',
@@ -297,6 +298,8 @@
         break;
       case 'revoked':
       case 'tier':
+      case 'link':
+        // A way in came up or went (the relay link, Tailscale's serve): the words in this section are read again.
         refreshState();
         break;
       default:
@@ -446,6 +449,26 @@
       showStatus(row.status, textOf(err?.message, 'That phone was not removed.'), true);
       row.remove.disabled = false;
     }
+  }
+
+  // The phones file could not be read and Plenum has changed nothing. The person says whether to set it aside and begin again.
+  async function startFresh() {
+    const p = page;
+    const ok = await MuseUI.confirm({
+      title: 'Start fresh?',
+      body: 'Plenum cannot read the saved phones. The old file is kept under another name next to it, and a new one is started. Your phones must pair again.',
+      action: 'Start fresh',
+      tone: 'danger',
+      focusCancel: true,
+    });
+    if (!ok) return;
+    try {
+      await MuseUI.api('/api/phones/remove-all', {});
+      showStatus(p?.freshStatus, 'Started fresh. Turn on Let phones connect and pair each phone again.', false);
+    } catch (err) {
+      showStatus(p?.freshStatus, textOf(err?.message, 'Plenum could not start fresh. Try again.'), true);
+    }
+    await refreshState();
   }
 
   async function removeAll() {
@@ -768,6 +791,7 @@
     p.portHelp.hidden = v.enabled !== true;
     p.storageNote.textContent = textOf(v.storageNote);
     p.storageNote.hidden = !p.storageNote.textContent;
+    p.freshLine.hidden = v.askFirst !== true || phone;
     // The last save of the phones file failed: what happened and what to do. Stop from a phone does not depend on it.
     const saveProblem = textOf(v.saveProblem);
     p.saveNote.textContent = saveProblem ? `${saveProblem} Paired phones keep working and Stop from a phone still works. Plenum tries again by itself. If this stays, close any program that may be holding the phones file and free some disk space.` : '';
@@ -784,6 +808,9 @@
     p.lan.disabled = phone;
     p.lanAny.checked = lan.anyAddress === true;
     p.lanAny.disabled = phone || lan.on !== true;
+    // Why the switch is grey, in words: it only means something while Same network is on, and only the computer sets it.
+    p.lanAnyText.textContent = phone ? 'Only the computer can change this.' : lan.on !== true ? 'Turn on Same network first. Any address is a setting of that way in.' : '';
+    p.lanAnyText.hidden = !p.lanAnyText.textContent;
     const addresses = Array.isArray(lan.addresses) ? lan.addresses.map(a => textOf(a)).filter(Boolean) : [];
     p.lanText.textContent = lan.on === true ? (addresses.length ? `Phones can reach this computer at ${addresses.join(', ')}.` : 'No network address for this computer yet.') : '';
     p.lanError.textContent = textOf(lan.error);
@@ -871,6 +898,10 @@
     p.storageNote = make('p', 'remote-quiet');
     p.saveNote = make('p', ERROR_ROW);
     p.saveNote.hidden = true;
+    p.freshBtn = button('ghost small', 'Start fresh', startFresh);
+    p.freshStatus = statusEl();
+    p.freshLine = line(p.freshBtn, p.freshStatus);
+    p.freshLine.hidden = true;
     p.intro = make('p', 'remote-intro', 'Phones reach this computer through the ways below. A paired phone can do everything this window can, so pair only phones you hold, and remove a lost one here at once. Pairing starts here and is finished in the window on this computer.');
 
     // Turn phones on.
@@ -881,7 +912,7 @@
     p.portText = make('span', 'remote-port');
     p.portBtn = button('ghost small', 'Change port', () => changePort(p.portBtn, p.powerStatus));
     p.portHelp = make('p', 'remote-help', 'Changing the port closes the phones connected now.');
-    powerBlock.append(p.intro, p.storageNote, p.saveNote, p.plainNotes, enabled.label, p.powerStatus, line(p.portText, p.portBtn), p.portHelp);
+    powerBlock.append(p.intro, p.storageNote, p.freshLine, p.saveNote, p.plainNotes, enabled.label, p.powerStatus, line(p.portText, p.portBtn), p.portHelp);
     enabled.input.addEventListener('change', () => togglePhones(enabled.input, p.powerStatus));
 
     // Ways to reach this computer.
@@ -897,7 +928,8 @@
     p.lanError = make('p', ERROR_ROW);
     p.lanFirewall = make('p', 'remote-help');
     p.lanStatus = statusEl();
-    lanBlock.append(lan.label, p.lanNotes, p.lanText, p.lanError, p.lanFirewall, any.label, p.lanStatus);
+    p.lanAnyText = make('p', 'remote-help');
+    lanBlock.append(lan.label, p.lanNotes, p.lanText, p.lanError, p.lanFirewall, any.label, p.lanAnyText, p.lanStatus);
     lan.input.addEventListener('change', async () => {
       const want = lan.input.checked;
       const data = await save({ controls: [lan.input], status: p.lanStatus, path: '/api/phones/lan', body: { enabled: want }, revert: () => { lan.input.checked = !want; } });

@@ -1,0 +1,87 @@
+{
+  "v": 1,
+  "id": "service",
+  "label": "Fixed-scope service",
+  "about": "One agreed input, one agreed output, for repeat buyers.",
+  "business": {
+    "runsPerDay": 12,
+    "minutesPerDay": 180,
+    "goals": [
+      {
+        "text": "Paying customers",
+        "unit": "customers",
+        "target": 3
+      }
+    ]
+  },
+  "files": {
+    "BUSINESS.md": "# {{name}}\n\n{{purpose}}\n\nOnly the owner edits this file. The latest dated correction wins.\n\n## The offer\n\n- Input: (the one agreed file format a customer sends).\n- Output: (the one agreed result: for example the transformed file, an exception report and a change report).\n- Price and terms: (per file, or a monthly retainer).\n\n## Rules\n\n- A file that is not in the agreed format is rejected with a short reason. It is not repaired.\n- Routine rows are handled by tested code in this folder, not by asking a model row by row.\n- Ask for every delivery to be checked by a second model on another subscription before it goes to the owner.\n- New files arrive in inbox/. Work in progress is in work/. Checked results wait in ready/. Rejected files and open questions go to exceptions/. Drafts of anything that leaves this PC go to outbox/.\n\n## Never\n\n- Never send, publish, buy, sign up or delete anything without the owner. Prepare the step, save the draft under outbox/ and ask with an OWNER: line.\n- Never type a password or a code, and never pay.\n- Never use a model billed per token to get round a plan limit.\n\n## Corrections\n\n(Newest first, each with its date.)\n",
+    "STATE.md": "# State of {{name}}\n\nKept by the lead. What is in progress and what is next. Under 3,000 bytes. No rules and no history.\n\n## In progress\n\n(nothing yet)\n\n## Next\n\n(nothing yet)\n",
+    "PLAN.md": "# Plan of {{name}}\n\n[ ] planned, [~] being done, [x] done, [?] waits for the owner.\n\n- [ ] The owner writes the offer and the rules in BUSINESS.md.\n- [ ] Write and test the code for the agreed input and output, with fixtures.\n- [ ] Run one file from end to end with made-up data and show the owner the result.\n",
+    "playbooks/intake.md": "# Intake\n\nRuns when inbox/ holds at least one file.\n\n1. Read BUSINESS.md and STATE.md.\n2. For each file in inbox/: check it against the agreed input format. Use the tested code in this folder where there is some.\n3. A file that fits moves to work/ and gets a line in PLAN.md. A file that does not fit moves to exceptions/ with a short note that says why. Do not repair it.\n4. Hand the routine rows to cheaper models with delegate (kind of work: data; give the job a name), in batches, not one row at a time.\n5. Update STATE.md.\n\nDone means: inbox/ is empty, and every file is in work/ or in exceptions/ with its reason.\n",
+    "playbooks/delivery.md": "# Delivery\n\nRuns when ready/ holds at least one result.\n\n1. Read BUSINESS.md and STATE.md.\n2. For each result in ready/: have it checked with delegate (kind of work: review) by a model on another subscription than the one that made it. The check compares the result with the input and the rules, and counts the rows.\n3. A result that fails the check goes back to work/ with the finding. Do not deliver it.\n4. For a result that passes, write the delivery note as a draft under outbox/, named by date, and end your reply with an OWNER: send line for it. Do not send it yourself.\n5. Update PLAN.md and STATE.md.\n\nDone means: every result in ready/ either failed its check and went back, or has a draft in outbox/ and an OWNER: line.\n",
+    "playbooks/exceptions.md": "# Exception digest\n\nRuns when exceptions/ holds at least one file.\n\n1. Read BUSINESS.md and STATE.md.\n2. Write one short digest under outbox/, named by date: each rejected file or open question in one line, with its reason and what you recommend.\n3. End your reply with one OWNER: question line that names the digest as its draft.\n4. Leave the files in exceptions/ where they are until the owner has answered.\n\nDone means: one digest for today exists, and the owner has one line to answer.\n"
+  },
+  "routines": [
+    {
+      "name": "Morning intake",
+      "when": {
+        "type": "daily",
+        "at": "06:30",
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "prompt": {
+        "file": "playbooks/intake.md"
+      },
+      "onlyIf": {
+        "folder": "inbox"
+      }
+    },
+    {
+      "name": "Delivery",
+      "when": {
+        "type": "daily",
+        "at": "12:30",
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "prompt": {
+        "file": "playbooks/delivery.md"
+      },
+      "onlyIf": {
+        "folder": "ready"
+      }
+    },
+    {
+      "name": "Exception digest",
+      "when": {
+        "type": "daily",
+        "at": "17:30",
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "prompt": {
+        "file": "playbooks/exceptions.md"
+      },
+      "onlyIf": {
+        "folder": "exceptions"
+      }
+    }
+  ]
+}

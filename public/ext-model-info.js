@@ -1,10 +1,11 @@
 // ext-model-info. Loaded by ext.js and adds itself through window.MuseUI. Each model in the model menu and the Advisor menu
 // gets a second line: what it costs, how much context it takes and whether it can use the project tools. A model whose provider
 // cannot answer yet says why first. A banner above the composer names the chosen model when its provider is not ready, with an
-// Open Accounts button. A model the CLI's own list no longer has (offered: false in the catalog, DECISIONS item 91) says so at the end
+// Open Accounts button, and a Use <name> button beside it when another provider can answer (the first-run case: only a Gemini CLI is signed
+// in and the stored model is Muse Spark). Use is a press: nothing here ever switches a person's model by itself. A model the CLI's own list no longer has (offered: false in the catalog, DECISIONS item 91) says so at the end
 // of its menu line, and the same banner says it while that model is chosen. The data comes from GET /api/models/info. This file never
 // changes an option's value, never removes an option and never disables Send: a model that is not ready or not offered can still be
-// chosen and sent.
+// chosen and sent. MuseUI.readyModel, useReadyModel, answering and refreshModelInfo let the setup guide say and offer the same thing.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -45,6 +46,9 @@
     mistral: 'MISTRAL_API_KEY', googleai: 'GOOGLE_AI_API_KEY', openrouter: 'OPENROUTER_API_KEY',
   };
   const NEEDS_KEY = 'Needs an API key';
+
+  // Which provider Use offers first: Claude, Codex, Gemini, Muse Code, Cursor, Grok Build, Antigravity, then any API provider that is ready.
+  const PICK_ORDER = ['anthropic', 'codex', 'gemini', 'muse', 'cursor', 'grok', 'antigravity'];
 
   // One model's facts as a line: "$2/$10 per M · 1M context · tools".
   function lineFor(info) {
@@ -134,16 +138,79 @@
   const bannerText = MuseUI.span('emb-text', '');
   const openBtn = MuseUI.button('ghost small emb-open', 'Open Accounts');
   openBtn.addEventListener('click', () => MuseUI.el.accountsBtn.click());
-  banner.append(bannerText, openBtn);
+  const useBtn = MuseUI.button('primary small emb-use', 'Use');
+  useBtn.hidden = true;
+  useBtn.addEventListener('click', () => useReadyModel());
+  banner.append(bannerText, useBtn, openBtn);
   MuseUI.el.form.before(banner);
+
+  // The model that answers when the chosen one cannot: the first ready provider in PICK_ORDER (then the other ready ones) that has an
+  // offered model in the catalog. null while the readiness is not read yet, or when nothing is ready.
+  function readyChoice() {
+    const ids = [...PICK_ORDER, ...Object.keys(readiness).filter(id => !PICK_ORDER.includes(id) && id !== 'echo')];
+    for (const id of ids) {
+      if (!readiness[id]?.ready) continue;
+      const entry = (MuseUI.catalog ?? []).find(c => c.provider === id && c.offered !== false);
+      if (entry) return { ref: `${id}:${entry.id}`, name: MuseUI.modelName(`${id}:${entry.id}`) };
+    }
+    return null;
+  }
+
+  // The chosen model and whether it can answer: { ref, name, ready, reason }, or null before the readiness is read. reason is
+  // "Muse Code not installed" or "Claude needs an API key" when it cannot answer.
+  function answering() {
+    const ref = MuseUI.el.model.value;
+    const state = stateOf(ref);
+    if (!ref || !state) return null;
+    const reason = state.ready ? '' : `${state.label} ${state.why.charAt(0).toLowerCase()}${state.why.slice(1)}`;
+    return { ref, name: MuseUI.modelName(ref), ready: state.ready, reason };
+  }
+
+  // The model Use set, kept while it is the chosen one so the banner can say it answers. A change to another model clears it.
+  let usedRef = '';
+
+  // One press: sets the chosen model through the page's own path (a thread's, the project's or the app's) and says so. It never runs
+  // unasked, and it leaves a run in progress alone. Returns the ref it set, or null.
+  async function useReadyModel() {
+    const pick = readyChoice();
+    if (!pick) return null;
+    const threads = MuseUI.threads;
+    const scope = typeof threads?.scope === 'function' ? threads.scope() : threads?.scope;
+    if (threads?.isRunning?.(scope)) {
+      MuseUI.toast('A reply is still running. Use this model when it ends.', 'bad');
+      return null;
+    }
+    try {
+      await MuseUI.setThreadModel(pick.ref);
+    } catch (err) {
+      MuseUI.toast(err.message, 'bad');
+      return null;
+    }
+    usedRef = pick.ref;
+    MuseUI.toast(`Now using ${pick.name}. Change it any time from the model menu.`);
+    paint();
+    return pick.ref;
+  }
 
   function paint() {
     const ref = MuseUI.el.model.value;
     const state = stateOf(ref);
     const blocked = Boolean(state) && !state.ready;
     const gone = blocked ? '' : (MuseUI.notOfferedWords?.(ref) ?? '');
-    banner.hidden = !blocked && !gone;
+    if (usedRef && ref !== usedRef) usedRef = '';
+    const pick = blocked ? readyChoice() : null;
+    useBtn.hidden = !pick;
+    if (pick) useBtn.textContent = `Use ${pick.name}`;
+    // After a press the banner says which model answers, until the model is changed.
+    const using = !blocked && !gone && Boolean(usedRef);
+    banner.hidden = !blocked && !gone && !using;
+    // Said in the calm style: this is not a warning.
+    banner.classList.toggle('emb-ok', using);
     openBtn.hidden = !blocked;
+    if (using) {
+      bannerText.textContent = `${MuseUI.modelName(ref)} answers your next message. Change it any time from the model menu.`;
+      return;
+    }
     if (gone) {
       bannerText.textContent = gone;
       return;
@@ -213,6 +280,11 @@
   new MutationObserver(() => {
     if (MuseUI.el.drawer.hidden) load();
   }).observe(MuseUI.el.drawer, { attributes: true, attributeFilter: ['hidden'] });
+
+  MuseUI.readyModel = readyChoice;
+  MuseUI.useReadyModel = useReadyModel;
+  MuseUI.answering = answering;
+  MuseUI.refreshModelInfo = load;
 
   decorateAll();
   paint();

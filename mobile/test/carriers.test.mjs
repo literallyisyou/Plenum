@@ -221,6 +221,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     else delete process.env.TS_FAKE_FAIL;
   };
   const calls = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line).argv) : []);
+  const changes = () => calls().filter(a => a[0] === 'serve' && a[1] !== 'status');
   const locateFake = () => ({ env: { PATH: FAKE_DIR }, names: [SHIM], fixedPaths: [] });
   const fakeCtx = ({ enabled, port = 4321, name = '' }) => {
     const state = { enabled, port, name };
@@ -247,19 +248,19 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
       bridge.phones.tailscale.enabled = true;
       await bridge.remote.applyCarriers();
       const port = bridge.remote.listener.port();
-      assert.deepEqual(calls().filter(a => a[0] === 'serve'), [['serve', '--bg', '--https=443', `http://127.0.0.1:${port}`]]);
+      assert.deepEqual(changes(), [['serve', '--bg', '--https=443', `http://127.0.0.1:${port}`]]);
       const view = (await bridge.remote.state()).carriers.tailscale;
       assert.equal(view.on, true);
       assert.equal(view.installed, true);
       assert.equal(view.name, 'will-pc.tail1234.ts.net');
       await bridge.remote.applyCarriers();
-      assert.equal(calls().filter(a => a[0] === 'serve').length, 1, 'serve runs once');
+      assert.equal(changes().length, 1, 'serve runs once');
       const started = await bridge.remote.pairStart();
       const hint = decodeLink(started.link).carriers.find(c => c.kind === 'tailscale');
       assert.deepEqual(hint, { kind: 'tailscale', url: `wss://will-pc.tail1234.ts.net/b/${bridge.pathKey}` });
       bridge.phones.tailscale.enabled = false;
       await bridge.remote.applyCarriers();
-      assert.deepEqual(calls().filter(a => a[0] === 'serve').slice(1), [['serve', '--https=443', 'off']], 'the switch off takes down Plenum\'s own handler once, and never runs serve reset');
+      assert.deepEqual(changes().slice(1), [['serve', '--https=443', 'off']], 'the switch off takes down Plenum\'s own handler once, and never runs serve reset');
       assert.equal(bridge.phones.tailscale.name, '', 'the remembered name is cleared');
       assert.equal((await bridge.remote.state()).carriers.tailscale.on, false);
     } finally {
@@ -292,7 +293,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     const view = await ts.start(ctx);
     assert.equal(view.ready, false);
     assert.match(view.message, /Sign in/);
-    assert.deepEqual(calls().filter(a => a[0] === 'serve'), [], 'nothing is served while signed out');
+    assert.deepEqual(changes(), [], 'nothing is served while signed out');
     assert.deepEqual(await ts.hints(), [{ kind: 'tailscale', on: false, label: 'Tailscale' }]);
 
     fresh(undefined, 'serve');
@@ -300,7 +301,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     const failed = await failing.start(fakeCtx({ enabled: true, port: 4321 }));
     assert.equal(failed.error, 'serve');
     assert.equal(failed.ready, false);
-    assert.equal(calls().filter(a => a[0] === 'serve').length, 1, 'the serve was attempted once');
+    assert.equal(changes().length, 1, 'the serve was attempted once');
     assert.doesNotMatch(JSON.stringify(failed), /tail1234/, 'no name is reported when the serve failed');
   });
 
@@ -311,7 +312,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     await ts.start(ctx);
     assert.equal(ctx.state.name, 'will-pc.tail1234.ts.net', 'the name is remembered for a later launch');
     await ts.stop();
-    assert.deepEqual(calls().filter(a => a[0] === 'serve').map(a => a[1]), ['--bg'], 'one serve and no reset from the Bridge closing');
+    assert.deepEqual(changes().map(a => a[1]), ['--bg'], 'one serve and no reset from the Bridge closing');
 
     const later = fakeCtx({ enabled: false, port: 4321, name: 'will-pc.tail1234.ts.net' });
     await ts.stop(later);

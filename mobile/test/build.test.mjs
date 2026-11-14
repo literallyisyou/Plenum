@@ -857,7 +857,9 @@ describe('.github/workflows/mobile.yml, phone-tests.yml and release.yml', () => 
     assert.match(phoneYml, /^on:\n  workflow_call:$/m, 'phone-tests.yml is reusable');
     assert.match(yml, /^ {4}uses: \.\/\.github\/workflows\/phone-tests\.yml$/m, 'mobile.yml calls it');
     assert.match(releaseYml, /^  suites:\n    name: Phone tests\n    uses: \.\/\.github\/workflows\/phone-tests\.yml$/m, 'release.yml calls it');
-    assert.match(releaseYml, /^  prepare:\n    name: Create the draft release\n    needs: suites$/m, 'the draft waits for the suites');
+    // 13 Nov 2026 (d-release-gates): prepare waits for the core check as well as the phone tests, on purpose.
+    assert.match(releaseYml, /^  core:\n    name: Core check\n    uses: \.\/\.github\/workflows\/core\.yml$/m, 'release.yml calls the core check');
+    assert.match(releaseYml, /^  prepare:\n    name: Create the draft release\n    needs: \[suites, core\]$/m, 'the draft waits for the suites and the core check');
   });
 
   test('the test job checks the committed relay/public after the build: a git diff and an untracked-file check', () => {

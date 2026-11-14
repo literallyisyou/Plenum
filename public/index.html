@@ -8,6 +8,7 @@
   <title>Plenum</title>
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/ext-a11y.css">
 </head>
 <body>
   <!-- Shared artwork: the brand mark and the icon set. Other elements point at these with <use>. -->
@@ -125,7 +126,10 @@
         <div class="pane-buttons" id="paneButtons" role="group" aria-label="Side pane"></div>
       </header>
 
-      <section class="chat" id="chat" aria-live="polite"></section>
+      <!-- The transcript is a log that is not read out as it is painted: a reply streams in and the transcript is redrawn many times a second, so a live
+           region here would read the chat again and again. Short events (a reply finished or failed, an approval waits, a run stopped) are announced
+           from the two regions at the end of the page instead (ext-a11y.js). -->
+      <section class="chat" id="chat" role="log" aria-live="off" aria-label="Conversation"></section>
 
       <footer class="composer-wrap" id="composerWrap">
         <div class="palette" id="palette" hidden></div>
@@ -273,7 +277,7 @@
     </aside>
 
     <div class="scrim" id="scrim" hidden></div>
-    <aside class="drawer" id="drawer" hidden aria-label="Panel">
+    <aside class="drawer" id="drawer" hidden role="dialog" aria-modal="true" aria-labelledby="drawerTitle" tabindex="-1">
       <div class="drawer-head">
         <strong id="drawerTitle"></strong>
         <button class="icon-btn" id="drawerClose" type="button" title="Close" aria-label="Close">
@@ -284,7 +288,14 @@
     </aside>
 
     <div class="toasts" id="toasts" aria-live="polite"></div>
+    <!-- The two places where short events are announced, and the only two live regions of the page's own shell: one polite (status), one
+         assertive (alert). ext-a11y.js fills them, and turns the toast box above off once it speaks the toasts from these (until then the box
+         stays polite, so a toast is never silent). They are read by a screen reader and not drawn. -->
+    <div class="a11y-live" id="a11yStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="a11y-live" id="a11yAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
   </div>
+  <!-- First, so the start check below can begin counting from the first moment of the page. -->
+  <script src="/ext-a11y.js" defer></script>
   <script src="/markdown.js" defer></script>
   <script src="/music.js" defer></script>
   <script src="/app.js" defer></script>

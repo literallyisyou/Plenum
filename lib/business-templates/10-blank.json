@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "id": "blank",
+  "label": "Blank",
+  "about": "The files every business has, and nothing else. You write the instructions and add routines later.",
+  "business": {
+    "runsPerDay": 12,
+    "minutesPerDay": 180,
+    "goals": []
+  },
+  "files": {
+    "BUSINESS.md": "# {{name}}\n\n{{purpose}}\n\nOnly the owner edits this file. The latest dated correction wins.\n\n## The offer\n\n(What is sold, to whom, at what price.)\n\n## Rules\n\n(What must always be done.)\n\n## Never\n\n- Never send, publish, buy, sign up or delete anything without the owner. Prepare the step, save the draft under outbox/ and ask with an OWNER: line.\n- Never type a password or a code, and never pay.\n- Never use a model billed per token to get round a plan limit.\n\n## Corrections\n\n(Newest first, each with its date.)\n",
+    "STATE.md": "# State of {{name}}\n\nKept by the lead. What is in progress and what is next. Under 3,000 bytes. No rules and no history.\n\n## In progress\n\n(nothing yet)\n\n## Next\n\n(nothing yet)\n",
+    "PLAN.md": "# Plan of {{name}}\n\n[ ] planned, [~] being done, [x] done, [?] waits for the owner.\n\n- [ ] Read BUSINESS.md and write the plan for the first week here.\n"
+  },
+  "routines": []
+}

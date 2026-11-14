@@ -18,6 +18,8 @@
     "start": "node plenum.mjs",
     "desktop": "electron .",
     "computer:smoke": "electron desktop/computer/smoke.cjs",
+    "check": "node scripts/check.mjs",
+    "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "stamp": "node scripts/stamp-build.mjs",
     "legal": "node scripts/build-legal.mjs",
     "mobile:build": "node scripts/build-mobile.mjs",

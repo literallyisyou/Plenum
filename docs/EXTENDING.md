@@ -6,18 +6,17 @@ of a file in each, the data that can grow without any code, and the test each ad
 
 This file is for people and models working on Plenum's source. The installed app does not carry it.
 
-Some of the packages this guide describes are not in this build yet: handing a task to another program, businesses and their
-templates, the owner's list of decisions, routines, and channels that send for the owner. Their files (`lib/programs.mjs`,
-`lib/business.mjs`, `lib/decisions.mjs`, `lib/routines.mjs`, `lib/channels.mjs`) are not in the project now; they come in a later
-build. Every table row, paragraph and example that belongs to them is marked "(later build)". The guidance stays, so that they are
-added the way the rest is. Where an example is a file of those packages, a file that exists now is named first.
+One package this guide describes is not in this build yet: channels that send for the owner (`lib/channels.mjs`). Every row,
+paragraph and example that belongs to it is marked "(later build)". Handing a task to another program (`lib/programs.mjs`,
+`lib/program-run.mjs`), businesses and their templates (`lib/business.mjs`, `lib/business-templates/`), the owner's list of
+decisions (`lib/decisions.mjs`) and routines (`lib/routines.mjs`) are in the project since 13 Nov 2026.
 
 ## The rules that hold for every addition
 
 1. **One file in a discovered folder.** Do not edit `server.mjs`, `public/app.js`, `desktop/main.cjs` or a loader to make room
    for a feature. If a kind of thing has no folder yet, add the discovery once (one loader, one test that pins it) and then use it.
 2. **What can grow is data.** Models, the team and kinds of work are records in files with a version; so are programs,
-   businesses, routines and templates (later build). Nothing is written against today's list of models, subscriptions or
+   businesses, routines and templates. Nothing is written against today's list of models, subscriptions or
    businesses.
 3. **State has a version and a `migrate(raw)`.** An older file, a damaged file and a file from a newer Plenum all load. A file from
    a newer Plenum is read and never written. A new field has a default. Nothing is written until there is something to save.
@@ -28,7 +27,7 @@ added the way the rest is. Where an example is a file of those packages, a file 
    load every route and hook with a top-level await, and two modules that wait for each other never finish loading.
    (`lib/team-run.mjs` is the one exception and says why.)
 6. **Nothing new is on until the owner turns it on.** Ask first stays the default approval mode. A worker never gets more rights
-   than the lead that started it, and neither will a program (later build). Nothing leaves the PC and no money moves without the
+   than the lead that started it, and neither will a program. Nothing leaves the PC and no money moves without the
    owner's OK.
 7. **Only Plenum's window shows.** Every program Plenum starts is started hidden (`windowsHide: true`), with nothing on its input
    and a time limit, and Stop ends its whole process tree.
@@ -46,7 +45,13 @@ added the way the rest is. Where an example is a file of those packages, a file 
 | A part of the system prompt | `lib/prompt-parts/` | `NN-name.mjs` | `lib/prompt.mjs` |
 | A step around each turn | `lib/hooks/` | `NN-name.mjs` | `lib/turn-hooks.mjs` |
 | A desktop handler | `desktop/handlers/` | `<name>.cjs` | `desktop/handler-loader.cjs` |
-| A business template (later build) | `lib/business-templates/` | `NN-name.json` | `lib/business.mjs` |
+| A business template | `lib/business-templates/` | `NN-name.json` | `lib/business.mjs` |
+
+The packages of businesses, the owner's list, routines and programs were added this way, and none of them needed an edit of a central
+list: a route they add (`GET /api/business/charter`, `POST /api/programs/check`) needed no edit in `server.mjs`; a panel
+(`ext-business`, `ext-programs`) needed no edit in `public/index.html` or `ext.js` (the server lists `ext-*.js` and the loader
+brings each with its stylesheet); a hook and a prompt part are found by their folders (`lib/hooks/70-business.mjs`, `72-decisions.mjs`,
+`lib/prompt-parts/60-business.mjs`).
 
 Every one of these is read through `lib/overlay.mjs` (the desktop folder by its own loader), so a file that an applied update adds
 or replaces is found as well.
@@ -107,8 +112,8 @@ Test: the tool against a temporary project folder, with the approval card it ask
 A file in `lib/prompt-parts/` named `NN-name.mjs` exports `parts`, an array of `{ id, order, contexts, text }` (see the top of
 `lib/prompt.mjs`). A part adds text only: nothing in a part approves an action, widens a folder or turns a tool on. Keep it short;
 every call pays for it. The battery pins the list of part ids. Example: `lib/prompt-parts/40-focus.mjs` (text that is added only
-when the project has build focus on, and nothing otherwise). The part for businesses, `lib/prompt-parts/60-business.mjs`, follows
-in a later build.
+when the project has build focus on, and nothing otherwise). The part for businesses, `lib/prompt-parts/60-business.mjs`, adds text to a chat turn only
+in a project that belongs to a business; the test that pins the list of part ids (`build/v06/gw-03-prompt-parts/parts.test.mjs`) names it.
 
 Test: `buildSystem` with a hand-built context gives the text, and gives nothing when the feature is off.
 
@@ -116,8 +121,8 @@ Test: `buildSystem` with a hand-built context gives the text, and gives nothing 
 
 A file in `lib/hooks/` named `NN-name.mjs` may export `expandMessage(ctx, text)`, `beforeTurn(ctx)` and `afterTurn(ctx, turn)` (see
 the top of `lib/turn-hooks.mjs`). A hook that fails becomes one notice and the turn goes on. Examples: `lib/hooks/30-mentions.mjs`
-(`expandMessage`) and `lib/hooks/50-checks.mjs` (`afterTurn`). The hook for businesses, `lib/hooks/70-business.mjs`, follows in a
-later build.
+(`expandMessage`) and `lib/hooks/50-checks.mjs` (`afterTurn`). The hooks of businesses and of the owner's list, `lib/hooks/70-business.mjs` and
+`lib/hooks/72-decisions.mjs`, are found by their folder like any other: nothing in `server.mjs` names them.
 
 Test: the hook with a hand-built context `{ project, scope, record, send }` and a temporary data folder.
 
@@ -144,14 +149,14 @@ its words reviewed; two battery tests read every `public/*.js` and fail on an id
 | --- | --- | --- |
 | A kind of work (Find, Research, Code, ...) | `team.json`, `kinds` (`lib/team.mjs`) | A built-in kind is one entry in `DEFAULT_KINDS` of `lib/team.mjs`. A kind of the owner's own is one entry in `kinds`: `{ id, label, about, agent, workers, effort, reply, answerMax }`, saved with `POST /api/team`, which takes the whole list (the Team page shows the kinds and has no button to add one yet). The delegate tool's `work` argument names the kind. |
 | A model in the team | `team.json`, a kind's `workers`, in the owner's order | Settings > Agents > Team. A model is named by its ref (`provider:id`); the catalog and the CLI account lists say which exist. |
-| A program for a hand-off (later build) | `programs.json`, `programs` (`lib/programs.mjs`) | A CLI Plenum already drives: one entry with its `best` line. An agent on Plenum Hub: `{ id: 'hub:<agent>', via: 'hub', agent, best }`. A CLI Plenum does not drive yet: its adapter beside the others in `lib/` (see `lib/cursor.mjs`, `lib/grok.mjs`), one line in `BUILT_IN` and one in `ABILITIES` of `lib/programs.mjs`. |
-| A business (later build) | `businesses.json` (`lib/business.mjs`) and its own folder | The Businesses pane. Its files (`BUSINESS.md`, `STATE.md`, `PLAN.md`, `playbooks/`) live in the owner's folder, never in the program folder. |
-| A business template (later build) | `lib/business-templates/NN-name.json` | One JSON file: `{ v, id, label, about, business, files, routines }`. Routines in a template are created switched off. |
-| A routine (later build) | `routines.json` (`lib/routines.mjs`) | The Businesses pane. Models cannot create or switch on a routine. |
+| A program for a hand-off | `programs.json`, `programs` (`lib/programs.mjs`) | A CLI Plenum already drives: one entry with its `best` line. An agent on Plenum Hub: `{ id: 'hub:<agent>', via: 'hub', agent, best }`. A CLI Plenum does not drive yet: its adapter beside the others in `lib/` (see `lib/cursor.mjs`, `lib/grok.mjs`), one line in `BUILT_IN` and one in `ABILITIES` of `lib/programs.mjs`. |
+| A business | `businesses.json` (`lib/business.mjs`) and its own folder | The Businesses pane. Its files (`BUSINESS.md`, `STATE.md`, `PLAN.md`, `playbooks/`) live in the owner's folder, never in the program folder. |
+| A business template | `lib/business-templates/NN-name.json` | One JSON file: `{ v, id, label, about, business, files, routines }`. Routines in a template are created switched off. |
+| A routine | `routines.json` (`lib/routines.mjs`) | The Businesses pane. Models cannot create or switch on a routine. |
 
 Where the next kinds go:
 
-- **A second kind of routine (later build).** A routine has `kind: "lead"` (a lead model runs a playbook as an ordinary chat turn).
+- **A second kind of routine.** A routine has `kind: "lead"` (a lead model runs a playbook as an ordinary chat turn).
   A second kind is a new value of `kind` with its own runner inside `lib/routines.mjs`, chosen where a due routine is started; an
   old file loads because `migrate` gives a routine without a kind the value `lead`. A kind that runs a command with no approval
   card is not wanted: a run is a chat turn so that approvals, limits, Stop and the saved history are the existing ones.
@@ -178,10 +183,10 @@ each finished task and is renamed to `team-log.1.jsonl` at 4 MB. Every tool refu
 | --- | --- | --- |
 | `state.json` (projects, chats, settings) | none: every missing field takes its default on load | `lib/store.mjs` |
 | `team.json`, `team-log.jsonl` | `v: 1` (each line of the log has its own) | `lib/team.mjs`, `lib/team-log.mjs` |
-| `programs.json` (later build) | `v: 1` | `lib/programs.mjs` (`migrate`) |
-| `businesses.json`, `business-log/<id>.jsonl` (later build) | `v: 1` | `lib/business.mjs` (`migrate`) |
-| `decisions.json` (later build) | `v: 1` | `lib/decisions.mjs` (`migrate`) |
-| `routines.json` (later build) | `v: 1` | `lib/routines.mjs` (`migrate`) |
+| `programs.json` | `v: 1` | `lib/programs.mjs` (`migrate`) |
+| `businesses.json`, `business-charter.json`, `business-log/<id>.jsonl` | `v: 1` | `lib/business.mjs` (`migrate`) |
+| `decisions.json` | `v: 1` | `lib/decisions.mjs` (`migrate`) |
+| `routines.json` | `v: 1` | `lib/routines.mjs` (`migrate`) |
 | `services.json` | `v: 1` | `lib/hub-starter.mjs` (`migrate`) |
 
 To add a field: give it a default where the module reads the file (`migrate`) and leave `v` alone. Raise `v` only when an old file can no longer be
@@ -193,7 +198,7 @@ higher `v`.
 The page listens on `GET /api/events`; a module publishes with `events.publish({ type, ... })` from `lib/events.mjs`. The types
 that the features in this guide add: `{ type: "team", reason }` and `{ type: "services", reason }`. The older types (`hello`, `state`,
 `run`, `approval`, `notice`, `agent`, `app-update`) are listed in the top comment of `lib/events.mjs`; other modules publish types of
-their own (`hub`, `phone`, `browser`, `drive`, `project`, `activity`). The types of the packages that follow (later build):
+their own (`hub`, `phone`, `browser`, `drive`, `project`, `activity`). The types of the programs, businesses, list and routines packages:
 `{ type: "programs", reason }`, `{ type: "business", reason, id }`, `{ type: "decisions", waiting }` and
 `{ type: "routine", action, routine }`. A new feature takes a type of its own and writes it in its module's top comment. An event
 never holds a key, a token or a file's text.
@@ -229,4 +234,4 @@ and a `PORT` of its own, unless the test is about exactly that.
 - **The floor**: the credential and data folders stay refused to every tool; Plenum's own source changes only through the Updates
   panel; a visible indicator while a model controls the screen or the browser; a Stop that always works. No setting turns these off.
 - **The owner's data**: what a feature keeps for the owner is in the owner's folders and Plenum's data folder, never in the program
-  folder, so an update keeps it (a business's files are the first case, in a later build).
+  folder, so an update keeps it (a business's files are the first case).

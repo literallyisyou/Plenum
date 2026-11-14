@@ -7,6 +7,8 @@
 // A row whose CLI is missing shows how to install it (MuseUI.cliInstallBlock), and after Sign in the wizard reads the sign-ins
 // by itself until the sign-in shows (MuseUI.watchSignIn). Both helpers are in ext-accounts-cli.js and are looked up when they
 // are used, so the wizard still works, with its older plain sentences, when that panel did not load.
+// Each of the three status requests paints its own part as it returns (merge, rowReady, keyReady). The last step names the model that will
+// answer (MuseUI.answering, in ext-model-info.js) and, when the chosen model cannot, offers Use <name> as a press; it never switches by itself.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -80,6 +82,14 @@
   // The sign-ins the rows read: GET /api/accounts, with Cursor's and Grok Build's status from GET /api/accounts/cli added as accounts.cursor and accounts.grok.
   const withCli = (accounts, cli) => ({ ...accounts, cursor: cli?.cursor ?? null, grok: cli?.grok ?? null, antigravity: cli?.antigravity ?? null });
 
+  // Puts the parts a read brought into status and works out accounts. A part that is not named stays as it was.
+  function merge(parts) {
+    status = { keys: null, main: null, cli: null, cliPending: true, accounts: null, ...status, ...parts };
+    status.accounts = status.main ? withCli(status.main, status.cli) : null;
+  }
+  // Whether a row's part of the status is here: a CLI row needs the accounts (and the cli read for the three added later), a key row its list.
+  const rowReady = (c, s) => Boolean(s?.accounts) && !(c.side && s.cliPending);
+  const keyReady = (id, s) => Boolean(s?.keys) && (id !== 'anthropic' || Boolean(s.accounts));
   // Whether a key is saved for a provider: Anthropic's through the Claude route, the others through GET /api/keys.
   function keyConfigured(s, id) {
     if (id === 'anthropic') return claudeUsesKey(s.accounts) && s.accounts.claude.connected === true;
@@ -120,8 +130,13 @@
 
   // ---------- state ----------
 
-  let status = null;   // { keys, accounts }, as the server last sent them
+  // What the server last sent, kept in parts because each request paints as it returns: { keys, main, cli, accounts, cliPending }. keys is GET /api/keys,
+  // main is GET /api/accounts, cli is GET /api/accounts/cli (null when that read failed), and accounts is main with cli put in (withCli), null until main
+  // is here. cliPending is true until the first answer of the cli read, so Cursor, Grok Build and Antigravity say Checking and not Sign-in unknown.
+  let status = null;
   let statusAt = 0;    // when status was last read in full
+  let loadSeq = 0;     // the number of the latest read; an answer of an older read is dropped
+  let loading = false; // whether a read is on its way
   // The sign-in watch. waiting holds the ids of the rows whose sign-in window was opened and whose sign-in has not shown yet;
   // gaveUp holds the ids whose three minutes ran out, until the next full read. Both are kept by id, so they survive a redraw.
   const waiting = new Set();
@@ -154,6 +169,7 @@
     showStep(false);
     if (!status) return void loadStatus();
     paintAll();
+    if (loading) return;
     // A wizard that is opened again later shows what was read before, then reads again, so an old sign-in state does not stay.
     if (Date.now() - statusAt > STALE_MS) loadStatus();
   }
@@ -203,7 +219,10 @@
     ui.back.disabled = step === 1;
     ui.next.hidden = step === STEPS.length;
     ui.finish.hidden = step !== STEPS.length;
-    if (step === STEPS.length) paintSummary();
+    if (step === STEPS.length) {
+      paintSummary();
+      readModels();
+    }
     if (focus) ui.heads[step - 1].focus();
   }
 
@@ -313,7 +332,7 @@
       await loadStatus();
       return paintClis();
     }
-    const signedIn = status ? row.c.state(status.accounts) === IN : false;
+    const signedIn = rowReady(row.c, status) ? row.c.state(status.accounts) === IN : false;
     if (signedIn || typeof MuseUI.watchSignIn !== 'function') {
       MuseUI.toast('Sign-in window opened. Finish it there, then press Check again.');
     } else {
@@ -361,17 +380,16 @@
     const fresh = side && Date.now() - forcedAt >= FORCE_EVERY_MS;
     if (fresh) forcedAt = Date.now();
     const [accounts, cli] = await Promise.all([main ? MuseUI.api('/api/accounts') : null, side ? cliStatus(fresh) : null]);
-    if (!status) return;
+    if (!status?.accounts) return;
     if (main && !accounts?.claude) throw new Error('The status did not come back.');
-    const had = status.accounts;
-    status = { keys: status.keys, accounts: withCli(accounts ?? had, cli ?? had) };
+    merge({ main: accounts ?? status.main, cli: cli ?? status.cli, cliPending: false });
   }
 
   // After a read: a waiting row that is now signed in says so once and stops waiting. With no row left, the watch ends.
   function noticed() {
-    if (!status) return;
+    if (!status?.accounts) return;
     for (const c of CLIS) {
-      if (!waiting.has(c.id)) continue;
+      if (!waiting.has(c.id) || !rowReady(c, status)) continue;
       const state = c.state(status.accounts);
       if (state === IN) MuseUI.toast(`Signed in to ${c.name}.`);
       if (state === IN || state === NONE) waiting.delete(c.id);
@@ -404,7 +422,7 @@
 
   function paintCli(row) {
     const id = row.c.id;
-    const state = status ? row.c.state(status.accounts) : null;
+    const state = rowReady(row.c, status) ? row.c.state(status.accounts) : null;
     // Waiting: the sign-in window was opened from this row and the sign-in has not shown yet.
     const wait = waiting.has(id) && (state === OUT || state === UNKNOWN);
     const steps = paintInstall(row, state);
@@ -530,7 +548,7 @@
 
   // Paints one key row: its status, whether Test can run, whether Save is allowed, and the key page link.
   function paintKey(row) {
-    const s = status;
+    const s = keyReady(row.id, status) ? status : null;
     const listed = !s || row.id === 'anthropic' || s.keys.providers.some(p => p.id === row.id);
     row.card.hidden = !listed;
     const configured = s ? keyConfigured(s, row.id) : false;
@@ -566,26 +584,61 @@
     const ways = make('div', 'actions');
     ways.append(addKey, accounts);
     ui.summaryNone.append(make('p', 'setup-lead', 'Nothing is set up yet. You can sign in or add a key later from Accounts.'), ways);
-    pane.append(heading, lead, ui.summary, ui.summaryNone);
+    // Which model answers (MuseUI.answering, ext-model-info.js). When the chosen model cannot, one press sets one that can.
+    ui.useModel = MuseUI.button('primary small', 'Use');
+    ui.useModel.addEventListener('click', async () => {
+      await MuseUI.useReadyModel?.();
+      paintSummary();
+    });
+    ui.useModelRow = make('div', 'actions');
+    ui.useModelRow.hidden = true;
+    ui.useModelRow.append(ui.useModel);
+    pane.append(heading, lead, ui.summary, ui.useModelRow, ui.summaryNone);
     return { pane, heading };
   }
 
+  // The sentence about the model that will answer, from what ext-model-info.js read. '' when that panel did not load or has read nothing.
+  // Never changes the model: the Use button beside it is a press.
+  function modelLine() {
+    const now = MuseUI.answering?.();
+    if (!now) return '';
+    if (now.ready) return `Plenum will answer with ${now.name}.`;
+    return `${now.name} is the chosen model, but it cannot answer yet: ${now.reason}.`;
+  }
+
   function paintSummary() {
-    if (!ui || !ui.summary || !status) return;
+    // The summary needs every part: with one still on its way it would say too little.
+    if (!ui || !ui.summary || !status?.keys || !status.accounts || status.cliPending) return;
     const signed = CLIS.filter(c => c.state(status.accounts) === IN).map(c => c.name);
     const saved = ui.keys.filter(r => keyConfigured(status, r.id)).map(r => r.label);
     const lines = [];
     if (signed.length) lines.push(`Signed in: ${signed.join(', ')}.`);
     if (saved.length) lines.push(`Keys saved: ${saved.join(', ')}.`);
-    ui.summary.replaceChildren(...lines.map(text => make('li', '', text)));
     ui.summaryNone.hidden = lines.length > 0;
+    // The model line only follows a real setup, so an empty summary still leads to the two ways forward.
+    const model = lines.length ? modelLine() : '';
+    if (model) lines.push(model);
+    ui.summary.replaceChildren(...lines.map(text => make('li', '', text)));
+    const pick = model && !MuseUI.answering?.()?.ready ? MuseUI.readyModel?.() : null;
+    ui.useModelRow.hidden = !pick;
+    if (pick) ui.useModel.textContent = `Use ${pick.name}`;
+  }
+
+  // The summary's model sentence depends on which providers answer now, which ext-model-info.js reads on its own timer. On the last step
+  // it is read again, so a sign-in made a moment ago counts. A late answer is painted only while this step is still shown.
+  let modelRead = 0;
+  function readModels() {
+    const mine = ++modelRead;
+    Promise.resolve(MuseUI.refreshModelInfo?.()).then(() => {
+      if (mine === modelRead && ui && step === STEPS.length) paintSummary();
+    }, () => {});
   }
 
   // ---------- painting and reading the status ----------
 
   function paintAll() {
     if (!ui || !status) return;
-    const storage = status.keys.storage;
+    const storage = status.keys?.storage;
     // Session-only keys, or a store that refuses saves, are said plainly above the key boxes.
     ui.notice.textContent = storage?.message ?? '';
     ui.notice.hidden = !storage || storage.mode === 'keychain';
@@ -599,21 +652,33 @@
   // from what it last saw; that can take a few seconds, so the line says what is happening.
   // again is a press of Check again: the server looks at the accounts again instead of answering from what it kept (Claude Code's answer is kept
   // for 20 seconds).
+  // Each of the three requests paints its part when it returns, so a slow one does not hold the rest back. A read that fails leaves what is
+  // already on screen and says so; an answer of an older read (a second Check again) is dropped.
   async function loadStatus(again = false) {
+    const seq = ++loadSeq;
+    loading = true;
     const fresh = [...waiting, ...gaveUp].some(isSide);
     if (fresh) showLine('Checking your sign-ins…', false);
-    try {
-      const [keys, accounts, cli] = await Promise.all([MuseUI.api('/api/keys'), MuseUI.api(again ? '/api/accounts?fresh=1' : '/api/accounts'), cliStatus(fresh)]);
-      if (!Array.isArray(keys?.providers) || !accounts?.claude) {
-        showLine('The status did not come back. Try again.', true);
-        return;
-      }
-      status = { keys, accounts: withCli(accounts, cli) };
-      statusAt = Date.now();
-    } catch (err) {
-      showLine(err.message, true);
+    let failure = '';
+    const take = (request, accept) => request.then(value => {
+      if (seq !== loadSeq) return;
+      if (!accept(value)) throw new Error('The status did not come back. Try again.');
+      paintAll();
+    }).catch(err => {
+      if (seq === loadSeq && !failure) failure = err.message || 'The status did not come back. Try again.';
+    });
+    await Promise.all([
+      take(MuseUI.api('/api/keys'), keys => (Array.isArray(keys?.providers) ? (merge({ keys }), true) : false)),
+      take(MuseUI.api(again ? '/api/accounts?fresh=1' : '/api/accounts'), main => (main?.claude ? (merge({ main }), true) : false)),
+      take(cliStatus(fresh), cli => (merge({ cli, cliPending: false }), true)),
+    ]);
+    if (seq !== loadSeq) return;
+    loading = false;
+    if (failure) {
+      showLine(failure, true);
       return;
     }
+    statusAt = Date.now();
     showLine('', false);
     gaveUp.clear();
     noticed();
@@ -643,7 +708,7 @@
       return;
     }
     if (!Array.isArray(keys?.providers) || !accounts?.claude) return;
-    status = { keys, accounts: withCli(accounts, cli) };
+    merge({ keys, main: accounts, cli, cliPending: false });
     statusAt = Date.now();
     if (KEYS.some(k => keyConfigured(status, k.id)) || CLIS.some(c => c.state(status.accounts) === IN)) return;
     // The person may have opened another panel while the check ran. The wizard waits for an empty drawer and never replaces one.

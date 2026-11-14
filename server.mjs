@@ -230,6 +230,8 @@ async function stopRunsAndSave() {
   const until = Date.now() + SHUTDOWN_WAIT_MS;
   while (running.size && Date.now() < until) await new Promise(r => setTimeout(r, 50));
   await saveReporting(null);
+  // A draft save that still waits (a council's or a reply's) is written now, before the process ends (store.flush never rejects).
+  await store.flush();
 }
 // Drive id -> the computer run that is live, so a route can reach the run of a drive (the "Type it for me" box, lib/routes/computer.mjs).
 const liveComputerRuns = new Map();
@@ -1661,6 +1663,17 @@ function councilHistory(log) {
     .join('\n\n');
 }
 
+// The words of a council row that was cut off before its end (the row is a draft until the run ends; a restart marks it interrupted).
+const COUNCIL_CUT_OFF = 'The council was cut off before it reached a verdict. The answers the seats had given are kept above.';
+
+// A failed council or relay hop writes one line to the log: what ran, which models and why it failed, so that a failure the page showed
+// can be found later. Never the question, a reply, a key or the launch token: the reason is cut short and goes through the same redaction
+// as every other fault (logFault). The same line is written once in ten seconds at most.
+function logRunFailure(kind, refs, reason) {
+  const models = [...new Set([].concat(refs).filter(Boolean).map(ref => String(ref).slice(0, 80)))].slice(0, 8).join(', ');
+  logFault(`A ${kind} run failed (models: ${models || 'none'})`, String(reason ?? 'no reason given').replace(/\s+/g, ' ').slice(0, 300));
+}
+
 // What a council leaves in the chat: the verdict, then the recommended steps.
 function councilText(result) {
   const steps = (result.recommendation ?? []).map((s, i) => `${i + 1}. ${s}`).join('\n');
@@ -1722,6 +1735,19 @@ async function handleCouncil(req, res) {
   // Kept as the run goes, so a cancelled council still leaves its answers in the chat. error is the reason the run ended without a
   // verdict (its error event), and rounds is the number of rounds it was set to run (B-52).
   const saved = { seats: {}, result: null, seatMeta: [], error: null, rounds: null, folder: config.folder ?? 'text' };
+  // The council's row in the chat. It is a draft from the start of the run (the same shape as the final row, plus draft: true), updated
+  // quietly as each seat answers and at the consensus, and finished in place by after(). A kill or a crash in between keeps what the seats
+  // answered: the store marks the row interrupted when it reads the state again (lib/store.mjs markInterrupted), so the page shows the
+  // answers and not "no reply was saved". The page does not draw a draft while the run is live (public/app.js).
+  let draft = null;
+  const councilRow = () => ({
+    question,
+    seats: saved.seatMeta.map(meta => ({ ...meta, ...(saved.seats[meta.id] ?? {}) })),
+    result: saved.result,
+    error: saved.error,
+    rounds: saved.rounds,
+    ...(saved.folder !== 'text' ? { folder: saved.folder } : {}),
+  });
   await streamForProject(req, res, project, async ({ signal, send }) => {
     // The question keeps the names and sizes of its files, never their bytes, and where the seats worked.
     store.addMessage(scope.id, { role: 'user', kind: 'council', content: question, ...(uploads.attached.length ? { attached: uploads.attached } : {}), ...(kept.length ? { images: kept } : {}), ...(config.folder ? { folder: config.folder } : {}) });
@@ -1739,6 +1765,9 @@ async function handleCouncil(req, res) {
       question, config, cwd: scope.root, signal, history, project, agents, run, images, files, route, codersCannotAsk: codersCannotAskOf(project),
       denyPatterns: denyPatternsOf(project), tools: effectiveSettings(store.get(), project).tools, mode: approvalModeOf(store.get(), project), approve: approvalRequester(send, signal),
     }));
+    // The draft row is added last, once nothing before the stream can throw, so a refused start leaves no draft behind.
+    draft = store.addMessage(scope.id, { role: 'assistant', kind: 'council', content: COUNCIL_CUT_OFF, council: councilRow(), draft: true });
+    store.persistQuiet();
     if (!folderNotice) return council;
     // The stream opens when this returns, so the plan-mode notice goes out as the run's first event (a send before then reaches no page).
     return (async function* () {
@@ -1761,15 +1790,24 @@ async function handleCouncil(req, res) {
     if (ev.type === 'consensus') saved.result = ev.result;
     // The run's error event: fewer than two seats answered, or the moderator failed. Its message is the reason shown after a reload.
     if (ev.type === 'error') saved.error = ev.message;
+    // The row keeps up with the run: each seat's answer, the verdict and the error reach the file within a few seconds.
+    if (draft && ['council-start', 'seat-done', 'consensus', 'error'].includes(ev.type)) {
+      draft.council = councilRow();
+      store.persistQuiet();
+    }
   }, {
     kind: 'council',
     scope,
-    // Stored before the stream says done, and saved with the run's final save, so a failed save shows in the stream (B-28).
+    // Stored before the stream says done, and saved with the run's final save, so a failed save shows in the stream (B-28). The draft row
+    // is finished in place, so the chat has one council row, not two; a run with nothing to keep leaves none.
     after: () => {
-      if (!(saved.result || saved.error || Object.keys(saved.seats).length)) return;
+      if (saved.error && !saved.result) logRunFailure('council', [...config.seats.map(seat => seat.ref), config.moderator.ref], saved.error);
+      if (!(saved.result || saved.error || Object.keys(saved.seats).length)) {
+        if (draft) store.removeMessage(scope.id, draft);
+        return;
+      }
       const content = saved.result ? councilText(saved.result) : (saved.error ?? 'The council was stopped before it reached a verdict.');
-      const seats = saved.seatMeta.map(meta => ({ ...meta, ...(saved.seats[meta.id] ?? {}) }));
-      store.addMessage(scope.id, { role: 'assistant', kind: 'council', content, council: { question, seats, result: saved.result, error: saved.error, rounds: saved.rounds, ...(saved.folder !== 'text' ? { folder: saved.folder } : {}) } });
+      store.finishMessage(scope.id, draft, { role: 'assistant', kind: 'council', content, council: councilRow() });
     },
   });
 }
@@ -1970,8 +2008,9 @@ function relaySeats(project, scope) {
       if (m.role !== 'assistant') continue;
       if (m.kind === 'chat' && m.relay && m.relay.to === seat.id) {
         found = true;
-        reply = String(m.content ?? '');
-      } else if (m.kind === 'council' && m.council?.seats) {
+        // A hop that failed or was stopped is not an answer to relay on (saveRelayHop), but it is still the seat's newest entry.
+        reply = m.error || m.aborted ? '' : String(m.content ?? '');
+      } else if (m.kind === 'council' && m.council?.seats && m.draft !== true) {
         const hit = m.council.seats.find(x => x.id === seat.id);
         if (hit) {
           found = true;
@@ -2027,16 +2066,26 @@ function relaySource(seats, sourceId, { messageTs = null, log = [] } = {}) {
 // A relayed reply is kept in the chat as the target seat's own reply, with where it came from. The target's native session has not seen
 // this reply, so it is forgotten: its next turn starts a new session with the chat, this reply included (B-56), as compare and pipelines do.
 // requestTs is the ts of the person's request the relay served (relaySource), so a relay from this reply is told that request (requestBefore).
+// A hop that failed or was stopped is kept too, with the text it had and its reason (a plain sentence, or the stop mark the page draws as
+// "Stopped."), so a relay that ends in the middle leaves no gap in the chat. A failed hop also writes one line to the log. Its text is not
+// a seat's reply for a later relay (relaySeats), and its session is not forgotten: nothing new was learned from it.
+const RELAY_STOPPED = 'Stopped.';
 function saveRelayHop(scope, seats, ev, kind, requestTs = null) {
   const target = seats.find(x => x.id === ev.to?.seat);
+  const stopped = ev.ok !== true && ev.error === RELAY_STOPPED;
+  const failed = ev.ok !== true && !stopped;
+  if (ev.ok === true && !ev.text) return;
+  if (failed) logRunFailure('relay hop', target?.ref, ev.error);
   store.addMessage(scope.id, {
     role: 'assistant',
     kind: 'chat',
     model: target?.ref ?? null,
-    content: ev.text,
+    content: ev.text ?? '',
+    ...(failed ? { error: String(ev.error || 'The hop failed.') } : {}),
+    ...(stopped ? { aborted: true } : {}),
     relay: { from: ev.from?.seat ?? null, fromLabel: ev.from?.label ?? null, to: ev.to?.seat ?? null, hop: ev.hop, kind, ...(requestTs != null ? { requestTs } : {}) },
   });
-  if (target?.ref) forgetSession(scope.id, target.ref);
+  if (ev.ok === true && target?.ref) forgetSession(scope.id, target.ref);
 }
 
 async function handleRelaySend(req, res) {
@@ -2068,7 +2117,7 @@ async function handleRelaySend(req, res) {
       at: Date.now(), hop: ev.hop, kind, from: ev.from, to: ev.to,
       chars: source.text.length, sha256: hashText(source.text), ok: ev.ok, error: ev.error,
     });
-    if (ev.ok && ev.text) saveRelayHop(scope, seats, ev, kind, source.requestTs);
+    saveRelayHop(scope, seats, ev, kind, source.requestTs);
   }, { kind: 'relay', scope });
 }
 
@@ -2120,7 +2169,7 @@ async function handleRelayRoute(req, res) {
       project, agents, run, denyPatterns: denyPatternsOf(project), approve: approvalRequester(send, signal),
     }));
   }, ev => {
-    if (ev.type === 'hop-done' && ev.ok && ev.text) saveRelayHop(scope, seats, ev, 'route', source.requestTs);
+    if (ev.type === 'hop-done') saveRelayHop(scope, seats, ev, 'route', source.requestTs);
     trackRouteRun(scope.id, ev);
   }, { kind: 'relay', scope });
 }
@@ -2558,7 +2607,7 @@ async function handleApi(req, res, url) {
           // the Windows account on a Mac or in a plain Node run (B-95).
           : { route: 'api', connected: providers.anthropic.credentials, source: providers.anthropic.source, storage: keyStorage().mode, storageNote: keyStorage().message, ...(providers.anthropic.refused ? { refused: providers.anthropic.refused } : {}) },
         muse: { installed: providers.muse.installed, signedIn: museSignedIn(), metaApiKey: providers.muse.metaApiKey },
-        gemini: { installed: providers.gemini.installed, signedIn: providers.gemini.signedIn, email: providers.gemini.email },
+        gemini: { installed: providers.gemini.installed, signedIn: providers.gemini.signedIn, email: providers.gemini.email, google: providers.gemini.google, key: providers.gemini.key },
         // Codex's own answer (lib/accounts.mjs codexLoginStatus): loggedIn is true, false, or null when the CLI gave no answer in time
         // (status then says so). reason and stale are there only when they apply.
         codex,
@@ -2836,6 +2885,8 @@ ensureToken();
 // What the events channel sends as the state: everything but the transcript (see publicState).
 events.useStateProvider(() => publicState({ messages: false }));
 await listen();
+// Leftovers of a run that was cut off (a child process tree, a scratch folder) are cleared once, when the module is there (lib/child-ledger.mjs).
+import('./lib/child-ledger.mjs').then(m => m.sweepOnce?.()).catch(() => {});
 // The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them.
 prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) });
 await startPhones();

@@ -1,0 +1,115 @@
+/* Settings > Agents > Programs (public/ext-programs.js). Every colour, size, radius and time is a token from style.css, so both themes
+   follow; nothing is set inline. One calm card on a 16 px rhythm, like the Team section beside it: the programs are one hairline box
+   with separators, each row holds its state, its line, its model and its switch, and there is no primary button (every change saves
+   by itself). Nothing moves; colours change in 120 ms. */
+
+.prog-root, .prog-main { display: grid; gap: var(--sp-4); min-width: 0; }
+.prog-root [hidden] { display: none !important; }
+.prog-root[aria-busy="true"] { cursor: progress; }
+.prog-save:empty, .prog-count:empty, .prog-why:empty { display: none; }
+
+/* The paragraphs carry the section's class twice over, so the card's own paragraph rule (.card p) does not set their size and colour. */
+.prog-root .prog-line, .prog-root .prog-note, .prog-root .prog-empty, .prog-root .prog-abil, .prog-root .prog-why, .prog-root .prog-runs { margin: 0; font-size: var(--fs-small); line-height: var(--lh-body); color: var(--muted); overflow-wrap: anywhere; }
+.prog-root .prog-line { font-size: var(--fs-body); color: var(--text-2); }
+.prog-root .prog-why { color: var(--text-2); }
+.prog-root .prog-runs { flex: 1 1 200px; min-width: 0; color: var(--text-2); }
+.prog-bad { color: var(--bad) !important; }
+.prog-retry { justify-self: start; }
+.prog-save { font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--muted); overflow-wrap: anywhere; }
+
+/* What the person should know now (a file from a newer Plenum, a file that could not be read): one flat amber note. */
+.prog-alerts {
+  display: grid; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--warn) 36%, var(--line));
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); min-width: 0;
+}
+.prog-root .prog-alert { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--text); overflow-wrap: anywhere; }
+
+/* A part of the card: a hairline above it and a small title. */
+.prog-sec { display: grid; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
+.prog-sub { margin: 0; font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+
+/* The programs: one hairline box, a separator between rows. */
+.prog-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); min-width: 0; }
+.prog-row { display: grid; gap: var(--sp-2); padding: var(--sp-3); border-top: 1px solid var(--line); min-width: 0; }
+.prog-row:first-child { border-top: 0; }
+
+.prog-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); min-width: 0; }
+.prog-title { flex: 1 1 200px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); min-width: 0; }
+.prog-name { font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); overflow-wrap: anywhere; }
+.prog-id { font: var(--fs-small)/var(--lh-ui) var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.prog-state { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--text-2); }
+
+/* The state dot. Green can run now; amber needs the person (a sign-in, a setting) or waits for a plan to reset; red is a hub that
+   does not answer; grey is switched off, not installed or not checked yet. The word beside it always says the same thing. */
+.prog-dot { flex: none; width: 8px; height: 8px; border-radius: var(--r-full); background: var(--muted); }
+.prog-row[data-state="ready"] .prog-dot { background: var(--ok); }
+.prog-row[data-state="sign-in"] .prog-dot, .prog-row[data-state="limit"] .prog-dot, .prog-row[data-state="other-route"] .prog-dot, .prog-row[data-state="hub-off"] .prog-dot { background: var(--warn); }
+.prog-row[data-state="hub-down"] .prog-dot { background: var(--bad); }
+.prog-row[data-state="off"] .prog-name { color: var(--text-2); }
+
+/* Reorder and the switch. The down arrow is the up arrow turned round. */
+.prog-acts { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.prog-act-down .ic { rotate: 180deg; }
+.prog-act:disabled { color: var(--faint); background: transparent; cursor: default; }
+.prog-switch { align-items: center; margin-left: var(--sp-2); }
+.prog-switch .switch-track { margin-top: 0; }
+
+/* A field: a small label over the app's own field. */
+.prog-field { display: grid; gap: var(--sp-1); min-width: 0; }
+.prog-flabel { font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--muted); }
+/* Named through the section and the field so the card's own rule for text fields (a monospace field for keys and paths) does not
+   set these. */
+.prog-root .prog-field .prog-input, .prog-root .prog-select {
+  height: var(--ctl); min-width: 0; width: 100%; max-width: 100%; padding: 0 10px; border: 1px solid var(--line-2); border-radius: var(--r-md);
+  background: var(--bg); color: var(--text); font: var(--fs-body)/var(--lh-ui) var(--ui);
+  transition: border-color var(--t-fast) var(--ease);
+}
+/* The line a program is best at grows to show all of it: up to 120 characters, so two lines at most on a wide window. */
+.prog-root .prog-field .prog-text { display: block; height: auto; min-height: var(--ctl); padding: 6px 10px; line-height: var(--lh-body); resize: none; field-sizing: content; overflow: hidden; overflow-wrap: anywhere; }
+/* A name on the hub is an id, so it keeps the monospace face. */
+.prog-root .prog-field .prog-mono { font-family: var(--mono); }
+.prog-root .prog-field .prog-input:hover, .prog-root .prog-select:hover { border-color: var(--line-3); }
+.prog-root .prog-field .prog-input:focus, .prog-root .prog-select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.prog-root .prog-field .prog-input:disabled, .prog-root .prog-select:disabled { opacity: 0.5; }
+.prog-input::placeholder { color: var(--muted); }
+.prog-root .prog-field .prog-num { width: 88px; font-variant-numeric: tabular-nums; }
+.prog-root .prog-select { flex: 0 1 260px; width: auto; }
+
+.prog-bestrow { display: flex; align-items: flex-end; gap: var(--sp-2); min-width: 0; }
+.prog-best { flex: 1 1 0; }
+.prog-count { justify-self: end; margin-top: calc(-1 * var(--sp-1)); font-size: var(--fs-caption); color: var(--muted); font-variant-numeric: tabular-nums; }
+.prog-modelrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+.prog-modelrow .prog-quiet { margin-left: auto; align-self: flex-end; }
+.prog-wait { flex: none; }
+
+/* Reset and Remove: quiet text buttons. */
+.prog-quiet {
+  flex: none; height: var(--ctl); padding: 0 var(--sp-2); border: 1px solid transparent; border-radius: var(--r-md); background: transparent;
+  color: var(--muted); font: var(--fs-body) var(--ui); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.prog-quiet:hover { background: var(--fill-2); color: var(--text); }
+.prog-quiet:active { background: var(--fill-3); }
+.prog-quiet:disabled { color: var(--faint); background: transparent; cursor: default; }
+.prog-act:focus-visible, .prog-quiet:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Add an agent from Plenum Hub. Three short fields in a row, the line it is best at below them; one column on a narrow window. */
+.prog-add { display: grid; gap: var(--sp-3); min-width: 0; }
+.prog-add-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--sp-3); min-width: 0; }
+.prog-f-best { grid-column: 1 / -1; }
+.prog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+
+@media (max-width: 640px) {
+  .prog-add-fields { grid-template-columns: minmax(0, 1fr); }
+  .prog-root .prog-select { flex: 1 1 100%; }
+}
+@container (max-width: 520px) {
+  .prog-add-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* One business and its switch for posting results to its hub room: a row of the list like a program's row (the same padding and the
+   same hairline between rows), so the name and the switch do not touch the list's edge. */
+.prog-share-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-3); border-top: 1px solid var(--line); min-width: 0; }
+.prog-share-row:first-child { border-top: 0; }
+
+.prog-check { justify-self: start; align-self: start; }
