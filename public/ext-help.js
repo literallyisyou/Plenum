@@ -129,8 +129,12 @@
     const open = make('button', 'ghost small', 'Open log folder');
     const refresh = make('button', 'ghost small', 'Refresh');
     for (const b of [show, copyBtn, save, open, refresh]) b.type = 'button';
+    // Copy and Save act on the report that is shown, so they wait for it, and say so.
+    const SHOW_FIRST = 'Press Show diagnostics first. The report is copied or saved as it is shown.';
     copyBtn.disabled = true;
     save.disabled = true;
+    copyBtn.title = SHOW_FIRST;
+    save.title = SHOW_FIRST;
     refresh.hidden = true;
     bar.append(show, copyBtn, save, open, refresh);
     const note = make('p', 'ext-help-note');
@@ -156,6 +160,8 @@
       pre.hidden = false;
       copyBtn.disabled = false;
       save.disabled = false;
+      copyBtn.title = '';
+      save.title = '';
       refresh.hidden = false;
       show.hidden = true;
     };

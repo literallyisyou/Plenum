@@ -35,7 +35,7 @@
   // to the tray, a crashed page) comes back without waiting for a change here.
   const HEARTBEAT_MS = 2000;
   const TEXT = {
-    plain: 'The browser works in the desktop app. Under node server.mjs there is nothing to show here.',
+    plain: 'The browser is part of the Plenum desktop app. This copy was started with node server.mjs, so it has no browser. Open the desktop app to use it.',
     empty: 'No tab is open. Type an address above, or open a new tab.',
     signIn: 'Sign-ins made here stay in this browser only; Plenum never reads them. Some providers refuse to sign in inside an app window (Google does).',
     downloadNotice: 'A downloaded file is untrusted until you have looked at it. Plenum saves it and never opens or runs it; open it yourself when you are sure.',

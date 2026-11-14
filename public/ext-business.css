@@ -17,7 +17,8 @@
 .biz-pause-all { flex: none; }
 .biz-pause-all[aria-pressed="true"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 36%, var(--line)); }
 
-.biz-tabs { display: flex; height: var(--ctl); padding: 3px; gap: 2px; border-radius: var(--r-md); background: var(--fill-2); min-width: 0; }
+/* The track is at least one control high and grows with its tabs: on a phone a tab is 44 px (the touch floor of ext-phone.css). */
+.biz-tabs { display: flex; min-height: var(--ctl); padding: 3px; gap: 2px; border-radius: var(--r-md); background: var(--fill-2); min-width: 0; }
 .biz-tab {
   flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
   padding: 0 var(--sp-2); border: 0; border-radius: 5px; background: transparent; color: var(--text-2);
@@ -115,7 +116,8 @@
 .biz-start-key { color: var(--muted); font-size: var(--fs-small); }
 .biz-start-val { margin: 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
 .biz-start-label { color: var(--text-2); font-size: var(--fs-small); font-weight: 600; }
-.biz-start-text { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); }
+/* The task text a yes starts is shown whole, never in a box that scrolls inside the page (on a phone the end of it would hide behind a second scroll). */
+.biz-start-text { max-height: none; overflow: visible; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); }
 .biz-start-until { margin: 0; }
 .biz-start .biz-opt:not([data-refuse]) { border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
 /* Routines are held after a Stop: the sentence with the time, and the button that ends the hold. */
@@ -213,3 +215,9 @@
 /* The unsaved-changes line sits beside Save and wraps under it on a narrow card; the dot on the Setup tab is part of its name. */
 .biz-unsaved { flex: 1 1 160px; margin: 0; }
 .biz-dot { color: var(--warn); }
+
+/* A phone below Full: one calm note at the top of the pane (answering needs Full access), the controls it cannot use are switched off. */
+.biz-needfull {
+  margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-left: 3px solid var(--accent-line); border-radius: var(--r-md);
+  background: var(--surface); color: var(--text-2); overflow-wrap: anywhere;
+}

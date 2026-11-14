@@ -21,7 +21,7 @@ import { readUsage } from './lib/usage.mjs';
 import { invalidateProviderStatus, knownProviders, prewarmProviderStatus, providersQuick, statusPayload } from './lib/provider-status.mjs';
 import { claudeRoute, claudeCliStatus } from './lib/claude-cli.mjs';
 import { cleanReason } from './lib/tools.mjs';
-import { DEFAULT_COUNCIL, normalizeCouncil, runCouncil } from './lib/council.mjs';
+import { DEFAULT_COUNCIL, normalizeCouncil, retryCouncil, retryPlan, runCouncil } from './lib/council.mjs';
 import { checkTasks, coderRefs, planBuild, runBuild } from './lib/delegate.mjs';
 import { effectiveAgents, typeByName } from './lib/agents.mjs';
 import { liveAgents, offerFor, openRun, registerRunScope, withRun } from './lib/agent-run.mjs';
@@ -973,7 +973,7 @@ async function runTurn({ ref, system, messages, root, kind, scope, mode, effort,
   // A run that finished with nothing to show is reported, not silently dropped.
   if (!error && !signal.aborted && !text.trim() && !out.tools.length && !run?.declined) {
     error = true;
-    failure = `${labelFor(ref)} finished without a reply. Try again, or lower the effort (the Effort selector).`;
+    failure = `${labelFor(ref)} finished without a reply. Send your message again, or lower the effort (the Effort selector).`;
     send({ type: 'error', message: failure });
   }
   // The provider's blocks of a computer run hold the screenshots and the toolset calls, so they are never kept: a later request
@@ -1680,6 +1680,18 @@ function councilText(result) {
   return [result.verdict, steps ? `Recommendation:\n${steps}` : ''].filter(Boolean).join('\n\n');
 }
 
+// The files of the newest councils that had any, by the council's row in the chat (the row object, which finishMessage keeps). The chat
+// keeps only the names and sizes of a question's files, so a seat that is run again (handleCouncilRetry) gets its files from here. Held
+// in memory only, for the two newest such councils: after a restart, or once two later councils brought files, a retry is refused in
+// plain words instead of being run without the files.
+const COUNCIL_FILES_KEPT = 2;
+const councilFilesKept = new Map();
+function keepCouncilFiles(row, images, files) {
+  if (!images.length && !files.names.length && !files.blocks.length && !files.documents.length) return;
+  councilFilesKept.set(row, { images, files });
+  while (councilFilesKept.size > COUNCIL_FILES_KEPT) councilFilesKept.delete(councilFilesKept.keys().next().value);
+}
+
 async function handleCouncil(req, res) {
   const body = await readBody(req, CHAT_BODY_LIMIT);
   const project = projectById(body.project);
@@ -1734,7 +1746,9 @@ async function handleCouncil(req, res) {
   const history = councilHistory(store.transcript(scope.id));
   // Kept as the run goes, so a cancelled council still leaves its answers in the chat. error is the reason the run ended without a
   // verdict (its error event), and rounds is the number of rounds it was set to run (B-52).
-  const saved = { seats: {}, result: null, seatMeta: [], error: null, rounds: null, folder: config.folder ?? 'text' };
+  // moderator is the model that wrote (or was to write) the verdict, and basis how many seats the verdict rests on (the consensus event's
+  // answered and total): the card says "Verdict based on A of N seats", and a later rerun of the moderator knows which model it was.
+  const saved = { seats: {}, result: null, seatMeta: [], error: null, rounds: null, folder: config.folder ?? 'text', moderator: null, basis: null };
   // The council's row in the chat. It is a draft from the start of the run (the same shape as the final row, plus draft: true), updated
   // quietly as each seat answers and at the consensus, and finished in place by after(). A kill or a crash in between keeps what the seats
   // answered: the store marks the row interrupted when it reads the state again (lib/store.mjs markInterrupted), so the page shows the
@@ -1747,6 +1761,8 @@ async function handleCouncil(req, res) {
     error: saved.error,
     rounds: saved.rounds,
     ...(saved.folder !== 'text' ? { folder: saved.folder } : {}),
+    ...(saved.moderator ? { moderator: saved.moderator } : {}),
+    ...(saved.basis ? saved.basis : {}),
   });
   await streamForProject(req, res, project, async ({ signal, send }) => {
     // The question keeps the names and sizes of its files, never their bytes, and where the seats worked.
@@ -1767,6 +1783,7 @@ async function handleCouncil(req, res) {
     }));
     // The draft row is added last, once nothing before the stream can throw, so a refused start leaves no draft behind.
     draft = store.addMessage(scope.id, { role: 'assistant', kind: 'council', content: COUNCIL_CUT_OFF, council: councilRow(), draft: true });
+    keepCouncilFiles(draft, images, files);
     store.persistQuiet();
     if (!folderNotice) return council;
     // The stream opens when this returns, so the plan-mode notice goes out as the run's first event (a send before then reaches no page).
@@ -1778,6 +1795,7 @@ async function handleCouncil(req, res) {
     if (ev.type === 'council-start') {
       saved.seatMeta = ev.seats;
       saved.rounds = ev.rounds ?? null;
+      if (ev.moderator?.ref) saved.moderator = { label: ev.moderator.label, ref: ev.moderator.ref, effort: ev.moderator.effort };
     }
     // A failed round keeps no text, so a reload never shows an empty answer as a finished one (B-52). ok<n> records the outcome (B-13).
     if (ev.type === 'seat-done') {
@@ -1787,7 +1805,10 @@ async function handleCouncil(req, res) {
       if (ev.ok) seat[`round${ev.round}`] = ev.text;
       else seat.error = ev.error ?? 'The seat did not answer.';
     }
-    if (ev.type === 'consensus') saved.result = ev.result;
+    if (ev.type === 'consensus') {
+      saved.result = ev.result;
+      if (Number.isInteger(ev.answered) && Number.isInteger(ev.total)) saved.basis = { answered: ev.answered, total: ev.total };
+    }
     // The run's error event: fewer than two seats answered, or the moderator failed. Its message is the reason shown after a reload.
     if (ev.type === 'error') saved.error = ev.message;
     // The row keeps up with the run: each seat's answer, the verdict and the error reach the file within a few seconds.
@@ -1804,10 +1825,153 @@ async function handleCouncil(req, res) {
       if (saved.error && !saved.result) logRunFailure('council', [...config.seats.map(seat => seat.ref), config.moderator.ref], saved.error);
       if (!(saved.result || saved.error || Object.keys(saved.seats).length)) {
         if (draft) store.removeMessage(scope.id, draft);
+        councilFilesKept.delete(draft);
         return;
       }
       const content = saved.result ? councilText(saved.result) : (saved.error ?? 'The council was stopped before it reached a verdict.');
       store.finishMessage(scope.id, draft, { role: 'assistant', kind: 'council', content, council: councilRow() });
+    },
+  });
+}
+
+// The words of a council row whose seats answered only when they were run again, until the moderator has run.
+const COUNCIL_NO_VERDICT = 'The council has no verdict yet. The answers of its seats are kept above.';
+// Said when a seat or the moderator is to run again but the files that came with the question are no longer held (keepCouncilFiles).
+const COUNCIL_FILES_GONE = 'Plenum no longer holds the files that came with this question, so the same question cannot be sent again. Ask the council again with the files attached.';
+
+// POST /api/council/retry: one turn of a council that has ended runs again (DECISIONS: council retry).
+//   body  { project, thread?, message, seat, ref?, effort? }
+//         message  the ts of the council's row in the chat (the assistant row of kind 'council')
+//         seat     'a' to 'd' (a seat that failed or never ran: that seat alone, in the round it failed in, with that round's context),
+//                  or 'moderator' (the verdict is written again from the answers the row holds; no seat runs)
+//         ref      another model for this turn, picked by the person. Without it the turn runs on the model the row names. The saved
+//                  council is never changed here: the page saves it only when the person says so.
+// The stream is a council's (kind 'council'), so Stop, the busy rule and the approval cards are a first run's. The row is brought up to
+// date in place and saved quietly as each event arrives, as the first run's draft is (DECISIONS item 129): the seat's new outcome, the new
+// verdict. A turn that is cut off leaves the row as it was. A folder council keeps its rules (DECISIONS item 85): one that works in the
+// folder is refused in plan mode and off the writer thread, one that reads it answers text-only in plan mode and says so, and a work
+// round takes the turn snapshot first. The question's files (DECISIONS item 84) go to the turn as they went the first time.
+async function handleCouncilRetry(req, res) {
+  const body = await readBody(req);
+  const project = projectById(body.project);
+  const scope = scopeFor(store, project, threadOf(body));
+  const log = store.transcript(scope.id);
+  const row = body.message === undefined || body.message === null || body.message === '' ? null
+    : log.find(m => m.role === 'assistant' && m.kind === 'council' && m.draft !== true && m.ts !== undefined && String(m.ts) === String(body.message)) ?? null;
+  if (!row || !row.council || typeof row.council !== 'object') throw httpError(400, 'That council is no longer in this chat, so it cannot be run again.');
+  const target = String(body.seat ?? '').trim().toLowerCase();
+  if (!target) throw httpError(400, 'Say which seat to run again, or "moderator".');
+  const change = {
+    ...(typeof body.ref === 'string' && body.ref.trim() ? { ref: body.ref } : {}),
+    ...(typeof body.effort === 'string' && body.effort.trim() ? { effort: body.effort } : {}),
+  };
+  // A row from before the moderator was kept names none: the saved council's moderator writes the verdict then, and the card names it.
+  const fallback = effectiveSettings(store.get(), project).council?.moderator ?? DEFAULT_COUNCIL.moderator;
+  const record = { ...row.council, moderator: row.council.moderator?.ref ? row.council.moderator : fallback };
+  // The folder rules of a first run (handleCouncil).
+  let folderNotice = null;
+  if (record.folder === 'work' && planModeOf(project, scope)) {
+    throw httpError(409, readOnlyWhy(project, scope) === 'writer' ? COUNCIL_WORK_WRITER : COUNCIL_WORK_PLAN);
+  }
+  if (record.folder === 'read' && (chatModeOf(project) === 'plan' || scope.chatMode === 'plan')) {
+    record.folder = 'text';
+    folderNotice = COUNCIL_READ_PLAN;
+  }
+  let plan;
+  try {
+    plan = retryPlan(record, target, change);
+  } catch (err) {
+    throw httpError(400, err.message);
+  }
+  // The question's own row comes just before the council's. What was said before it is the history the seats had.
+  const at = log.indexOf(row);
+  let asked = -1;
+  for (let i = at - 1; i >= 0 && asked < 0; i--) if (log[i].role === 'user') asked = log[i].kind === 'council' ? i : -2;
+  const question = String(row.council.question ?? (asked >= 0 ? log[asked].content : '') ?? '').trim();
+  if (!question) throw httpError(400, 'This council kept no question, so nothing can be run again. Ask the council again.');
+  const kept = councilFilesKept.get(row) ?? null;
+  if (!kept && asked >= 0 && (log[asked].images?.length || log[asked].attached?.length)) throw httpError(409, COUNCIL_FILES_GONE);
+  const history = councilHistory(log.slice(0, asked >= 0 ? asked : at));
+  const route = await claudeRoute();
+  const who = plan.seat ? plan.seat.label : `the moderator (${plan.cfg.moderator.label})`;
+  // What the turn changes in the row. meta is the council-retry event: the labels and models the turn ran with.
+  let meta = null;
+  let failure = null;
+  const touch = () => store.persistQuiet();
+  await streamForProject(req, res, project, async ({ signal, send }) => {
+    // A work round changes files, so it takes the turn snapshot a first run takes. It is kept on the council's row; the question's own
+    // snapshot (the folder before the council) is left as it is.
+    if (plan.round > 1 && plan.cfg.folder === 'work') {
+      const holder = { role: 'user', kind: 'council' };
+      await runBefore({ project, scope, kind: 'council', ref: null, planMode: false, send, signal, store, record: holder, changed: null, followUp: null, busy: () => running.has(scope.id) });
+      if (holder.snap) row.retrySnap = holder.snap;
+    }
+    const agents = effectiveAgents(store.get(), project);
+    const run = openRun({ projectId: project.id, kind: 'council', signal });
+    const retry = withRun(run, retryCouncil({
+      record, target, change, question, cwd: scope.root, signal, history, project, agents, run, images: kept?.images ?? [], files: kept?.files ?? null, route,
+      codersCannotAsk: codersCannotAskOf(project), denyPatterns: denyPatternsOf(project), tools: effectiveSettings(store.get(), project).tools,
+      mode: approvalModeOf(store.get(), project), approve: approvalRequester(send, signal),
+    }));
+    if (!folderNotice) return retry;
+    return (async function* () {
+      yield { type: 'notice', text: folderNotice };
+      yield* retry;
+    })();
+  }, ev => {
+    if (ev.type === 'council-retry') meta = ev;
+    if (ev.type === 'seat-done' && plan.seat && ev.seat === plan.seat.id) {
+      const entry = row.council.seats?.find(s => s?.id === ev.seat);
+      if (!entry) return;
+      // The seat's record says what ran: the model of this turn (the person's pick when it was changed) and how the turn ended.
+      const ran = meta?.seats?.find(s => s.id === ev.seat);
+      if (ran) Object.assign(entry, { label: ran.label, ref: ran.ref, effort: ran.effort });
+      entry[`ok${ev.round}`] = ev.ok === true;
+      if (Array.isArray(ev.changed) && ev.changed.length) entry[`changed${ev.round}`] = [...new Set([...(entry[`changed${ev.round}`] ?? []), ...ev.changed])].slice(0, 200);
+      if (ev.ok) {
+        entry[`round${ev.round}`] = ev.text;
+        delete entry.error;
+        // The verdict the row holds was written without this answer: the card says so until the moderator runs again.
+        if (row.council.result) row.council.newer = [...new Set([...(row.council.newer ?? []), ev.seat])];
+        // A row that said no seat answered is no longer true: it has no verdict yet, and the moderator can be run on this answer.
+        else if (row.council.error && !/^The moderator/.test(row.council.error)) {
+          row.council.error = null;
+          row.council.noVerdict = true;
+          row.content = COUNCIL_NO_VERDICT;
+        }
+      } else {
+        entry.error = ev.error ?? 'The seat did not answer.';
+        if (ev.error !== 'Stopped.') failure = entry.error;
+      }
+      touch();
+    }
+    if (ev.type === 'consensus') {
+      row.council.result = ev.result;
+      row.council.error = null;
+      if (Number.isInteger(ev.answered) && Number.isInteger(ev.total)) Object.assign(row.council, { answered: ev.answered, total: ev.total });
+      if (meta?.moderator?.ref) row.council.moderator = { label: meta.moderator.label, ref: meta.moderator.ref, effort: meta.moderator.effort };
+      delete row.council.newer;
+      delete row.council.noVerdict;
+      row.content = councilText(ev.result);
+      // The row has its verdict now, so it is no longer a council that was cut off.
+      delete row.interrupted;
+      touch();
+    }
+    if (ev.type === 'error') {
+      failure = ev.message;
+      // A verdict the row already holds stays: the failed rerun is said in the stream and the log, and the old verdict is still true of
+      // the answers it was written from.
+      if (!row.council.result) {
+        row.council.error = ev.message;
+        row.content = ev.message;
+        touch();
+      }
+    }
+  }, {
+    kind: 'council',
+    scope,
+    after: () => {
+      if (failure) logRunFailure('council retry', [plan.seat ? plan.seat.ref : plan.cfg.moderator.ref], `${who}: ${failure}`);
     },
   });
 }
@@ -2517,6 +2681,9 @@ async function handleApi(req, res, url) {
 
     case 'POST /api/council':
       return await handleCouncil(req, res);
+
+    case 'POST /api/council/retry':
+      return await handleCouncilRetry(req, res);
 
     case 'POST /api/plan':
       return await handlePlan(req, res);

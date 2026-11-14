@@ -29,3 +29,10 @@
 @media (hover: none) {
   .ext-turns-bar .ghost, .ext-turns-model { color: var(--text-2); }
 }
+
+/* The buttons under a failed reply (ext-turns.js, failPass): Sign in, Pick another model, Open the log. They stand on one line with
+   Retry and Copy error (ext-connection.js), which follow them, and wrap together on a narrow window. The sentence a button says is
+   a quiet line under the buttons. */
+.turn.error > .ext-turns-fail { display: inline-flex; flex-wrap: wrap; gap: 8px; margin: 10px 8px 0 0; vertical-align: top; }
+.turn.error > .ext-turns-fail + .ext-conn-bar { display: inline-flex; vertical-align: top; }
+.ext-turns-fail-say { margin: 8px 0 0; color: var(--text-2); font-size: 13px; line-height: 1.45; }

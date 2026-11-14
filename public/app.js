@@ -303,8 +303,13 @@ function visibleNotes(list, messages) {
   return saved.size ? list.filter(n => !(n.startsWith('Error: ') && saved.has(n.slice(7).trim()))) : list;
 }
 // The nodes of those notes. A 'Notice: ' line is a refusal the person can act on (the spend cap), drawn as a Plenum line, not as an
-// error (B-105).
-const noteNodes = (list, messages) => visibleNotes(list, messages).map(n => (n.startsWith('Error: ') ? errorEl(n.slice(7)) : systemTurn(n.startsWith('Notice: ') ? n.slice(8) : n)));
+// error (B-105). Each is marked data-note: it was said in this window's own time, which the error of a saved reply was not (the plan-limit
+// banner of public/ext-quota.js is raised by the first and never by the second).
+const noteNodes = (list, messages) => visibleNotes(list, messages).map(n => {
+  const node = n.startsWith('Error: ') ? errorEl(n.slice(7)) : systemTurn(n.startsWith('Notice: ') ? n.slice(8) : n);
+  node.dataset.note = '1';
+  return node;
+});
 // Functions that want to run after the shell or the chat has been drawn again (the thread tabs repaint through this).
 const renderHooks = new Set();
 function callRenderHooks() {
@@ -667,9 +672,19 @@ function toast(message, kind = 'ok', ms) {
   setTimeout(() => t.remove(), ms ?? (kind === 'bad' ? 5200 : 3200));
 }
 
+// Keeps a chat that stands near its end at its end while a reply grows. The chat glides there (.chat scrolls smoothly), so when the
+// next piece of the reply arrives it may still be on its way: it then counts as following as long as it has not gone back up since
+// (the reader did not scroll away), however far the end has moved meanwhile. Without that a quick reply outran the glide by more than
+// the 180 px and the chat stopped following it.
+let stuckAt = -1;
 function stickBottom() {
   const c = el.chat;
-  if (c.scrollHeight - c.scrollTop - c.clientHeight < 180) c.scrollTop = c.scrollHeight;
+  const top = c.scrollTop;
+  const following = stuckAt >= 0 && top >= stuckAt && top > 0;
+  if (following || c.scrollHeight - top - c.clientHeight < 180) {
+    stuckAt = top;
+    c.scrollTop = c.scrollHeight;
+  } else stuckAt = -1;
 }
 
 function stream() {
@@ -732,7 +747,8 @@ function pickable(pick) {
 // ---------- transcript pieces ----------
 
 function makeTurn(kind, { label = '', provider = '', when = null } = {}) {
-  const article = document.createElement('article');
+  // A turn of an earlier message that was not drawn yet has its place in the chat already (turnPlace): the turn is drawn into it.
+  const article = takePlace(kind) ?? document.createElement('article');
   article.className = `turn ${kind}`;
   if (provider) article.dataset.p = provider;
   const head = document.createElement('div');
@@ -1014,12 +1030,76 @@ function approvalEl(ev, { reason: askReason = true, source = '' } = {}) {
   return card;
 }
 
-function errorEl(message) {
+// What is known about a failed reply besides its words: the kind of the failure (lib/cli-errors.mjs for a CLI, lib/api-errors.mjs for an
+// API model; the server sends it on the error event and stores it with the reply as errorKind) and the model that failed. The card
+// carries both (data-error-kind, data-error-model) and ext-turns.js draws the buttons that fit: Sign in, Pick another model, Open the
+// log, and Retry only where sending again can help. A live error is also kept as a note, which is its words alone, so the facts are
+// remembered by those words until the stored reply is drawn in the note's place.
+const errorFacts = new Map();
+function rememberErrorFacts(message, facts) {
+  if (!facts.kind && !facts.model) return;
+  errorFacts.delete(message);
+  errorFacts.set(message, facts);
+  while (errorFacts.size > 40) errorFacts.delete(errorFacts.keys().next().value);
+}
+
+function errorEl(message, facts) {
   const t = makeTurn('system', { label: 'Something went wrong' });
   t.article.classList.add('error');
   t.article.querySelector('.turn-head').prepend(icon('alert'));
   t.body.textContent = message;
+  const known = facts ?? errorFacts.get(message);
+  if (typeof known?.kind === 'string' && known.kind) t.article.dataset.errorKind = known.kind;
+  if (typeof known?.model === 'string' && known.model) t.article.dataset.errorModel = known.model;
   return t.article;
+}
+
+// Opens Settings > Accounts at one card and gives that card the focus: a coding agent's card (its id: claude, codex, gemini, muse,
+// cursor, grok, antigravity) or an API provider's key card. Nothing on the card is pressed: a sign-in starts only when the person
+// presses its button. The cards are drawn as their reads return (a CLI's card is drawn twice: "Checking", then the real one), so the
+// card is looked for until ACCOUNTS_CARD_MS have passed, and it takes the focus again only while the person has not moved it.
+const ACCOUNTS_CARD_MS = 6000;
+function openAccountsAt(id) {
+  openAccounts();
+  if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) return;
+  const host = el.settingsContent;
+  const find = () => host.querySelector(`[data-card="${id}"]`)
+    ?? host.querySelector(`.ext-apikeys .logo-sm.p-${id}`)?.closest('.card')
+    ?? host.querySelector(`.ext-${id} .logo-sm.p-${id}`)?.closest('.card')
+    ?? null;
+  let shown = null;
+  const show = () => {
+    const card = find();
+    if (!card || card === shown) return;
+    const at = document.activeElement;
+    // The focus is taken from where this function left it (the search box, the last card, or nowhere after that card was redrawn).
+    if (at && at !== document.body && at !== el.settingsSearch && at !== shown) return;
+    shown = card;
+    card.tabIndex = -1;
+    card.scrollIntoView({ block: 'start' });
+    card.focus({ preventScroll: true });
+  };
+  const observer = new MutationObserver(show);
+  observer.observe(host, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), ACCOUNTS_CARD_MS);
+  show();
+}
+
+// Gives the model menu above the message box the focus and opens it where the browser allows. The person picks: nothing is chosen here.
+// False when the menu cannot take the focus (the settings have not loaded, or the menu is not on screen).
+function showModelMenu() {
+  if (settingsShown) closeSettingsPage();
+  const menu = el.model;
+  if (menu.disabled || menu.getClientRects().length === 0) return false;
+  menu.scrollIntoView({ block: 'nearest' });
+  menu.focus();
+  const focused = document.activeElement === menu;
+  try {
+    menu.showPicker();
+  } catch {
+    // The menu has the focus; it opens from the keyboard or its own arrow.
+  }
+  return focused;
 }
 
 // "Relayed from <label>" above a reply that a seat wrote from another seat's text.
@@ -1439,7 +1519,7 @@ function messageNodes(m) {
     if (seat && text) t.article.append(replyActions(m, seat));
     nodes.push(t.article);
   }
-  if (m.error) nodes.push(errorEl(String(m.error)));
+  if (m.error) nodes.push(errorEl(String(m.error), { kind: m.errorKind, model: m.model }));
   // A time-limit note already says "Stopped after ...", and an error says what went wrong; the plain note is for a stop by the person.
   if (m.aborted === true && !m.error && !/^Stopped\b/.test(text)) nodes.push(quietNote('Stopped.'));
   // A reply that Plenum closed while it was being written (a kill or a crash, B-29): the text it had is kept, and this says so.
@@ -1768,7 +1848,252 @@ function drawProjects() {
   }
 }
 
-function renderChat() {
+// ---------- a long chat is drawn from its end ----------
+// Drawing every message of a long chat held the window for seconds at every opening, send and end of a run, and every node on the
+// page costs a little on each keystroke (a chat of 2,000 messages is about 300,000 nodes). So the chat is drawn from its end: the
+// last CHAT_TAIL messages at once, and CHAT_MORE earlier ones each time the reader comes within CHAT_NEAR_TOP pixels of the top (the
+// view stays exactly where it is), or presses "Show earlier messages" above the first drawn turn. What is drawn is always the end of
+// the chat, from message drawnFrom on. Every earlier message that draws a question, reply, advisor or summary turn has that turn's
+// place in the chat already: a hidden, empty article of the turn's class (turnPlace), so a panel that counts the turns or looks one
+// up by its number (Search, the rows under the turns) finds the same turns as before. A place that is asked to scroll into view
+// (Search does that) first draws the chat from its message on, and its turn is drawn into the place itself (makeTurn, takePlace), so
+// the node the panel holds is the turn. A redraw starts again from the last CHAT_TAIL messages, as it starts again at the end.
+// A chat of up to CHAT_WHOLE messages is drawn whole, as it always was.
+const CHAT_WHOLE = 60;
+const CHAT_TAIL = 10;
+const CHAT_MORE = 12;
+const CHAT_NEAR_TOP = 1600;
+// The messages the chat was drawn from and the number of the first one that is drawn, the places of the turns before it (number of
+// the message -> article), the row above the first drawn turn, and the place the turn being drawn goes into ({ kind, el }, taken by
+// makeTurn).
+let drawnList = [];
+let drawnFrom = 0;
+let turnPlaces = new Map();
+let earlierRow = null;
+let placeToFill = null;
+
+// A drawn turn that is far from the window (more than FAR_MARGIN pixels above or below it) keeps its box and its height, and what
+// is inside it is taken out of the layout (class "far", style.css) until the turn comes near again, which is long before it can be
+// seen. Every box on the page costs a little at every change of the page, wherever the change is: with 2,000 messages drawn a
+// keystroke in the composer took half a second and a scroll step as long. (Measured on that page: taking the far turns out of the
+// layout brought a change in the composer from 170 ms to 2 ms; content-visibility on them, tried first, left it at 150 to 195 ms.)
+// The nodes of a far turn stay in the document, so the panels find what they look for. A turn that holds the focus or a part of the
+// selection is left as it is.
+// The height is given by a class with a rule of its own in a style sheet made here (far-h-<hundredths of a pixel>), not by a style
+// attribute: an attribute would travel with every copy of the turn's HTML, and a copy that is parsed again is refused by the page's
+// Content Security Policy.
+const FAR_MARGIN = 3000;
+const FAR_RULES = 20_000;
+const farHeights = new Set();
+const farClass = new WeakMap();
+let farSheet = null;
+function setFar(node, height) {
+  if (!farSheet) {
+    if (typeof CSSStyleSheet !== 'function' || !('adoptedStyleSheets' in document)) return;
+    farSheet = new CSSStyleSheet();
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, farSheet];
+  }
+  const hundredths = Math.round(height * 100);
+  const name = `far-h-${hundredths}`;
+  if (!farHeights.has(name)) {
+    if (farHeights.size >= FAR_RULES) return;
+    farSheet.insertRule(`.stream > .far.${name} { height: ${hundredths / 100}px; }`, farSheet.cssRules.length);
+    farHeights.add(name);
+  }
+  farClass.set(node, name);
+  node.classList.add('far', name);
+}
+function clearFar(node) {
+  node.classList.remove('far', farClass.get(node));
+  farClass.delete(node);
+}
+const farWatch = typeof IntersectionObserver === 'function'
+  ? new IntersectionObserver(entries => {
+    const selection = window.getSelection?.();
+    const selected = selection && !selection.isCollapsed ? selection : null;
+    for (const e of entries) {
+      const node = e.target;
+      if (e.isIntersecting) {
+        if (!node.classList.contains('far')) continue;
+        clearFar(node);
+      } else if (e.boundingClientRect.height > 0 && node.firstElementChild && !node.classList.contains('far')) {
+        if (node.contains(document.activeElement) || selected?.containsNode(node, true)) continue;
+        // Its height as it stands (the class makes the height count for the whole box).
+        setFar(node, e.boundingClientRect.height);
+      }
+    }
+  }, { root: el.chat, rootMargin: `${FAR_MARGIN}px 0px ${FAR_MARGIN}px 0px` })
+  : null;
+
+// Scrolling to a far turn (Search, a jump link of a panel) makes it whole first and goes there at once: a glide over hundreds of
+// turns that come back into the layout on the way did not arrive.
+function toFarTurn(options) {
+  if (!this.classList.contains('far')) return HTMLElement.prototype.scrollIntoView.call(this, options);
+  clearFar(this);
+  return HTMLElement.prototype.scrollIntoView.call(this, { ...(options && typeof options === 'object' ? options : {}), behavior: 'instant' });
+}
+
+// The class of the one turn a message draws, or null when it draws none of the four (a council, a build, a reply made only of tool
+// steps, a failed or stopped reply with no text). It mirrors messageNodes; where the two ever disagree the place is dropped unused.
+function placeKind(m) {
+  if (m.compact) return 'summary';
+  if (m.role === 'user') return m.kind === 'build' ? null : 'user';
+  if (m.kind === 'advisor') return 'advisor';
+  if (m.kind === 'council' || m.kind === 'build') return null;
+  if ((m.content ?? '').trim()) return 'assistant';
+  return (m.tools ?? []).length || m.computerRun || m.error || m.aborted || m.interrupted ? null : 'assistant';
+}
+
+function turnPlace(index, kind) {
+  const place = document.createElement('article');
+  place.className = `turn ${kind}`;
+  place.hidden = true;
+  // Scrolling to a turn that is not drawn draws the chat from that turn on (and some turns before it, so it can stand in the
+  // middle of the window), then goes to it at once: a glide over everything that was just drawn would show none of it.
+  place.scrollIntoView = function (options) {
+    drawEarlier(Math.max(0, index - CHAT_MORE), { keepView: false });
+    HTMLElement.prototype.scrollIntoView.call(this, { ...(options && typeof options === 'object' ? options : {}), behavior: 'instant' });
+  };
+  turnPlaces.set(index, place);
+  return place;
+}
+
+// The place waiting for a turn of this kind, emptied and shown, for makeTurn to draw into; null when there is none.
+function takePlace(kind) {
+  if (placeToFill?.kind !== kind) return null;
+  const place = placeToFill.el;
+  placeToFill = null;
+  delete place.scrollIntoView;
+  place.hidden = false;
+  place.replaceChildren();
+  return place;
+}
+
+// Where the drawing of a chat starts so that it holds its last `count` messages at least: at a question, so no reply stands without
+// its question and no build without the council card it belongs to.
+function chatStart(list, count) {
+  let from = Math.max(0, list.length - count);
+  while (from > 0 && (list[from].role !== 'user' || list[from].kind === 'build')) from--;
+  return from;
+}
+
+// The nodes of the messages from..to of the chat on screen, in order. live: the thread's run box, whose draft row is not drawn.
+function chatNodes(list, from, to, live) {
+  const out = [];
+  // A build belongs to the council card just above it, so its plan, run and review sit together.
+  let host = null;
+  for (let i = from; i < to; i++) {
+    const m = list[i];
+    if (m.kind === 'build' && m.role === 'user') continue;
+    // A reply still being written is drawn by its live run box, not by its draft row in the transcript (B-29).
+    if (m.draft === true && live) continue;
+    if (m.kind === 'build' && m.role === 'assistant' && host) {
+      host.querySelector('.council-slot')?.append(buildEl(buildFromSaved(m)));
+      continue;
+    }
+    // A council whose seat or moderator runs again is drawn by its live card, in the place of the saved one (councilRerun).
+    const again = S.activeProject ? retryLiveFor(activeScope(), m) : null;
+    // The turn of a message that had a place is drawn into it.
+    const place = turnPlaces.get(i);
+    if (place) {
+      turnPlaces.delete(i);
+      placeToFill = { kind: placeKind(m), el: place };
+    }
+    const nodes = again ? [again.el] : messageNodes(m);
+    if (place && placeToFill) place.remove();
+    placeToFill = null;
+    if (farWatch) {
+      for (const node of nodes) {
+        if (!(node instanceof Element)) continue;
+        farWatch.observe(node);
+        node.scrollIntoView = toFarTurn;
+      }
+    }
+    out.push(...nodes);
+    host = m.kind === 'council' && m.role === 'assistant' ? nodes[0] : null;
+  }
+  return out;
+}
+
+// The row above the first drawn turn while earlier messages are not drawn: how many there are, and a button that draws the next ones
+// (for the keyboard and a screen reader; scrolling up does the same by itself).
+function syncEarlierRow() {
+  if (!streamEl) return;
+  if (drawnFrom <= 0) {
+    earlierRow?.remove();
+    earlierRow = null;
+    return;
+  }
+  if (!earlierRow) {
+    earlierRow = document.createElement('div');
+    earlierRow.className = 'chat-earlier';
+    const more = button('ghost small', 'Show earlier messages');
+    more.addEventListener('click', () => {
+      drawEarlier(drawnFrom - CHAT_MORE);
+      // The button moved above what was added and keeps the focus there; when nothing earlier is left the chat takes it.
+      if (earlierRow) more.focus({ preventScroll: true });
+      else el.chat.focus({ preventScroll: true });
+    });
+    earlierRow.append(more);
+  }
+  const count = String(drawnFrom).replace(/\B(?=(\d{3})+$)/g, ',');
+  earlierRow.firstChild.title = `${count} earlier ${drawnFrom === 1 ? 'message is' : 'messages are'} not drawn yet. Scrolling up draws them too`;
+}
+
+// Draws the messages before the first drawn one, back to message `index` (or the question before it), above what is drawn. The view
+// does not move (keepView): what the reader sees stays at the same height of the window. The browser does that by itself (scroll
+// anchoring, which also lets a wheel turn or a glide that is under way go on, and takes in the rows the panels add to the new turns
+// in the same frame). It does not at the very top of a scroller, so a chat that stands there is moved down by one pixel first. A
+// browser without scroll anchoring gets the same by measurement: the first drawn turn before and after, once the panels have added
+// their rows, and the chat is moved by the difference. A chat that stands at its end stays at its end (the end of a chat whose last
+// messages are short is near its top as well).
+const SCROLL_ANCHORING = Boolean(window.CSS?.supports?.('overflow-anchor', 'auto'));
+function drawEarlier(index, { keepView = true } = {}) {
+  if (!streamEl?.isConnected || drawnFrom <= 0 || index >= drawnFrom) return;
+  const list = drawnList;
+  const from = index <= 0 ? 0 : chatStart(list, list.length - index);
+  // The first node of the drawn part: the new turns go before it.
+  const first = earlierRow?.nextSibling ?? null;
+  const atEnd = keepView && el.chat.scrollHeight - el.chat.scrollTop - el.chat.clientHeight < 4;
+  let markAt = null;
+  if (keepView && !atEnd) {
+    if (!SCROLL_ANCHORING) markAt = first instanceof Element ? first.getBoundingClientRect().top : null;
+    else if (el.chat.scrollTop <= 0) el.chat.scrollTo({ top: 1, behavior: 'instant' });
+  }
+  const nodes = chatNodes(list, from, drawnFrom, null);
+  drawnFrom = from;
+  // The reader is far from the end: a reply that grows there must not pull the chat down (stickBottom).
+  stuckAt = -1;
+  for (const node of nodes) streamEl.insertBefore(node, first);
+  syncEarlierRow();
+  if (earlierRow) streamEl.insertBefore(earlierRow, nodes[0] ?? first);
+  finishReopen();
+  if (atEnd) el.chat.scrollTo({ top: el.chat.scrollHeight, behavior: 'instant' });
+  if (markAt !== null) {
+    queueMicrotask(() => {
+      if (!first.isConnected) return;
+      const moved = first.getBoundingClientRect().top - markAt;
+      if (moved) el.chat.scrollTo({ top: el.chat.scrollTop + moved, behavior: 'instant' });
+    });
+  }
+}
+
+// Near the top of what is drawn, with earlier messages left: the next ones are drawn, once a frame, until the reader is clear of it.
+let earlierFrame = 0;
+function earlierNearTop() {
+  if (earlierFrame || drawnFrom <= 0 || el.chat.scrollTop > CHAT_NEAR_TOP) return;
+  earlierFrame = requestAnimationFrame(() => {
+    earlierFrame = 0;
+    if (drawnFrom <= 0 || !streamEl?.isConnected || el.chat.scrollTop > CHAT_NEAR_TOP || !el.chat.clientHeight) return;
+    drawEarlier(drawnFrom - CHAT_MORE);
+    earlierNearTop();
+  });
+}
+el.chat.addEventListener('scroll', earlierNearTop, { passive: true });
+
+// keep: the chat is drawn again where the reader is (a council seat that runs again), so everything that was drawn stays drawn and
+// the chat stays where it stands (at its end, or as far down as it was).
+function renderChat({ keep = false } = {}) {
   streamEl = document.createElement('div');
   streamEl.className = 'stream';
   if (!S.activeProject) streamEl.append(welcomeNoProject());
@@ -1777,27 +2102,38 @@ function renderChat() {
   const live = S.activeProject ? runBoxes.get(activeScope()) : null;
   // A long reply of the run that just ended here arrived whole, and stays whole (markStreamed).
   if (S.activeProject) markStreamed(activeScope(), S.messages);
-  // A build belongs to the council card just above it, so its plan, run and review sit together.
-  let host = null;
-  for (const m of S.messages) {
-    if (m.kind === 'build' && m.role === 'user') continue;
-    // A reply still being written is drawn by its live run box, not by its draft row in the transcript (B-29).
-    if (m.draft === true && live) continue;
-    if (m.kind === 'build' && m.role === 'assistant' && host) {
-      host.querySelector('.council-slot')?.append(buildEl(buildFromSaved(m)));
-      continue;
-    }
-    const nodes = messageNodes(m);
-    for (const node of nodes) streamEl.append(node);
-    host = m.kind === 'council' && m.role === 'assistant' ? nodes[0] : null;
+  // The end of the chat is drawn; each turn before it gets its place (see "a long chat is drawn from its end").
+  const list = S.messages;
+  const tail = list.length <= CHAT_WHOLE ? 0 : chatStart(list, CHAT_TAIL);
+  drawnFrom = keep ? Math.min(drawnFrom, tail) : tail;
+  drawnList = list;
+  turnPlaces = new Map();
+  earlierRow = null;
+  // The turns of the last drawing are let go.
+  farWatch?.disconnect();
+  for (let i = 0; i < drawnFrom; i++) {
+    const kind = placeKind(list[i]);
+    if (kind) streamEl.append(turnPlace(i, kind));
   }
+  syncEarlierRow();
+  if (earlierRow) streamEl.append(earlierRow);
+  streamEl.append(...chatNodes(list, drawnFrom, list.length, live));
   // An error the saved reply already shows is not drawn a second time (visibleNotes).
   streamEl.append(...noteNodes(notes, S.messages));
   if (live) streamEl.append(live);
   // The long messages that were opened are drawn whole again before the chat goes onto the page, so it opens at its true end.
   finishReopen();
+  const at = el.chat.scrollTop;
+  const atEnd = !keep || el.chat.scrollHeight - at - el.chat.clientHeight < 4;
   el.chat.replaceChildren(streamEl);
-  el.chat.scrollTop = el.chat.scrollHeight;
+  // At once, not as a glide (.chat scrolls smoothly): a glide from the top would pass the place where earlier messages are drawn.
+  const place = () => el.chat.scrollTo({ top: atEnd ? el.chat.scrollHeight : at, behavior: 'instant' });
+  place();
+  stuckAt = -1;
+  // Once more when the panels have added their rows under the turns (they do so right after this drawing), which makes the chat taller.
+  if (keep) queueMicrotask(place);
+  // A short end of the chat (little text in its last messages) leaves the reader near the top: more is drawn at once.
+  earlierNearTop();
 }
 
 function renderStatus() {
@@ -2103,6 +2439,13 @@ async function runStream(url, body, onEvent, { tick } = {}) {
       // composer. Any other refusal keeps its error line and Retry.
       const e = new Error(data.error || `Request failed (${res.status})`);
       e.policy = data.policy === true;
+      // A send the server refused because the License Agreement is not accepted (terms: true) is handled the same way: sending the
+      // same message again cannot work until the person has accepted, so it is a notice with no Retry, the text goes back to the
+      // composer, and the agreement is asked to open (ext-legal.js hears the event, as it does for every other request).
+      if (data.terms === true) {
+        e.policy = true;
+        window.dispatchEvent(new CustomEvent('plenum:terms-required'));
+      }
       refusedBy = e.policy ? 'policy' : 'other';
       throw e;
     }
@@ -2303,8 +2646,9 @@ function turnRenderer(scope = activeScope()) {
         if (ln.current && !ln.current.text) ln.current.article.remove();
         flush(ln.current);
         ln.current = null;
-        // Kept in the notes so the end-of-turn refresh does not wipe it.
+        // Kept in the notes so the end-of-turn refresh does not wipe it. The failure's kind and model go with the card, for its buttons.
         noteTo(scope, `Error: ${ev.message}`);
+        rememberErrorFacts(ev.message, { kind: ev.kind, model: ln.model });
         box.append(errorEl(ev.message));
         cue('error');
         bottom();
@@ -2629,6 +2973,8 @@ function threadStream(scope, messages) {
     host = m.kind === 'council' && m.role === 'assistant' ? nodes[0] : null;
   }
   for (const node of s.querySelectorAll('.reply-actions, .build-this')) node.remove();
+  // So are the buttons that run a council's seat or moderator again: they too act on the thread on screen.
+  for (const node of s.querySelectorAll('.seat-actions, .consensus-actions, .retry-pick')) node.remove();
   s.append(...noteNodes(threadNotes.get(scope) ?? [], Array.isArray(messages) ? messages : []));
   if (live) s.append(live);
   return s;
@@ -2841,16 +3187,27 @@ function councilFromSaved(m) {
     question: c.question ?? '',
     folder: c.folder ?? 'text',
     approvals: [],
+    notices: [],
     modSteps: 0,
     modStep: '',
     rounds: Number.isInteger(c.rounds) && c.rounds > 0 ? c.rounds : Math.max(1, ...counted),
     seats,
-    mod: null,
+    // What a seat or the moderator needs to run again (councilRerun): the row's ts names the council to the server. The moderator and
+    // the number of seats the verdict rests on are kept by the server since the retry was built; an older save has neither.
+    ts: m.ts,
+    saved: true,
+    mod: c.moderator?.ref ? { label: c.moderator.label || modelName(c.moderator.ref), ref: c.moderator.ref } : null,
+    answered: Number.isInteger(c.answered) ? c.answered : null,
+    total: Number.isInteger(c.total) ? c.total : null,
+    // The seats that answered after the verdict was written (a seat that was run again): the verdict does not count them yet.
+    newer: Array.isArray(c.newer) ? c.newer : [],
+    // A council whose seats answered only when they were run again has no verdict and was not stopped: the card says so.
+    noVerdict: c.noVerdict === true && !c.result,
     modText: '',
     modState: c.result ? 'done' : 'waiting',
     result: c.result ?? null,
     // A council that ended with an error is not a stop: the error is shown in its place (B-52).
-    stopped: !c.result && !c.error,
+    stopped: !c.result && !c.error && c.noVerdict !== true,
     done: true,
     error: c.error ?? '',
     clock: '',
@@ -2868,6 +3225,16 @@ function councilHandler(cd, paint) {
         cd.seats = ev.seats.map(s => ({ id: s.id, label: s.label, ref: s.ref, role: s.role, effort: s.effort, rounds: {} }));
         cd.rounds = ev.rounds ?? cd.rounds;
         cd.folder = ev.folder ?? cd.folder ?? 'text';
+        cd.mod = ev.moderator ? { label: ev.moderator.label, ref: ev.moderator.ref } : cd.mod;
+        cue('start');
+        break;
+      // One turn of an ended council runs again (councilRerun): the seats and the moderator as this turn names them, so a seat that runs
+      // on another model this time says so on the card.
+      case 'council-retry':
+        for (const info of ev.seats ?? []) {
+          const s = seat(info.id);
+          if (s) Object.assign(s, { label: info.label, ref: info.ref, effort: info.effort });
+        }
         cd.mod = ev.moderator ? { label: ev.moderator.label, ref: ev.moderator.ref } : cd.mod;
         cue('start');
         break;
@@ -2890,6 +3257,13 @@ function councilHandler(cd, paint) {
         const text = ev.text ?? s.rounds[ev.round]?.text ?? '';
         const was = s.rounds[ev.round] ?? {};
         s.rounds[ev.round] = { ...seatMeta(text), ...(ev.parsed ?? {}), text, state: ev.ok ? 'done' : 'failed', error: ev.error, access: was.access ?? null, steps: was.steps ?? 0, filesChanged: Array.isArray(ev.changed) ? ev.changed : [] };
+        // A seat that answers after the verdict was written is not part of it yet.
+        if (ev.ok && cd.result && cd.newer && !cd.newer.includes(s.id)) cd.newer.push(s.id);
+        // "None of the seats answered" is no longer true once a seat that was run again has answered.
+        if (ev.ok && cd.saved && !cd.result && cd.error && !/^The moderator/.test(cd.error)) {
+          cd.error = '';
+          cd.noVerdict = true;
+        }
         break;
       }
       // A seat or the moderator working in the folder (DECISIONS item 85): its own tool steps (not those of an agent it started), and the
@@ -2940,6 +3314,10 @@ function councilHandler(cd, paint) {
       case 'consensus':
         cd.result = ev.result;
         cd.modState = 'done';
+        // How many seats the verdict rests on (the consensus event's answered and total).
+        cd.answered = Number.isInteger(ev.answered) ? ev.answered : null;
+        cd.total = Number.isInteger(ev.total) ? ev.total : null;
+        cd.newer = [];
         break;
       case 'council-done':
         cd.done = true;
@@ -2991,8 +3369,229 @@ function councilEl(cd, fresh = false) {
   if (cd.error) article.append(quietNote(cd.error, 'council-err'));
   const cons = consensusEl(cd, slot);
   if (cons) article.append(cons);
+  // An ended council with no verdict (the moderator failed, or the run was stopped or cut off before it): the moderator can run on the
+  // answers the card holds, without running a seat again.
+  if (cd.noVerdict && !cd.result && cd.done) article.append(quietNote('No verdict yet. The moderator can write one from the answers above.', 'council-note'));
+  if (canRerunModerator(cd) && !cd.result) article.append(moderatorActions(cd, /^The moderator\b/.test(cd.error ?? '') ? 'Run the moderator again' : 'Run the moderator'));
   article.append(slot);
   return article;
+}
+
+// ---------- council: running one turn again (DECISIONS: council retry) ----------
+
+// The live card of a council whose seat or moderator runs again, by thread: { ts, el }. renderChat draws it in the place of the saved
+// card with that ts, so the answers stay where they were while the turn runs.
+const retryLive = new Map();
+function retryLiveFor(scope, m) {
+  const again = retryLive.get(scope);
+  return again && m.kind === 'council' && m.role === 'assistant' && m.ts === again.ts ? again : null;
+}
+
+// The model picker that is open on a council card: { ts, target, ref, save }. Kept here so a redraw of the chat does not shut it.
+let retryPick = null;
+
+// A seat of an ended, saved council can run again in round r when r is the round it failed in, or round 1 of a seat that never ran.
+function canRetrySeat(cd, s, r) {
+  if (!cd.saved || !cd.done || cd.ts === undefined || !SEAT_IDS.includes(s.id)) return false;
+  const failed = [1, 2, 3].find(n => s.rounds[n]?.state === 'failed');
+  return failed ? failed === r : r === 1 && !s.rounds[1];
+}
+
+// The moderator of an ended, saved council can run when a seat has answered round 1.
+function canRerunModerator(cd) {
+  return Boolean(cd.saved && cd.done && cd.ts !== undefined && cd.seats.some(s => s.rounds[1]?.state === 'done'));
+}
+
+// "Verdict based on A of N seats": from the consensus event (kept in the saved row). A save from before they were kept counts the
+// seats whose round 1 is on the card.
+function verdictBasis(cd) {
+  if (Number.isInteger(cd.answered) && Number.isInteger(cd.total) && cd.total > 0) return { answered: cd.answered, total: cd.total };
+  if (!cd.saved || !cd.seats.length || cd.newer?.length) return null;
+  return { answered: cd.seats.filter(s => s.rounds[1]?.state === 'done').length, total: cd.seats.length };
+}
+
+// The buttons under a seat's failed round: Retry (the same model) and Change model (another one, for this turn).
+function seatActions(cd, s, retryLabel) {
+  const L = s.id.toUpperCase();
+  const acts = document.createElement('div');
+  acts.className = 'seat-actions';
+  if (retryLabel) {
+    const again = button('ghost small seat-retry', retryLabel);
+    again.setAttribute('aria-label', retryLabel === 'Retry' ? `Run seat ${L} again with ${modelName(s.ref)}` : `Run seat ${L} with ${modelName(s.ref)}`);
+    again.title = 'Runs this seat alone, with the same question. The other seats and the verdict stay as they are.';
+    again.addEventListener('click', () => councilRerun(cd, s.id));
+    acts.append(again);
+  }
+  return acts;
+}
+
+// The buttons of the moderator: run it (again), or run it with another model.
+function moderatorActions(cd, label) {
+  const acts = document.createElement('div');
+  acts.className = 'consensus-actions';
+  const run = button('ghost small consensus-rerun', label);
+  run.title = 'The moderator reads the answers on this card and writes the verdict. No seat runs again.';
+  run.addEventListener('click', () => councilRerun(cd, 'moderator'));
+  const change = button('ghost small consensus-change', 'Change model');
+  change.setAttribute('aria-label', 'Change the moderator\'s model for this verdict');
+  change.addEventListener('click', () => openRetryPick(cd, 'moderator', acts));
+  acts.append(run, change);
+  if (retryPick?.ts === cd.ts && retryPick.target === 'moderator') showRetryPick(cd, 'moderator', acts);
+  return acts;
+}
+
+function openRetryPick(cd, target, acts) {
+  retryPick = { ts: cd.ts, target, ref: null, save: false };
+  showRetryPick(cd, target, acts);
+  acts.nextElementSibling?.querySelector('select')?.focus();
+}
+
+// The picker goes under the buttons, which hide while it is open. Nothing runs and nothing is saved until its Run button is pressed.
+function showRetryPick(cd, target, acts) {
+  const isMod = target === 'moderator';
+  const L = isMod ? '' : target.toUpperCase();
+  const current = isMod ? cd.mod?.ref ?? (S.council ?? DEFAULT_COUNCIL).moderator?.ref : cd.seats.find(x => x.id === target)?.ref;
+  const box = document.createElement('div');
+  box.className = 'retry-pick';
+  const model = pickSelect('seat-model', isMod ? 'The model that writes the verdict this time' : 'The model that answers for this seat this time', isMod ? 'Model for the moderator, this run' : `Model for seat ${L}, this run`);
+  fillModels(model.select, false);
+  const start = retryPick?.ref ?? current ?? '';
+  ensureOption(model.select, start);
+  model.select.value = start;
+  const keep = document.createElement('label');
+  keep.className = 'retry-save';
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.checked = retryPick?.save === true;
+  keep.append(check, span('', isMod ? 'Also make it the moderator of my saved council' : `Also make it seat ${L} of my saved council`));
+  const note = span('retry-note', '');
+  const run = button('primary small retry-run', isMod ? 'Run the moderator' : `Run seat ${L}`);
+  const cancel = button('ghost small retry-cancel', 'Cancel');
+  const row = document.createElement('div');
+  row.className = 'retry-row';
+  row.append(run, cancel);
+  const sync = () => {
+    // A model its provider no longer offers cannot answer: the line says so and Run waits for another pick.
+    const gone = seatGoneWords(model.select.value);
+    note.textContent = gone || (check.checked ? 'Your saved council changes when you press Run.' : 'Only this run uses it. Your saved council stays as it is.');
+    note.classList.toggle('bad', Boolean(gone));
+    run.disabled = !model.select.value || Boolean(gone);
+  };
+  model.select.addEventListener('change', () => {
+    if (retryPick) retryPick.ref = model.select.value;
+    sync();
+  });
+  check.addEventListener('change', () => {
+    if (retryPick) retryPick.save = check.checked;
+    sync();
+  });
+  const close = () => {
+    retryPick = null;
+    box.remove();
+    acts.hidden = false;
+  };
+  cancel.addEventListener('click', () => {
+    close();
+    acts.querySelector('button')?.focus();
+  });
+  run.addEventListener('click', () => {
+    const pick = { ref: model.select.value, save: check.checked };
+    close();
+    councilRerun(cd, target, pick);
+  });
+  sync();
+  box.append(model.pickEl, keep, note, row);
+  acts.hidden = true;
+  acts.after(box);
+}
+
+// Saves the picked model as the seat's (or the moderator's) in the saved council, because the person ticked the box. The saved council
+// may have changed since the run: the seat is changed only when it still holds the model that ran, and otherwise it is left and said.
+async function savePickedModel(target, was, ref) {
+  const cfg = S.council ?? DEFAULT_COUNCIL;
+  const index = SEAT_IDS.indexOf(target);
+  const holds = target === 'moderator' ? cfg.moderator?.ref : cfg.seats[index]?.ref;
+  if (holds === ref) return;
+  if (holds !== was) return toast('Your saved council has changed since this run, so it was left as it is.', 'bad', 6000);
+  if (target === 'moderator') await editMod('ref', ref);
+  else await editSeat(index, 'ref', ref);
+}
+
+// Runs one turn of an ended council again: a seat (alone, in the round it failed in) or the moderator (on the answers the card holds).
+// pick is { ref, save } from the model picker; without it the turn runs on the model the card names. The card is drawn live in its
+// place while the turn runs, Stop works as for any run, and the chat is drawn again from what the server saved when it ends.
+async function councilRerun(saved, target, pick = null) {
+  if (!S.activeProject) return;
+  if (busyNow()) return toast('This project is already running. Use /cancel first.', 'bad');
+  const scope = activeScope();
+  const m = S.messages.find(x => x.kind === 'council' && x.role === 'assistant' && x.ts === saved.ts);
+  if (!m) return toast('That council is no longer in this chat.', 'bad');
+  const cd = councilFromSaved(m);
+  const seat = target === 'moderator' ? null : cd.seats.find(s => s.id === target);
+  if (target !== 'moderator' && !seat) return;
+  const was = seat ? seat.ref : cd.mod?.ref;
+  if (pick?.save && pick.ref && pick.ref !== was) await savePickedModel(target, was, pick.ref);
+  // The card as it will look while the turn runs: the seat's round working again, or the verdict being written again.
+  cd.done = false;
+  cd.stopped = false;
+  if (seat) {
+    const round = [1, 2, 3].find(n => seat.rounds[n]?.state === 'failed') ?? 1;
+    seat.rounds[round] = { text: '', state: 'running', steps: 0, step: '' };
+    cd.open[`${seat.id}${round}`] = true;
+  } else {
+    cd.result = null;
+    cd.error = '';
+    cd.modText = '';
+    cd.modState = 'running';
+  }
+  notes = [];
+  const entry = { ts: m.ts, el: councilEl(cd) };
+  retryLive.set(scope, entry);
+  if (scope === activeScope()) {
+    renderChat({ keep: true });
+  }
+  let queued = false;
+  const paint = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      const next = councilEl(cd);
+      if (entry.el.isConnected) replaceKeepingFocus(entry.el, next);
+      entry.el = next;
+    });
+  };
+  const onEvent = councilHandler(cd, paint);
+  let ended = false;
+  await runStream('/api/council/retry', { ...scopeBody(), message: m.ts, seat: target, ...(pick?.ref && pick.ref !== was ? { ref: pick.ref } : {}) }, ev => {
+    // The stream's last event: from here on the saved row is the card, so the chat's redraw at the end of the run draws that.
+    if (ev.type === 'done') {
+      ended = true;
+      if (retryLive.get(scope) === entry) retryLive.delete(scope);
+    }
+    onEvent(ev);
+  }, {
+    tick: (secs, time) => {
+      cd.clock = time;
+      const t = entry.el.querySelector('.council-timer');
+      if (t) t.textContent = `Working · ${time}`;
+    },
+  });
+  // A turn the server refused, or a stream that was cut: the live card goes and the saved one is back.
+  if (retryLive.get(scope) === entry) {
+    retryLive.delete(scope);
+    if (scope === activeScope()) renderChat();
+  }
+  // Stop ends this page's stream before the server has written how the turn ended ("Stopped." on the seat), and the row keeps its
+  // time and its place, so nothing else tells the page to read it again: the chat is read once more when the server's run is over.
+  if (!ended && scope === activeScope()) {
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const state = await api('/api/state').catch(() => null);
+      if (!state || state.running !== true) break;
+    }
+    if (scope === activeScope() && !busyNow()) await refresh();
+  }
 }
 
 function seatColEl(cd, s) {
@@ -3059,15 +3658,26 @@ function roundEl(cd, s, r) {
   body.className = 'turn-body round-body';
   if (data.state === 'failed') {
     body.append(span('seat-err', data.error || 'This seat failed.'));
-    // A seat whose model the CLI no longer offers (the server's text starts "<name> does not offer") is fixed in its model menu.
-    if (NOT_OFFERED_ERROR.test(data.error ?? '') && SEAT_IDS.includes(s.id)) {
+    // A seat whose model the CLI no longer offers (the server's text starts "<name> does not offer") would fail again on that model.
+    const gone = NOT_OFFERED_ERROR.test(data.error ?? '');
+    // An ended council's failed seat can run again, alone (DECISIONS: council retry): Retry on the same model, unless the model is
+    // gone, and Change model for another one. While the council still runs, Change model leads to the seat's menu in the council
+    // settings, as before, and only for a model that is gone.
+    const again = canRetrySeat(cd, s, r);
+    if (SEAT_IDS.includes(s.id) && (again || gone)) {
+      const acts = again ? seatActions(cd, s, gone ? '' : 'Retry') : document.createElement('div');
+      acts.className = 'seat-actions';
       const change = button('ghost small seat-change', 'Change model');
       change.setAttribute('aria-label', `Change the model of seat ${s.id.toUpperCase()}`);
-      change.addEventListener('click', () => showSeatModelMenu(s.id));
-      body.append(change);
+      change.addEventListener('click', () => (again ? openRetryPick(cd, s.id, acts) : showSeatModelMenu(s.id)));
+      acts.append(change);
+      body.append(acts);
+      if (again && retryPick?.ts === cd.ts && retryPick.target === s.id) showRetryPick(cd, s.id, acts);
     }
   } else if (data.state === 'waiting') {
     body.append(span('round-wait', r === 1 ? 'Waiting to start' : unrun.text));
+    // A seat the council never reached (it was stopped or cut off first) can run its round 1.
+    if (r === 1 && canRetrySeat(cd, s, r)) body.append(seatActions(cd, s, 'Run this seat'));
   } else if (!data.text) {
     body.innerHTML = THINKING;
     if (data.steps) body.append(span('round-steps', `${data.steps} ${data.steps === 1 ? 'step' : 'steps'}${data.step ? ` · ${data.step}` : ''}`));
@@ -3104,7 +3714,21 @@ function consensusEl(cd, slot) {
   top.className = 'consensus-top';
   top.append(span('kicker', 'Consensus'));
   if (cd.mod) top.append(span('consensus-by', `Moderator · ${cd.mod.label}`));
+  // How many seats the verdict rests on (DECISIONS item 98: one answer is enough for a verdict, and the card says so).
+  const basis = cd.result ? verdictBasis(cd) : null;
+  if (basis) top.append(span(basis.answered < basis.total ? 'consensus-basis part' : 'consensus-basis', `Verdict based on ${basis.answered} of ${basis.total} seats`));
   box.append(top);
+  // A seat that was run again answered after this verdict was written: the card says so, and the moderator can take it in.
+  if (cd.result && cd.newer?.length) {
+    const names = cd.newer.map(id => cd.seats.find(s => s.id === id)?.label).filter(Boolean);
+    if (names.length) {
+      const stale = document.createElement('div');
+      stale.className = 'consensus-stale';
+      stale.append(span('', `${names.join(' and ')} answered after this verdict was written, so the verdict does not count ${names.length === 1 ? 'it' : 'them'} yet.`));
+      box.append(stale);
+      if (canRerunModerator(cd)) box.append(moderatorActions(cd, 'Rerun the verdict'));
+    }
+  }
   if (!cd.result) {
     if (cd.modText) box.append(preEl('raw-stream', cd.modText));
     else if (!cd.stopped) {
@@ -8001,10 +8625,11 @@ async function loadAll() {
   } catch (err) {
     notes.push(`Cannot load status (${err.message}).`);
   }
+  // refresh draws the whole page once. What comes after draws its own part (loadUpdates the updates badge, initMusic the music
+  // control), so the page is not drawn a second time: a second draw replaced the chat that was just painted.
   await refresh();
   await loadUpdates();
   initMusic();
-  renderAll();
   events.connect();
 }
 
@@ -8129,6 +8754,10 @@ window.MuseUI = {
   confirm: opts => confirmBox(opts ?? {}),
   // The last chat send, kept until its run goes through (B-5). ext-connection.js reads it for Retry.
   get lastSent() { return lastSent; },
+  // For the buttons under a failed reply (ext-turns.js): Accounts at one card (nothing is pressed there), and the model menu with the
+  // focus (nothing is picked). showModelMenu answers false when the menu cannot take the focus.
+  openAccountsAt,
+  showModelMenu,
   // Approval settings: setProjectApprovals(patch) changes the active project's, askApproveAll() is the Approve all question.
   setProjectApprovals,
   askApproveAll,
@@ -8196,7 +8825,7 @@ function cutShort(n) {
   const room = n.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
   return fitMeasure.measureText(words).width > room + 0.05;
 }
-function titlebarTight(bar, step) {
+function titlebarTight(bar, step, chipsTop = false) {
   const end = bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight);
   const rects = [...bar.children].filter(n => n.getClientRects().length > 0).map(n => n.getBoundingClientRect());
   if (rects.some(r => r.right > end + 1)) return true;
@@ -8210,6 +8839,8 @@ function titlebarTight(bar, step) {
   const full = !space || space.getBoundingClientRect().width <= (parseFloat(getComputedStyle(space).minWidth) || 0) + 1;
   if (step < 2 && full && title && [...title.querySelectorAll(':scope > .proj-name, :scope > .cost-line, :scope > button')].some(cutShort)) return true;
   if (step < 3) return false;
+  // With the chips beside the name (see fitTitlebar) the first row is the name's and theirs: a name or a cost line they cut is tight.
+  if (chipsTop && title && [...title.querySelectorAll(':scope > .proj-name, :scope > .cost-line, :scope > button')].some(cutShort)) return true;
   const mids = rects.map(r => r.top + r.height / 2).sort((a, b) => a - b);
   let lines = 0; let last = -Infinity;
   for (const m of mids) { if (m - last > 6) lines += 1; last = m; }
@@ -8219,10 +8850,19 @@ function fitTitlebar() {
   fitFrame = 0;
   const bar = $('titlebar');
   if (!bar) return;
-  if (document.documentElement.dataset.surface === 'phone') { delete bar.dataset.fit; document.documentElement.style.removeProperty('--bar-now'); return; }
-  let step = 0;
-  bar.dataset.fit = '0';
-  while (step < FIT_LAST && titlebarTight(bar, step)) { step += 1; bar.dataset.fit = String(step); }
+  if (document.documentElement.dataset.surface === 'phone') { delete bar.dataset.fit; delete bar.dataset.chips; document.documentElement.style.removeProperty('--bar-now'); return; }
+  // The steps in order. From step 4 each step is tried a second time with the chips (Ask first, Phone) on the first row beside the name
+  // (data-chips="top", style.css): with the side pane open the bar is short and its second row cannot hold the chips, the drive pill
+  // and the pane buttons, while the first row has room. That way the pill keeps its words where they fit, and the bar stays on two
+  // rows. When nothing fits, the last step stands with the chips in their usual place.
+  const tries = [[0], [1], [2], [3], [4], [4, true], [5], [5, true]];
+  for (const [step, chipsTop = false] of tries) {
+    bar.dataset.fit = String(step);
+    if (chipsTop) bar.dataset.chips = 'top';
+    else delete bar.dataset.chips;
+    if (!titlebarTight(bar, step, chipsTop)) break;
+    if (step === FIT_LAST && chipsTop) delete bar.dataset.chips;
+  }
   // A path with room for only a letter or two ("D...") says nothing, so it is not shown then. It keeps its place: nothing moves.
   const path = bar.querySelector('.proj-path');
   if (path) path.toggleAttribute('data-sliver', path.getClientRects().length > 0 && path.getBoundingClientRect().width < 64);

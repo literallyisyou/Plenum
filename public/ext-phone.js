@@ -86,7 +86,7 @@
     { id: 'review', label: 'Review', icon: 'list' },
   ];
   const TAB_LABEL = { projects: 'Projects', chat: 'Chat', agents: 'Agents', review: 'Review' };
-  const PANE_TITLE = { artifacts: 'Artifacts', browser: 'Browser', agents: 'Agents', review: 'Review' };
+  const PANE_TITLE = { artifacts: 'Artifacts', browser: 'Browser', agents: 'Agents', review: 'Review', business: 'Businesses' };
   const CARRIER_WORD = { lan: 'LAN', tailscale: 'Tailnet', relay: 'Relay' };
   const CARRIER_LONG = { lan: 'the same network', tailscale: 'Tailscale', relay: 'your relay' };
   const CONN_WORD = { reconnecting: 'Reconnecting', offline: 'Offline', asleep: 'Asleep' };
@@ -889,11 +889,32 @@
     const out = [];
     for (const el of Array.from(refs.topbar.querySelectorAll('.proj-title > *'))) {
       if (el.matches('#projName, #projPath, .ph-title')) continue;
-      const buttons = el.tagName === 'BUTTON' ? [el] : Array.from(el.querySelectorAll('button'));
+      // A chip its own panel has switched off (no project, no answer yet, nothing to say) has no row: it would be a row named "Action".
+      if (el.hidden) continue;
+      const buttons = el.tagName === 'BUTTON' ? [el] : Array.from(el.querySelectorAll('button')).filter(b => !b.hidden);
       if (buttons.length) out.push(...buttons);
-      else out.push(el);
+      else if (txt(el)) out.push(el);
     }
     return out;
+  }
+
+  // The words of a control without the parts it keeps hidden: the Settings link holds a count that is hidden while it is 0, and all of
+  // its text would read "Settings 0".
+  function shownText(node) {
+    if (!node.querySelector('[hidden]')) return txt(node);
+    const copy = node.cloneNode(true);
+    for (const part of Array.from(copy.querySelectorAll('[hidden]'))) part.remove();
+    return txt(copy);
+  }
+
+  // The words of a title-bar chip for its row in the More sheet. A chip can hold its words twice, long and short, for the wide and the
+  // narrow title bar (the git and spend chips do), so all of its text would read "git: clean on mainmain". Its accessible name says
+  // it once, followed by what a press does ("... . Opens the working tree."): the row takes the name without that last sentence.
+  function chipLabel(chip) {
+    const said = String(chip.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    if (!said) return txt(chip) || 'Action';
+    const cut = said.lastIndexOf('. ');
+    return (cut > 0 ? said.slice(0, cut) : said).replace(/\.$/, '') || txt(chip) || 'Action';
   }
 
   function openMoreSheet(opener) {
@@ -923,10 +944,12 @@
         if (chips.length) {
           body.append(sectionHead('This project'));
           for (const chip of chips) {
-            const label = txt(chip) || chip.getAttribute('aria-label') || 'Action';
+            const label = chipLabel(chip);
+            // The hover text is the row's note, unless it only says the label again (the Permissions chip's does).
+            const hover = String(chip.title || '').trim();
             body.append(sheetRow({
               label,
-              note: chip.title && chip.title !== label ? chip.title : '',
+              note: hover && !hover.startsWith(label) ? hover : '',
               disabled: chip.disabled === true,
               onPick: () => {
                 api.close();
@@ -940,7 +963,7 @@
           body.append(sectionHead('App'));
           for (const b of links) {
             body.append(sheetRow({
-              label: txt(b),
+              label: shownText(b),
               disabled: b.disabled === true,
               onPick: () => {
                 api.close();

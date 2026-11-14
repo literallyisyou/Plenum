@@ -329,8 +329,10 @@ html[data-surface="phone"] .ph-sheet-note {
 }
 html[data-surface="phone"] .ph-sheet :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* Action row (C7): 52 px tall, label 15, note 13. Disabled rows keep their note so the reason is read. */
+/* Action row (C7): 52 px tall, label 15, note 13. Disabled rows keep their note so the reason is read. A row never gets shorter than
+   its words (flex: none): in a sheet taller than the screen the rows used to shrink to 52 px and a long note ran over the next row. */
 html[data-surface="phone"] .ph-row {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;

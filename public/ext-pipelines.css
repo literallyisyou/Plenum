@@ -46,7 +46,10 @@
 }
 .pl-select { height: 34px; padding: 0 9px; }
 .pl-select option, .pl-select optgroup { background: var(--surface); color: var(--text); }
+/* A step's prompt is a template with {input} and {previous} in it and stays in the code face; the message of a run is a person's own
+   words and takes the face of every other message box. */
 .pl-text { font: 12.5px/1.5 var(--mono); resize: vertical; min-height: 96px; }
+.pl-text.pl-message { font: 13px/1.5 var(--ui); }
 .pl-input:focus, .pl-select:focus, .pl-text:focus {
   border-color: var(--accent);
   box-shadow: var(--ring);
@@ -86,3 +89,8 @@
 }
 .pl-out-text:empty::before { content: attr(data-empty); color: var(--muted); font-size: 12.5px; }
 .pl-out-error { margin: 0; color: var(--bad); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+/* The buttons of a failed step's kind (Open Accounts, Pick another model, Open the log) stand in the row with Retry step. */
+.pl-out-fail { display: contents; }
+.pl-out-fail[hidden] { display: none; }
+.pl-out-say { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.pl-out-say.bad { color: var(--bad); }

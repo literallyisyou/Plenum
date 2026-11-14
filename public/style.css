@@ -519,6 +519,11 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 /* Step 4: the Phone chip shows its short word (ext-remote.js sets data-short); the full words stay in its accessible name. */
 #titlebar:is([data-fit="4"],[data-fit="5"]) .remote-chip[data-short] { font-size: 0; gap: 0; }
 #titlebar:is([data-fit="4"],[data-fit="5"]) .remote-chip[data-short]::after { content: attr(data-short); margin-left: 6px; font: 600 12px var(--ui); }
+/* The chips on the first row, beside the name (app.js fitTitlebar sets data-chips="top" at step 4 or 5 when the second row cannot hold
+   them with the drive pill and the pane buttons): the name takes its own width, and the chips keep clear of the window buttons. */
+#titlebar[data-chips="top"] > .proj-title { flex: 0 1 auto; margin-right: 0; }
+#titlebar[data-chips="top"] > .titlebar-slot:not(.titlebar-pill) { order: 0; margin-right: var(--win-controls); }
+@media (min-width: 861px) { .app:not([data-settings-open]):not([data-pane-expanded]):has(> .pane:not([hidden])) #titlebar[data-chips="top"] > .titlebar-slot:not(.titlebar-pill) { margin-right: 0; } }
 #titlebar[data-fit="5"] { column-gap: 6px; }
 #titlebar[data-fit="5"] .drive-pill :is(.dp-text, .db-kind) { display: none; }
 /* Two pills at the smallest step: each shows its kind icon in place of the dot (its tone still shows the state), so two Stop buttons do not
@@ -722,6 +727,15 @@ html:not([data-surface="phone"]) .proj-title :focus-visible { outline-offset: -2
 .stream { width: min(800px, 100% - 32px); margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
 /* A project's live run (app.js runBox). Its turns lay out as children of the transcript, as they did before the box. */
 .run-box { display: contents; }
+/* A long chat is drawn from its end (app.js, "a long chat is drawn from its end"). A turn of an earlier message that is not drawn yet
+   has only its place in the chat, which takes no room; the row above the first drawn turn holds "Show earlier messages". */
+.stream > .turn[hidden] { display: none; }
+/* A drawn turn far from the window (app.js, farWatch) keeps its box at the height it had (a far-h-... class whose rule app.js adds
+   to a style sheet of its own), and what is inside it is out of the layout until the turn comes near again. */
+.stream > .far { box-sizing: border-box; overflow: hidden; }
+.stream > .far > * { display: none; }
+/* The row moves up when earlier turns are drawn, so the browser must not keep the view by it (scroll anchoring). */
+.chat-earlier { display: flex; justify-content: center; overflow-anchor: none; }
 
 .fresh { animation: rise var(--t-slow) var(--ease) both; }
 @keyframes rise { from { opacity: 0; translate: 0 8px; } }
@@ -1417,9 +1431,11 @@ html[data-legal='pending'] #app { display: none; }
 .seat .pick:hover { background: var(--fill-2); }
 .seat .pick select { height: 24px; font-size: 12.5px; max-width: none; width: 100%; }
 .seat .pick.seat-effort { width: auto; flex: none; max-width: 52%; }
-.seat-foot { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* The seat's last line: the effort menu and the fixed words "Sessions: Transcript". In a narrow cell (five across at 1280 px) the words
+   take a line of their own under the menu, whole, in place of being cut to "Sessions: T...". */
+.seat-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; row-gap: 3px; min-width: 0; }
 .seat-foot .pick { min-width: 0; }
-.seat-sess { margin-left: auto; min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seat-sess { margin-left: auto; min-width: 0; max-width: 100%; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seat.mod::before { background: var(--advisor); }
 .seat.mod .seat-letter { color: var(--advisor); background: color-mix(in srgb, var(--advisor) 10%, transparent); }
 .board-summary {
@@ -1483,6 +1499,20 @@ html[data-legal='pending'] #app { display: none; }
 .consensus { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-2); min-width: 0; }
 .consensus-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .consensus-by { color: var(--muted); font-size: 12px; }
+/* How many seats the verdict rests on, and a verdict that is older than an answer (council retry). */
+.consensus-basis { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.consensus-basis.part { color: var(--warn); }
+.consensus-stale { color: var(--text-2); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+/* The buttons that run one turn of an ended council again, and the model picker they open. */
+.seat-actions, .consensus-actions, .retry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.seat-actions { margin-top: 8px; }
+.round-body .seat-actions .seat-change { margin-top: 0; align-self: auto; }
+.retry-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 8px; min-width: 0; max-width: 100%; }
+.retry-pick .pick { max-width: 100%; }
+.retry-save { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.4; color: var(--text-2); cursor: pointer; }
+.retry-save input { flex: none; margin: 2px 0 0; accent-color: var(--accent); }
+.retry-note { font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.retry-note.bad { color: var(--warn); }
 .verdict { font: 500 var(--fs-title)/1.5 var(--ui); letter-spacing: -0.01em; color: var(--text); overflow-wrap: anywhere; }
 .verdict p { margin: 0 0 8px; }
 .verdict p:last-child { margin-bottom: 0; }

@@ -31,6 +31,7 @@
   const DEPLOY_URL = 'https://deploy.workers.cloudflare.com/?url=https://github.com/literallyisyou/Plenum/tree/main/relay';
   const TIER_LABELS = [['full', 'Full control'], ['approve', 'Approve and watch'], ['read', 'Read only']];
   const TIER_WORDS = { full: 'Full control', approve: 'Approve and watch', read: 'Read only' };
+  const RELAY_HELP = 'Reaches this computer through a relay you deploy in your own Cloudflare account.';
   const CARRIER_WORDS = { lan: 'Same network', tailscale: 'Tailscale', relay: 'your relay' };
   const PLATFORM_WORDS = { ios: 'iPhone', android: 'Android phone', web: 'Web browser' };
   const PUSH_WORDS = { webpush: 'Web Push', unifiedpush: 'UnifiedPush', apns: 'Apple Push' };
@@ -809,7 +810,7 @@
     p.lanAny.checked = lan.anyAddress === true;
     p.lanAny.disabled = phone || lan.on !== true;
     // Why the switch is grey, in words: it only means something while Same network is on, and only the computer sets it.
-    p.lanAnyText.textContent = phone ? 'Only the computer can change this.' : lan.on !== true ? 'Turn on Same network first. Any address is a setting of that way in.' : '';
+    p.lanAnyText.textContent = phone ? 'Only the computer can change this.' : lan.on !== true ? 'Turn on Same network first. Any address only changes who can use that way in.' : '';
     p.lanAnyText.hidden = !p.lanAnyText.textContent;
     const addresses = Array.isArray(lan.addresses) ? lan.addresses.map(a => textOf(a)).filter(Boolean) : [];
     p.lanText.textContent = lan.on === true ? (addresses.length ? `Phones can reach this computer at ${addresses.join(', ')}.` : 'No network address for this computer yet.') : '';
@@ -832,6 +833,8 @@
     p.relayUrl.disabled = phone;
     p.relaySave.disabled = phone;
     if (document.activeElement !== p.relayUrl) p.relayUrl.value = textOf(rl.url);
+    // "Save its address first" is only true while no address is saved.
+    p.relayHelp.textContent = textOf(rl.url) ? RELAY_HELP : `${RELAY_HELP} Save its address first.`;
     p.relayText.textContent = rl.on === true ? (rl.connected === true ? 'Connected to your relay.' : relayWord(textOf(rl.reason))) : '';
     // New room starts only when the relay refused this computer, and only the computer may start it (D9, D7).
     const newRoomShown = rl.on === true && rl.reason === 'refused' && !phone;
@@ -873,7 +876,7 @@
     const text = make('span', 'remote-switch-text', title);
     if (help) text.append(make('small', null, help));
     label.append(input, track, text);
-    return { label, input };
+    return { label, input, text };
   }
 
   const line = (...parts) => {
@@ -928,8 +931,10 @@
     p.lanError = make('p', ERROR_ROW);
     p.lanFirewall = make('p', 'remote-help');
     p.lanStatus = statusEl();
-    p.lanAnyText = make('p', 'remote-help');
-    lanBlock.append(lan.label, p.lanNotes, p.lanText, p.lanError, p.lanFirewall, any.label, p.lanAnyText, p.lanStatus);
+    // The reason the switch is grey is a second line of the switch's own words, so it stays under them and lines up with them.
+    p.lanAnyText = make('small', 'remote-reason');
+    any.text.append(p.lanAnyText);
+    lanBlock.append(lan.label, p.lanNotes, p.lanText, p.lanError, p.lanFirewall, any.label, p.lanStatus);
     lan.input.addEventListener('change', async () => {
       const want = lan.input.checked;
       const data = await save({ controls: [lan.input], status: p.lanStatus, path: '/api/phones/lan', body: { enabled: want }, revert: () => { lan.input.checked = !want; } });
@@ -959,8 +964,9 @@
 
     const relayBlock = make('div', 'remote-block');
     p.relayNotes = notesWrap();
-    const relay = switchRow('Your relay', 'Reaches this computer through a relay you deploy in your own Cloudflare account. Save its address first.');
+    const relay = switchRow('Your relay', `${RELAY_HELP} Save its address first.`);
     p.relay = relay.input;
+    p.relayHelp = relay.text.querySelector('small');
     const urlId = `remote-relay-${++uid}`;
     const urlField = make('div', 'field');
     const urlLabel = make('label', 'field-label', 'Relay address');

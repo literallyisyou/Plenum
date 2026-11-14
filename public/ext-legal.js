@@ -339,10 +339,21 @@
     );
     if (!first) for (const change of changesFor(data)) card.append(changeBox(change));
 
-    card.append(make('h3', 'legal-h', 'The short version'));
+    // The five points sit in a disclosure: open in a wide window, closed in a narrow one (up to 560 px), where open they take
+    // more than a third of the height and leave the reading box a sliver. The full text is in the box below either way.
+    const shortBox = make('details', 'legal-short');
+    const shortTitle = make('summary', 'legal-h', 'The short version');
+    shortBox.append(shortTitle);
     const short = make('ul', 'legal-list');
     for (const line of SHORT_VERSION) short.append(make('li', '', line));
-    card.append(short);
+    shortBox.append(short);
+    const narrow = window.matchMedia ? window.matchMedia('(max-width: 560px)') : null;
+    shortBox.open = !narrow?.matches;
+    // A window that is resized across 560 px opens or closes it again, until the person has pressed the title themselves.
+    let touched = false;
+    shortTitle.addEventListener('click', () => { touched = true; });
+    narrow?.addEventListener?.('change', () => { if (!touched) shortBox.open = !narrow.matches; });
+    card.append(shortBox);
 
     mountTabs(card, GATE_TABS, 'eula', 'legal-gate', id => doc(id).then(d => [docNode(d.text)]));
 
@@ -541,7 +552,8 @@
       );
       nodes.push(row);
     } else {
-      nodes.push(para('In the desktop app these buttons open the Chromium and Electron licence files. With node server.mjs they are in node_modules/electron/dist/.', 'legal-note'));
+      // Not the desktop app (a browser on the plain server, or a phone): one sentence, with no file path and no command in it.
+      nodes.push(para('The Chromium and Electron licence files open from this tab in the Plenum desktop app.', 'legal-note'));
     }
     const d = await doc('open-source');
     nodes.push(make('pre', 'legal-pre', String(d.text ?? '')));

@@ -189,6 +189,7 @@
   // The head's words count what the pane lists: the agents, the board's runs and the cards that wait on the person.
   // A run that waits on a card is counted once, as waiting (the sidebar does the same), and a queued agent is listed under Running, so it is
   // counted as running (B-13, B-14). The board's cards already include the agents' own waiting cards, so with a board those are counted there.
+  let idleSaid = false; // the pane shows its empty sentence (sections)
   function countText(live, board) {
     const waitingScopes = new Set((board?.approvals ?? []).map(c => c.scope));
     const runsOn = board ? board.runs.filter(r => !waitingScopes.has(r.scope)).length : 0;
@@ -196,7 +197,8 @@
     const asking = live.filter(r => r.state === 'approval').length;
     const running = runsOn + agentsOn;
     const waiting = board ? board.approvals.length : asking;
-    if (!running && !waiting) return 'Nothing is running.';
+    // With the empty pane's own sentence under it ("No agents are running. ...") the head says nothing: the same thing is not said twice.
+    if (!running && !waiting) return idleSaid ? '' : 'Nothing is running.';
     return waiting ? `${running} running · ${waiting} waiting` : `${running} running`;
   }
 
@@ -446,6 +448,7 @@
     const board = boardView();
     // A card that was answered or ended is no longer open.
     if (expanded && !(board?.approvals ?? []).some(c => c.approvalId === expanded)) expanded = '';
+    idleSaid = false;
     const head = make('div', 'ext-agl-head');
     const count = make('span', 'ext-agl-count', countText(live, board));
     const all = make('button', 'ghost small ext-agl-stop-all', 'Stop all');
@@ -503,6 +506,8 @@
       settings.addEventListener('click', () => MuseUI.openAgents?.());
       empty.append(settings);
       out.push(empty);
+      idleSaid = true;
+      count.textContent = countText(live, board);
     }
     return out;
   }

@@ -106,6 +106,8 @@
     clipRefused: 'The clipboard refused. The text is selected below: press Ctrl+C.',
     newer: 'The routines were saved by a newer Plenum. This version shows them and does not change them. Update Plenum to change them.',
     bizNewer: 'Your businesses were saved by a newer Plenum. This version shows them and does not change them. Update Plenum to change them.',
+    needFull: 'Answering needs Full access on this phone. You can read everything here, and Stop still works. Change what this phone can do at the computer under Settings › Phones.',
+    needFullShort: 'Answering needs Full access on this phone.',
     undrawn: 'This part could not be drawn. Close the pane and open it again. If it happens again, open the log.',
     bizDamaged: 'The file that holds your businesses could not be read, so none is in force. A copy of it is kept when you next save.',
   };
@@ -254,11 +256,38 @@
   // ---------- what the server said ----------
 
   // One answer of the server: idle (not asked), loading, ok, missing (404: the route is not in this build) or error.
+  // A paired phone whose access is below Full (Approve and watch, or Read only) reads this pane and stops a routine's run, and nothing else:
+  // the Bridge refuses every other POST of it (lib/remote/tiers.mjs), so the page does not offer one and does not send one. The phone's
+  // access comes from the shell (window.plenumShell.connection().tier); on the desktop there is none, and nothing here changes.
+  const STOP_PATH = '/api/routines/stop';
+  function phoneTier() {
+    try {
+      const shell = window.plenumShell;
+      const c = shell && typeof shell.connection === 'function' ? shell.connection() : null;
+      return str(c?.tier) || str(shell?.tier);
+    } catch { return ''; }
+  }
+  const belowFull = () => { const t = phoneTier(); return t === 'approve' || t === 'read'; };
+  // The controls a phone below Full may still use: the tabs and the business switcher, opening and closing a draft, a playbook or
+  // BUSINESS.md (reads), copying text, and Stop. Everything else in the pane is switched off for it.
+  const READ_OK = /^(?:tab\||head\|sel$)|^(?:item|rt)\|[^|]*\|(?:draft|copy|bookclose|stop|keep)$|^fu\|.*\|stop$|^su\|charter\|open$|^su\|open\|/;
+  function lockControls(el) {
+    if (!belowFull()) return;
+    for (const n of el.querySelectorAll('button, input, select, textarea')) {
+      if (n.readOnly || READ_OK.test(n.dataset?.fk ?? '')) continue;
+      n.disabled = true;
+    }
+    // Beside each row of answers, the reason in a few words, so it is in view where the buttons are.
+    for (const g of el.querySelectorAll('.biz-opts')) g.after(make('p', 'biz-note biz-opts-note', TEXT.needFullShort));
+  }
+
   const slot = () => ({ state: 'idle', data: null, error: '' });
   const D = { biz: slot(), dec: slot(), brief: slot(), rt: slot(), starts: slot() };
   const ones = new Map(); // business id -> the answer of GET /api/business/one
 
   async function ask(path, body) {
+    // A phone below Full has no right to this POST: the Bridge would refuse it, so it is not sent. Stop is the one that always goes.
+    if (body !== undefined && path !== STOP_PATH && belowFull()) return { ok: false, status: 403, error: TEXT.needFull };
     let res;
     try {
       res = await MU.request(path, body === undefined ? {} : { method: 'POST', body });
@@ -364,6 +393,11 @@
     paint();
   }
 
+  // The pane was just opened. On a phone the pane's column is laid out a moment after onShow runs (the phone layer brings its tab to the front
+  // first), so shown() can still say no then, and the businesses and routines would never be read. For two seconds after onShow the pane counts as
+  // on screen for the reads.
+  let opening = false;
+  let openingTimer = 0;
   let reading = null;
   let readAgain = false;
   // Reads what the tab on screen needs. Calls that come while one read runs are folded into one more read after it.
@@ -373,7 +407,7 @@
       do {
         readAgain = false;
         const jobs = [load(D.dec, '/api/decisions?state=waiting&limit=100'), load(D.starts, '/api/programs/starts')];
-        if (shown()) {
+        if (shown() || opening) {
           jobs.push(load(D.biz, '/api/business'), load(D.rt, '/api/routines'));
           if (ui.tab !== 'routines') jobs.push(load(D.brief, briefPath()));
           const want = ui.editor?.business || (ui.sel !== ALL ? ui.sel : '');
@@ -922,7 +956,9 @@
     });
     const top = make('div', 'biz-top');
     top.append(...kids);
-    head.replaceChildren(...(kids.length ? [top] : []), tabs);
+    const notice = belowFull() ? make('p', 'biz-needfull', TEXT.needFull) : null;
+    notice?.setAttribute('role', 'note');
+    head.replaceChildren(...(notice ? [notice] : []), ...(kids.length ? [top] : []), tabs);
     if (D.biz.state === 'ok' && D.biz.data.paused === true) head.append(make('p', 'biz-banner', TEXT.pausedAll));
   }
 
@@ -2039,6 +2075,8 @@
       console.error('Businesses: a tab could not be drawn.', err);
       panel.replaceChildren(make('p', 'biz-calm biz-bad', TEXT.undrawn));
     }
+    lockControls(parts.head);
+    lockControls(panel);
     parts.panel.replaceWith(panel);
     parts.panel = panel;
     showSaid();
@@ -2139,8 +2177,8 @@
     order: 45,
     titleButton: true,
     render: body => build(body),
-    onShow: () => { paint(); refresh(); },
-    onClose: () => { root = null; parts = null; },
+    onShow: () => { opening = true; clearTimeout(openingTimer); openingTimer = setTimeout(() => { opening = false; }, 2000); paint(); refresh(); },
+    onClose: () => { root = null; parts = null; opening = false; },
   });
 
   // The events of the three modules. The count follows the decisions event at once; the rest is read again when the pane is on screen.
@@ -2175,6 +2213,12 @@
   });
 
   MU.openBusinesses = () => MU.pane.open(TAB);
+
+  // The phone's access can change while the pane is open (the computer raises or lowers it): the pane is drawn again with what it allows.
+  try {
+    let was = belowFull();
+    window.plenumShell?.onConnection?.(() => { const now = belowFull(); if (now !== was) { was = now; paint(); } });
+  } catch { /* the access is read again at the next draw */ }
 
   // The count on the title bar button: one read, after the page has started, never on the start path.
   Promise.resolve(MU.ready).then(() => setTimeout(refresh, 1500), () => {});

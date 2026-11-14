@@ -54,6 +54,10 @@ html[data-legal='pending'] #app { visibility: hidden; }
 .legal-title:focus { outline: none; }
 .legal-lead { margin: 0; color: var(--text); }
 .legal-h { margin: 4px 0 0; font: 600 15px/1.3 var(--ui); color: var(--text); }
+/* The short version is a disclosure: its title is the summary, with the marker of a disclosure and a hit area the size of a line. */
+.legal-short > summary { margin: 4px 0 0; cursor: pointer; }
+.legal-short[open] > summary { margin-bottom: 8px; }
+.legal-short > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .legal-list { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--text); }
 .legal-list li { color: var(--text); }
 
@@ -150,10 +154,21 @@ html[data-legal='pending'] #app { visibility: hidden; }
   .legal-gate { padding: 8px; }
   .legal-card { padding: 18px; border-radius: 16px; }
   .legal-commit { margin: 0 -18px; padding: 12px 18px 18px; border-radius: 0 0 15px 15px; }
-  .legal-read { max-height: 45vh; }
-  .legal-actions { flex-direction: column; align-items: stretch; }
-  .legal-actions > button { width: 100%; }
-  .legal-actions.start > button { width: auto; }
+  /* The reading box is what a person came to do here: at least 40% of the window's height (a 320 px box in a 800 px window).
+     The short version is closed (ext-legal.js), the card's gaps are tighter and the two buttons share a row, so all of it fits
+     in 800 px with the footer covering nothing; in a shorter window the card scrolls and the footer stays in view. */
+  .legal-card { gap: 10px; }
+  .legal-card > .legal-read { min-height: 40vh; max-height: 60vh; }
+  /* The Legal page has five tabs: at this width they sit in three columns (three and two), not four and one. */
+  .legal-view .legal-tabs { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .legal-view .legal-tab { text-align: center; padding-left: 6px; padding-right: 6px; }
+  /* Two rows of tabs: the row's rule under the tabs belongs to the last row only, so the first row gets a hairline of its own
+     (a tab that is selected keeps its accent underline in place of it). */
+  .legal-view .legal-tab:nth-child(-n+3):not([aria-selected='true']) { box-shadow: inset 0 -1px 0 var(--line-2); }
+  .legal-actions { flex-wrap: nowrap; }
+  .legal-actions > button { flex: 1 1 0; min-width: 0; }
+  .legal-actions.start { flex-wrap: wrap; }
+  .legal-actions.start > button { flex: 0 0 auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

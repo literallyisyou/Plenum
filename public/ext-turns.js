@@ -370,6 +370,215 @@
     return [select, b];
   }
 
+  // ---------- The buttons under a failed reply (DECISIONS: failed-reply buttons) ----------
+  // app.js draws a failed reply's error as a card (.turn.error) and puts on it what is known: data-error-kind (the failure's kind) and
+  // data-error-model (the model that failed). This part adds the buttons that fit the kind, in a row before Retry and Copy error
+  // (ext-connection.js):
+  //   Sign in / Open Accounts   opens Settings > Accounts at that program's card. It presses nothing there: no sign-in starts by itself.
+  //   Pick another model        gives the model menu the focus and opens it. The person picks; nothing is switched here.
+  //   Open the log              asks the desktop app to show the log's folder (POST /api/diag/open-log, the route Help uses); under a
+  //                             plain server the answer says where the log is, and that sentence is shown.
+  // Retry is not drawn here. Where sending the same message again cannot work (the kind's list has no 'retry'), the card is marked
+  // data-retry="no" and a Retry that ext-connection.js put under it is taken out again, before the page is painted.
+  // CLI_ACTIONS is the page's copy of FAILURE_ACTIONS in lib/cli-errors.mjs; API_ACTIONS covers the kinds of lib/api-errors.mjs, with
+  // 'retry' exactly for the kinds that file calls retryable. build/v06/d-failed-reply/table.test.mjs pins both against the server's files.
+  const FAIL = 'ext-turns-fail';
+  const CLI_ACTIONS = {
+    'not-signed-in': ['sign-in'],
+    'model-unavailable': ['pick-model'],
+    quota: ['pick-model'],
+    overloaded: ['retry', 'pick-model'],
+    network: ['retry'],
+    'flags-rejected': ['pick-model', 'open-log'],
+    'bad-output': ['retry', 'open-log'],
+    crashed: ['retry', 'open-log'],
+    unknown: ['retry', 'open-log'],
+  };
+  const API_ACTIONS = {
+    auth: ['accounts'],
+    'no-credit': ['pick-model'],
+    forbidden: ['pick-model'],
+    context: [],
+    'model-gone': ['pick-model'],
+    'rate-limit': ['retry'],
+    overloaded: ['retry', 'pick-model'],
+    timeout: ['retry'],
+    server: ['retry', 'pick-model'],
+    network: ['retry'],
+    'bad-request': ['pick-model'],
+    refusal: ['pick-model'],
+    other: ['open-log'],
+  };
+  const actionsOf = kind => (Object.hasOwn(CLI_ACTIONS, kind) ? CLI_ACTIONS[kind] : Object.hasOwn(API_ACTIONS, kind) ? API_ACTIONS[kind] : null);
+
+  // The Accounts card of each program, by the name Plenum's own sentences use and by the provider part of a model's id.
+  const CARD_BY_LABEL = { 'Claude Code': 'claude', Claude: 'claude', Codex: 'codex', 'Gemini CLI': 'gemini', 'Muse Code': 'muse', Cursor: 'cursor', 'Grok Build': 'grok', Antigravity: 'antigravity' };
+  const CARD_BY_PROVIDER = { anthropic: 'claude', claude: 'claude', codex: 'codex', gemini: 'gemini', muse: 'muse', cursor: 'cursor', grok: 'grok', antigravity: 'antigravity' };
+  const LABEL_BY_CARD = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', muse: 'Muse Code', cursor: 'Cursor', grok: 'Grok Build', antigravity: 'Antigravity' };
+  // An error with no kind (an adapter's own sign-in sentence, a reply stored before kinds were kept) is read only for the two sentences
+  // Plenum itself writes: "<name> is not signed in." and "<name> does not offer ...". Nothing else is guessed from an error's words.
+  const NOT_SIGNED_IN = /^(.{1,40}?) is not signed in\./;
+  const NOT_OFFERED = /(?:^|\. ).{1,60}? does not offer\b/;
+  const SAVED_KEY = /\bcould not use the saved\b[^.]{0,40}\bkey\b/;
+
+  // What one failure offers, from its words, its kind and the model that failed: { kind, actions, card, label }, or null when nothing
+  // is known about it.
+  function failureFrom(words, kindSaid, model) {
+    const said = NOT_SIGNED_IN.exec(words);
+    let kind = kindSaid || '';
+    if (!actionsOf(kind)) kind = said ? 'not-signed-in' : NOT_OFFERED.test(words) ? 'model-unavailable' : '';
+    let actions = actionsOf(kind);
+    if (!actions) return null;
+    // A CLI that runs on a saved key and was refused (Codex on the OpenAI key) needs the key looked at, not a sign-in.
+    if (kind === 'not-signed-in' && SAVED_KEY.test(words)) actions = ['accounts'];
+    const provider = model.includes(':') ? model.slice(0, model.indexOf(':')) : '';
+    // The program named by the sentence comes first (it is the one that failed); else the failed model's own.
+    const card = (said && CARD_BY_LABEL[said[1]]) || CARD_BY_PROVIDER[provider] || (/^[a-z][a-z0-9-]{0,31}$/.test(provider) ? provider : '');
+    return { kind, actions, card, label: LABEL_BY_CARD[card] ?? '' };
+  }
+
+  // What one error card offers.
+  function failureOf(article) {
+    return failureFrom(article.querySelector(':scope > .turn-body')?.textContent ?? '', article.dataset.errorKind || '', article.dataset.errorModel || '');
+  }
+
+  // Says one sentence under the card and, once, to a screen reader (ext-a11y.js; the same words twice in a moment are said once there).
+  function sayUnder(article, text, bad = false) {
+    let line = article.querySelector(':scope > .ext-turns-fail-say');
+    if (!line) {
+      line = document.createElement('p');
+      line.className = 'ext-turns-fail-say';
+      article.append(line);
+    }
+    line.textContent = text;
+    line.classList.toggle('bad', bad);
+    window.MuseA11y?.announce?.(text, { urgent: false });
+  }
+
+  // Each button below says its sentence through say(text, bad): under the chat's card (sayUnder), or where a panel puts it.
+  // again (a panel's own): how the person asks again there, in place of "send your message again".
+  function accountsButton(say, found, signIn, again = '') {
+    const b = MuseUI.button('ghost small ext-turns-btn', signIn ? 'Sign in' : 'Open Accounts');
+    b.dataset.failAction = signIn ? 'sign-in' : 'accounts';
+    const where = found.label ? `at the ${found.label} card` : 'in Settings';
+    b.title = signIn
+      ? `Open Accounts ${where}. Nothing is signed in until you press the button there.`
+      : `Open Accounts ${where} to check the saved key.`;
+    b.addEventListener('click', () => {
+      // The words are said first: opening Accounts covers this card.
+      // A panel keeps its sentence with the failure and shows it again later, when Accounts may be closed: it does not say "is open".
+      if (again) {
+        say(signIn
+          ? `No sign-in has started. In Accounts, press the sign-in button on the ${found.label ? `${found.label} ` : ''}card, then ${again}.`
+          : `Check the saved key in Accounts, then ${again}.`);
+      } else {
+        say(signIn
+          ? `Accounts is open${found.label ? ` at ${found.label}` : ''}. No sign-in has started: press the sign-in button on the card to start it.`
+          : 'Accounts is open. Check the saved key there, then send your message again.');
+      }
+      MuseUI.openAccountsAt(found.card);
+    });
+    return b;
+  }
+
+  // pick (a panel's own): gives that panel's own model control the focus and returns { ok, text }. Without it: the chat's model menu.
+  function modelButton(say, pick = null) {
+    const b = MuseUI.button('ghost small ext-turns-btn', 'Pick another model');
+    b.dataset.failAction = 'pick-model';
+    b.title = pick
+      ? 'Shows where this model is chosen. You pick the model; Plenum does not switch it for you.'
+      : 'Open the model menu. You pick the model; Plenum does not switch it for you.';
+    b.addEventListener('click', () => {
+      if (pick) {
+        const r = pick() ?? {};
+        if (typeof r.text === 'string' && r.text) say(r.text, r.ok === false);
+        return;
+      }
+      const ok = MuseUI.showModelMenu();
+      say(ok
+        ? 'The model menu has the focus. Pick a model, then send your message again.'
+        : 'The model menu is not on screen right now. Open it above the message box, pick a model, then send your message again.', !ok);
+    });
+    return b;
+  }
+
+  function logButton(say) {
+    const b = MuseUI.button('ghost small ext-turns-btn', 'Open the log');
+    b.dataset.failAction = 'open-log';
+    b.title = "Show the folder of Plenum's log file. Help (F1) has a report you can copy.";
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const res = await MuseUI.request('/api/diag/open-log', { method: 'POST', body: {}, signal: AbortSignal.timeout(8000) });
+        const r = await res.json().catch(() => null);
+        const told = r && typeof r === 'object' ? (typeof r.message === 'string' && r.message ? r.message : typeof r.error === 'string' ? r.error : '') : '';
+        if (res.ok && r?.ok === true) say('The log folder is open.');
+        else say(told || 'The folder could not be opened. Help (F1) shows the report and where the log is.', true);
+      } catch {
+        say('The folder could not be opened. Help (F1) shows the report and where the log is.', true);
+      } finally {
+        b.disabled = false;
+      }
+    });
+    return b;
+  }
+
+  // Takes out a Retry that stands under a card whose failure sending again cannot fix. The Copy error beside it stays.
+  function dropRetry(article) {
+    for (const b of article.querySelectorAll(':scope > .ext-conn-bar button')) if (b.textContent === 'Retry') b.remove();
+  }
+
+  // Draws the buttons of every error card that has none yet. Runs inside the observers below (not in the next frame), so a Retry that
+  // cannot help is gone before the page is painted. Only while idle, like every other row.
+  function failPass() {
+    if (working || runGoing()) return;
+    for (const article of MuseUI.el.chat.querySelectorAll('.turn.error')) {
+      if (article.dataset.retry === 'no') dropRetry(article);
+      if (article.dataset.failSeen === '1') continue;
+      article.dataset.failSeen = '1';
+      const found = failureOf(article);
+      if (!found) continue;
+      if (!found.actions.includes('retry')) {
+        article.dataset.retry = 'no';
+        dropRetry(article);
+      }
+      const controls = controlsOf(found, (text, bad) => sayUnder(article, text, bad));
+      if (!controls.length) continue;
+      const row = document.createElement('div');
+      row.className = FAIL;
+      row.append(...controls);
+      // Before Retry and Copy error when they are already there; they are added after it otherwise.
+      article.insertBefore(row, article.querySelector(':scope > .ext-conn-bar, :scope > .ext-turns-fail-say'));
+    }
+  }
+  // The buttons of one failure, in the kind's order, without Retry (the chat's Retry is ext-connection.js's; a panel has its own).
+  function controlsOf(found, say, { again = '', pick = null } = {}) {
+    const controls = [];
+    for (const action of found.actions) {
+      if (action === 'sign-in' || action === 'accounts') controls.push(accountsButton(say, found, action === 'sign-in', again));
+      else if (action === 'pick-model') controls.push(modelButton(say, pick));
+      else if (action === 'open-log') controls.push(logButton(say));
+    }
+    return controls;
+  }
+  // The same buttons for a failure a panel shows by itself: a column of Quick compare, a step of a pipeline. The panel gives the
+  // failure's words, its kind (the server sends it with the failed column or step) and the model that failed, and:
+  //   say(text, bad)  where a button's sentence goes (the panel keeps it with the failure, so a redraw shows it again)
+  //   again           how the person asks again in that panel ("come back to Quick compare and press Retry this column")
+  //   pick()          gives the panel's own model control the focus and returns { ok, text }; the chat's model menu is not that panel's
+  // It returns the buttons, or [] when nothing is known about the failure. As in the chat, a button only opens a place or says where
+  // one is: nothing is signed in, no model is changed and nothing is asked again from here.
+  function panelControls({ words = '', kind = '', model = '', say, again = '', pick = null } = {}) {
+    const found = failureFrom(String(words), String(kind || ''), String(model || ''));
+    if (!found || typeof say !== 'function') return [];
+    return controlsOf(found, (text, bad) => {
+      say(text, bad === true);
+      window.MuseA11y?.announce?.(text, { urgent: false });
+    }, { again, pick });
+  }
+  // For the tests and for other panels: the two tables, what a kind offers, and a panel's buttons.
+  MuseUI.failedReply = { cli: CLI_ACTIONS, api: API_ACTIONS, actionsOf, controls: panelControls };
+
   // Draws the rows. Only while idle; the rows already on the page are kept, but none of their controls can be pressed.
   function decorate() {
     const idle = !working && !runGoing();
@@ -378,15 +587,27 @@
     const messages = MuseUI.state.messages ?? [];
     const questions = questionsOf(messages);
     const replies = repliesOf(messages);
-    const questionEls = [...MuseUI.el.chat.querySelectorAll('.turn.user')];
-    const replyEls = [...MuseUI.el.chat.querySelectorAll('.turn.assistant')];
+    const chat = MuseUI.el.chat;
+    const questionEls = [...chat.querySelectorAll('.turn.user')];
+    const replyEls = [...chat.querySelectorAll('.turn.assistant')];
     // Each turn on the page must match a message, one for one, or a row would land on the wrong turn. A difference means the
     // page is still being drawn, so nothing is decorated until it is.
     if (questionEls.length !== questions.length || replyEls.length !== replies.length) return;
+    // A chat that stands at its end stays there: the rows make the last turns taller, and the end would slip under the composer.
+    // Whether it stands there is read once, before the first row of this pass is added.
+    let added = false;
+    let atEnd = false;
+    const adding = () => {
+      if (!added) atEnd = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 4;
+      added = true;
+    };
 
+    // A turn of an earlier message that is not drawn yet is only its place in a long chat (app.js draws the chat from its end): a
+    // hidden, empty article. It gets its row when its turn is drawn into it.
     questions.forEach(({ m, index }, i) => {
       const article = questionEls[i];
-      if (m.kind !== 'chat' || article.querySelector(`:scope > .${BAR}`)) return;
+      if (article.hidden || m.kind !== 'chat' || article.querySelector(`:scope > .${BAR}`)) return;
+      adding();
       article.append(rowOf([editButton(index), rewindGhost(m, index), ...extrasFor('question', m, index, messages, article)]));
     });
 
@@ -395,16 +616,18 @@
     const lastChat = chatReplies[chatReplies.length - 1];
     replies.forEach((r, i) => {
       const article = replyEls[i];
-      if (article.querySelector(`:scope > .${BAR}`)) return;
+      if (article.hidden || article.querySelector(`:scope > .${BAR}`)) return;
       const controls = [copyButton(r.m), insertButton(String(r.m.content ?? ''))];
       const question = r === lastChat ? questionBefore(messages, r.index) : -1;
       if (question >= 0) controls.push(...regenerateControls(question));
       controls.push(...extrasFor('reply', r.m, r.index, messages, article));
+      adding();
       article.append(rowOf(controls));
     });
+    if (atEnd) chat.scrollTo({ top: chat.scrollHeight, behavior: 'instant' });
   }
 
-  // The rows are drawn in the next frame, once the changes of a redraw are all in.
+  // One more pass in the next frame, once the changes of a redraw are all in.
   function schedule() {
     if (frame) return;
     frame = requestAnimationFrame(() => {
@@ -417,9 +640,17 @@
   // A reply that is arriving is drawn into its run box many times a second. No row is drawn or changed while a run is going, so a
   // change inside a run box asks for no pass; the box itself joining or leaving the chat still does.
   const outsideRunBox = records => records.some(r => !(r.target instanceof Element && r.target.closest('.run-box')));
+  // The buttons of a failed reply and the rows are drawn at once, before the page is painted: a row that arrived a frame later made
+  // its turn taller under the reader's eyes and pushed the end of the chat out of the window. The pass in the next frame stays, for
+  // what is only known then (a panel that registered its extras meanwhile).
+  const pass = () => {
+    failPass();
+    decorate();
+    schedule();
+  };
   new MutationObserver(records => {
-    if (outsideRunBox(records)) schedule();
+    if (outsideRunBox(records)) pass();
   }).observe(MuseUI.el.chat, { childList: true, subtree: true });
-  new MutationObserver(schedule).observe(MuseUI.el.send, { attributes: true, attributeFilter: ['class'] });
-  schedule();
+  new MutationObserver(pass).observe(MuseUI.el.send, { attributes: true, attributeFilter: ['class'] });
+  pass();
 })();

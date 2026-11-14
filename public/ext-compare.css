@@ -69,4 +69,9 @@
 }
 .cmp-col-text:empty::before { content: attr(data-empty); color: var(--muted); font-size: 12.5px; }
 .cmp-col-error { margin: 0; color: var(--bad); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
-.cmp-col-foot { display: flex; justify-content: flex-end; }
+.cmp-col-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+/* The buttons of a failed column's kind (Open Accounts, Pick another model, Open the log) stand in the row with Retry. */
+.cmp-col-fail { display: contents; }
+.cmp-col-fail[hidden] { display: none; }
+.cmp-col-say { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.cmp-col-say.bad { color: var(--bad); }

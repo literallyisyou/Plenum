@@ -277,16 +277,46 @@
     const text = make('div', 'cmp-col-text');
     const error = make('p', 'cmp-col-error');
     error.hidden = true;
-    const keep = MuseUI.button('primary small', 'Keep this reply');
+    // Quiet buttons: there is one Keep per column, and the one filled button of this drawer is Compare.
+    const keep = MuseUI.button('ghost small', 'Keep this reply');
     keep.addEventListener('click', () => keepReply(seat));
     // A failed column can be asked again on its own: the same message, effort and pictures, the same chat. The other columns stay as they are.
     const retry = MuseUI.button('ghost small', 'Retry this column');
     retry.title = 'Asks this model again with the same message. It is billed again; the other columns are not asked.';
     retry.addEventListener('click', () => retryColumn(seat));
+    // The buttons that fit the failure's kind (Open Accounts, Sign in, Pick another model, Open the log), as under a failed reply in
+    // the chat (failControls), before Retry; and the sentence a press of one says.
+    const fail = make('span', 'cmp-col-fail');
+    fail.hidden = true;
+    const say = make('p', 'cmp-col-say');
+    say.hidden = true;
     const foot = make('div', 'cmp-col-foot');
-    foot.append(keep, retry);
-    root.append(head, text, error, foot);
-    return { seat, root, pill, text, error, keep, retry };
+    foot.append(keep, fail, retry);
+    root.append(head, text, error, foot, say);
+    return { seat, root, pill, text, error, keep, retry, fail, say, failKey: '' };
+  }
+
+  // The buttons of a failed column, by the failure's kind: the same table as under a failed reply in the chat (MuseUI.failedReply,
+  // public/ext-turns.js; the server sends the kind with the failed column). Each only opens a place or says where one is: nothing is
+  // signed in, no model is changed and no column is asked again from here. Retry this column stays the way to ask again.
+  function failControls(seat) {
+    return MuseUI.failedReply?.controls?.({
+      words: seat.error,
+      kind: seat.kind,
+      model: seat.ref,
+      again: 'come back to Quick compare and press Retry this column',
+      say: (text, bad) => {
+        seat.said = { text, bad };
+        paint();
+      },
+      pick: () => {
+        const box = view?.checks.get(seat.ref);
+        if (!box?.isConnected) return { ok: false, text: 'The model is chosen in the Models list at the top of Quick compare. Tick another one there, then press Compare.' };
+        box.scrollIntoView({ block: 'center' });
+        box.focus({ preventScroll: true });
+        return { ok: true, text: 'The Models list has the focus at this model. Untick it, tick another one, then press Compare. Every column is asked again, and billed again.' };
+      },
+    }) ?? [];
   }
 
   function updateColumn(col, current) {
@@ -304,6 +334,18 @@
     // A failed column has nothing to keep: it offers Retry instead.
     col.keep.hidden = seat.status === 'failed' && !current.active;
     col.retry.hidden = seat.status !== 'failed' || current.active || current.kept;
+    // The failure's own buttons stand where Retry stands, and are built once per failure.
+    const failed = !col.retry.hidden;
+    const key = failed ? `${seat.kind ?? ''}|${seat.error}` : '';
+    if (key !== col.failKey) {
+      col.failKey = key;
+      col.fail.replaceChildren(...(failed ? failControls(seat) : []));
+    }
+    col.fail.hidden = !failed || !col.fail.children.length;
+    const said = failed ? seat.said : null;
+    col.say.hidden = !said;
+    col.say.textContent = said ? said.text : '';
+    col.say.className = said?.bad ? 'cmp-col-say bad' : 'cmp-col-say';
   }
 
   // ---------- running a compare ----------
@@ -395,6 +437,8 @@
     seat.status = 'waiting';
     seat.text = '';
     seat.error = '';
+    seat.kind = '';
+    seat.said = null;
     current.active = true;
     return execute(current, seat.id);
   }
@@ -422,6 +466,9 @@
       } else {
         seat.status = 'failed';
         seat.error = ev.error || 'No reply came back.';
+        // The failure's kind, when the server knows it: it picks the buttons under the column (failControls).
+        seat.kind = typeof ev.kind === 'string' ? ev.kind : '';
+        seat.said = null;
       }
     } else if (ev.type === 'error') {
       current.error = ev.message || 'The run failed.';

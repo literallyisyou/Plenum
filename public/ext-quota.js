@@ -16,14 +16,14 @@
   const RING_R = 8;
   const RING_LEN = 2 * Math.PI * RING_R;
   const QUOTA = ['codex', 'muse', 'anthropic', 'gemini'];
-  const LABELS = { codex: 'Codex', muse: 'Muse Code', anthropic: 'Claude', gemini: 'Gemini', echo: 'Test', xai: 'Grok', openai: 'OpenAI', deepseek: 'DeepSeek', mistral: 'Mistral', googleai: 'Google AI', openrouter: 'OpenRouter' };
+  const LABELS = { codex: 'Codex', muse: 'Muse Code', anthropic: 'Claude', gemini: 'Gemini', cursor: 'Cursor', grok: 'Grok Build', antigravity: 'Antigravity', echo: 'Test', xai: 'Grok', openai: 'OpenAI', deepseek: 'DeepSeek', mistral: 'Mistral', googleai: 'Google AI', openrouter: 'OpenRouter' };
   const MARKS = { codex: ['X', 'codex'], muse: ['M', 'muse'], anthropic: ['C', 'claude'], gemini: ['G', 'gemini'] };
   const PILLS = { ok: 'Within limit', warn: 'Above 80%', high: 'Above 95%', unknown: 'Unknown' };
   const RANK = { ok: 0, warn: 1, unknown: 2, high: 3 };
   // The same words the server's limit errors use. Matched against error turns and notices only, never against replies.
   const LIMIT_RE = /\b(usage|rate|plan|weekly|5-hour|five-hour|hourly|daily|monthly|session)[ -]limit\b|\blimit (reached|exceeded|hit)\b|\bout of (credits|quota)\b|\btoo many requests\b|\b429\b|resource[_ ]exhausted|exceeded your (current )?quota/i;
   // A limit error names the CLI that stopped ("Codex stopped with an error: ..."); that name decides the provider.
-  const SPEAKERS = [['Codex', 'codex'], ['Claude', 'anthropic'], ['Muse Code', 'muse'], ['Gemini', 'gemini']];
+  const SPEAKERS = [['Codex', 'codex'], ['Claude', 'anthropic'], ['Muse Code', 'muse'], ['Gemini', 'gemini'], ['Cursor', 'cursor'], ['Grok Build', 'grok'], ['Antigravity', 'antigravity']];
   const NO_READING = 'Not checked yet.';
 
   const quota = { providers: null, at: 0 };
@@ -31,6 +31,8 @@
   const seenNodes = new WeakSet();
   // Limit messages this page has handled, by text. A redraw of the chat makes new nodes with the same text, so a message that is
   // already here is not handled again when the chat is drawn once more (B-100). A new arrival is always handled.
+  // Only a failure of this window's own time is handled at all (isLive): a saved reply that ended on a limit days ago says so on its
+  // own card, and opening its project, or scrolling up to it, raises nothing.
   const limitSeen = new Set();
   let popOpen = false;
   let busyRefresh = false;
@@ -52,7 +54,8 @@
     const i = text.indexOf(':');
     return i < 0 ? text : text.slice(0, i);
   };
-  const labelOf = provider => LABELS[provider] ?? provider;
+  // A provider's name as the page says it: this table, else the name the server gives the provider, never a bare id when one is known.
+  const labelOf = provider => LABELS[provider] ?? (MU.providerRegistry ?? []).find(p => p?.id === provider)?.name ?? provider;
   const when = ms => (typeof ms === 'number' && Number.isFinite(ms)
     ? new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
     : 'time not reported');
@@ -425,8 +428,14 @@
     return ((body ? body.textContent : turn.textContent) || '').trim();
   }
 
+  // A message of this window's own time: it stands in a run's box (it arrived in a reply that is being written), or it is one of the
+  // page's notes (app.js marks them data-note: an error or a notice that came in since the page was opened). The error of a saved
+  // reply is neither, whenever it is drawn: when its project or thread is opened, or when earlier messages are drawn on the way up.
+  const isLive = turn => Boolean(turn.closest('.run-box')) || turn.dataset.note === '1';
+
   // A redraw of the whole chat adds its stream again (renderChat), so the limit messages in it are new nodes; those already handled are
-  // skipped by their text. A message that arrives on its own is handled once, as before.
+  // skipped by their text. A message that arrives on its own is handled once, as before. A message that is not of this window's time
+  // (isLive) is only remembered as seen.
   function scanAdded(root) {
     if (!(root instanceof Element)) return;
     const redraw = root.classList.contains('stream');
@@ -435,7 +444,12 @@
       if (seenNodes.has(turn)) continue;
       seenNodes.add(turn);
       const text = limitText(turn);
-      if (!LIMIT_RE.test(text) || (redraw && limitSeen.has(text))) continue;
+      if (!LIMIT_RE.test(text)) continue;
+      if (!isLive(turn)) {
+        limitSeen.add(text);
+        continue;
+      }
+      if (redraw && limitSeen.has(text)) continue;
       limitSeen.add(text);
       onLimit(turn, text);
     }

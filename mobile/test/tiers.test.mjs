@@ -159,7 +159,7 @@ describe('every route has a tier', () => {
 
   test('no route below full can start work, change settings or reach a key, a file or the shell', () => {
     assert.deepEqual([...WATCH_POSTS].sort(), ['/api/agents/stop', '/api/approve', '/api/cancel', '/api/drive/pause', '/api/drive/resume', '/api/drive/stop', '/api/phones/remove', '/api/stop-all'].sort());
-    assert.deepEqual([...READ_POSTS], ['/api/stop-all']);
+    assert.deepEqual([...READ_POSTS], ['/api/stop-all', '/api/routines/stop']);
     assert.deepEqual([...SELF_POSTS], ['/api/phones/push']);
     assert.deepEqual([...WATCH_PREFIXES], ['/api/notices/']);
     const allowed = new Set([...WATCH_POSTS, ...READ_POSTS, ...SELF_POSTS]);

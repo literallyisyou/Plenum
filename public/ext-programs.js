@@ -46,6 +46,7 @@
     newer: 'These programs were saved by a newer version of Plenum. They are shown here and cannot be changed until Plenum is updated.',
     damaged: 'The saved programs could not be read, so the built-in ones are shown. Saving keeps a copy of the old file as programs.damaged.json.',
     noHubAgents: 'No agent from Plenum Hub yet.',
+    needFull: 'Changing programs needs Full access on this phone. You can read everything here. Change what this phone can do at the computer under Settings › Phones.',
   };
   const STATE_WORD = {
     ready: 'Ready', unknown: 'Not checked yet', off: 'Switched off', 'not-installed': 'Not installed', 'sign-in': 'Needs sign-in',
@@ -104,6 +105,17 @@
   const locals = () => entries().filter(p => p.via !== 'hub');
   const hubAgents = () => entries().filter(p => p.via === 'hub');
   const locked = () => data?.newer === true;
+  // A paired phone whose access is below Full (Approve and watch, or Read only) reads this page and changes nothing: the Bridge refuses every
+  // POST of it (lib/remote/tiers.mjs), so the page does not offer a change and does not send one, not even the look at the hub's agents.
+  // The phone's access comes from the shell (window.plenumShell.connection().tier); on the desktop there is none and nothing here changes.
+  function phoneTier() {
+    try {
+      const shell = window.plenumShell;
+      const c = shell && typeof shell.connection === 'function' ? shell.connection() : null;
+      return str(c?.tier) || str(shell?.tier);
+    } catch { return ''; }
+  }
+  const belowFull = () => { const t = phoneTier(); return t === 'approve' || t === 'read'; };
   const onPage = () => Boolean(view && view.root.isConnected);
   // A focus key names a control across draws: the program and what the control does.
   const fk = (id, what) => `${id}|${what}`;
@@ -168,7 +180,7 @@
   // Asks the server to look at the hub's own list of agents (status, online, whether its helper can start each one) and reads the programs again.
   // Done when the section is drawn and when the button is pressed, never by a timer.
   async function checkAgents() {
-    if (checking || !onPage() || phase === 'missing' || !data || data.hub?.connected !== true || !hubAgents().length) return;
+    if (checking || belowFull() || !onPage() || phase === 'missing' || !data || data.hub?.connected !== true || !hubAgents().length) return;
     checking = true;
     checkSay = TEXT.checking;
     drawCheck();
@@ -241,7 +253,7 @@
     return run;
   }
   async function saveNow(key, change, { focus, after } = {}) {
-    if (!data || locked()) return false;
+    if (!data || locked() || belowFull()) return false;
     const next = { programs: entries().map(p => ({ ...p })), limits: { ...(isObj(data.limits) ? data.limits : {}) }, shareRooms: Array.isArray(data.shareRooms) ? data.shareRooms.filter(x => typeof x === 'string') : [], updatedAt: Number.isFinite(data.updatedAt) ? data.updatedAt : 0 };
     if (change(next) === false) return false;
     busy = true;
@@ -364,6 +376,7 @@
     input.type = 'checkbox';
     input.checked = checked;
     input.dataset.fk = fk(`share:${str(b.id)}`, 'on');
+    input.disabled = belowFull();
     input.setAttribute('aria-label', `Post results in the hub room of ${name}`);
     input.addEventListener('change', async () => {
       const want = input.checked;
@@ -527,12 +540,12 @@
 
     // The rows are built again only when what they show changed: an event that brings the same answer leaves the page alone, so an
     // open menu stays open and what is being typed stays. A change that was refused leaves the rows as they are, too.
-    const shape = JSON.stringify([data, catalog]);
+    const shape = JSON.stringify([data, catalog, belowFull()]);
     // Nor are they built again under a line the person is typing: the rows wait until the field is left or its line is saved.
     v.late = shape !== v.shape && keepRows !== true && typingIn();
     if (shape !== v.shape && keepRows !== true && !v.late) {
       v.shape = shape;
-      const alertRows = [locked() ? TEXT.newer : '', data.damaged === true ? TEXT.damaged : ''].filter(Boolean).map(t => make('p', 'prog-alert', t));
+      const alertRows = [belowFull() ? TEXT.needFull : '', locked() ? TEXT.newer : '', data.damaged === true ? TEXT.damaged : ''].filter(Boolean).map(t => make('p', 'prog-alert', t));
       v.alerts.replaceChildren(...alertRows);
       v.alerts.hidden = !alertRows.length;
       const own = locals();
@@ -541,7 +554,7 @@
       v.hubList.replaceChildren(...agents.map((p, i) => rowEl(p, i, agents.length)));
       v.hubList.hidden = !agents.length;
       v.hubEmpty.hidden = agents.length > 0;
-      v.checkBtn.hidden = !(isObj(data.hub) && data.hub.connected === true && agents.length > 0);
+      v.checkBtn.hidden = belowFull() || !(isObj(data.hub) && data.hub.connected === true && agents.length > 0);
       const hub = isObj(data.hub) ? data.hub : {};
       v.hubState.textContent = hub.connected === true
         ? (hub.wake === 'older' ? 'Plenum is connected to Plenum Hub. This hub\'s starter is an older one, so Plenum cannot wake an agent: it waits two minutes for an agent that is open in its own program.' : 'Plenum is connected to Plenum Hub.')
@@ -552,8 +565,8 @@
       v.shareEmpty.hidden = biz.length > 0;
       v.shareSec.hidden = false;
       const room = entries().length < MAX_ENTRIES;
-      v.form.hidden = locked() || !room;
-      v.full.hidden = locked() || room;
+      v.form.hidden = locked() || belowFull() || !room;
+      v.full.hidden = locked() || belowFull() || room;
     }
     drawSaid();
     drawCheck();
@@ -593,7 +606,7 @@
     const hub = entry.via === 'hub';
     const label = str(entry.label) || entry.id;
     const state = STATE_WORD[str(entry.state)] ? str(entry.state) : 'unknown';
-    const off = locked();
+    const off = locked() || belowFull();
     const li = make('li', 'prog-row');
     li.dataset.program = entry.id;
     li.dataset.state = state;

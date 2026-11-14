@@ -81,6 +81,13 @@
   .ext-thread-new-text { display: none; }
   .ext-thread-new { padding: 5px 8px; }
 }
+/* A narrow chat column in a wide window (the side pane is open): the new-thread button is its plus alone, as on a narrow window, so
+   it is not cut at the pane's edge as "+ Thre". The row's width is asked, not the window's. */
+.ext-threads { container-type: inline-size; }
+@container (max-width: 560px) {
+  .ext-thread-new-text { display: none; }
+  .ext-thread-new { padding: 5px 8px; }
+}
 
 /* ---------- the thread header row ---------- */
 

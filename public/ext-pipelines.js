@@ -556,7 +556,7 @@
 
     const ask = make('section', 'card pl-card');
     ask.append(MuseUI.span('kicker', 'Message'));
-    view.message = make('textarea', 'pl-text');
+    view.message = make('textarea', 'pl-text pl-message');
     view.message.rows = 4;
     view.message.maxLength = MESSAGE_MAX;
     view.message.spellcheck = false;
@@ -618,11 +618,39 @@
     const skip = MuseUI.button('ghost small', 'Skip step');
     skip.title = 'Leaves this step out and goes on with the next one, using the last reply that worked. The steps after it are billed.';
     skip.addEventListener('click', () => resumeRun(i, true));
+    // The buttons that fit the failure's kind (Open Accounts, Sign in, Pick another model, Open the log), as under a failed reply in
+    // the chat (failControls), after Retry and Skip; and the sentence a press of one says.
+    const fail = make('span', 'pl-out-fail');
+    fail.hidden = true;
+    const say = make('p', 'pl-out-say');
+    say.hidden = true;
     const actions = make('div', 'pl-actions');
     actions.hidden = true;
-    actions.append(retry, skip);
-    root.append(head, text, error, actions);
-    return { root, pill, text, error, actions, skip };
+    actions.append(retry, skip, fail);
+    root.append(head, text, error, actions, say);
+    return { root, pill, text, error, actions, skip, fail, say, failKey: '' };
+  }
+
+  // The buttons of a failed step, by the failure's kind: the same table as under a failed reply in the chat (MuseUI.failedReply,
+  // public/ext-turns.js; the server sends the kind with the failed step). Each only opens a place or says where one is: nothing is
+  // signed in, no model is changed and no step is run again from here. Retry step stays the way to go on.
+  function failControls(s, i) {
+    return MuseUI.failedReply?.controls?.({
+      words: s.error,
+      kind: s.kind,
+      model: s.ref,
+      again: 'come back to Pipelines and press Retry step',
+      say: (text, bad) => {
+        s.said = { text, bad };
+        paintRun();
+      },
+      // A step's model is part of the saved pipeline: the button says where it is changed and gives the way there the focus.
+      pick: () => {
+        const back = view?.root.querySelector('.pl-bar button');
+        back?.focus();
+        return { ok: true, text: `The model of step ${i + 1} is part of the pipeline. Press All pipelines, then Edit, choose another model for the step and save. Then run the pipeline again.` };
+      },
+    }) ?? [];
   }
 
   // Brings the controls, the status line, the final reply and the step outputs up to date with the run.
@@ -648,6 +676,18 @@
       // Retry and Skip show on a step that failed, once the run has ended. A stopped step offers neither: the person stopped it.
       out.actions.hidden = busy || s.status !== 'failed';
       out.skip.hidden = i === 0 || i === run.steps.length - 1;
+      // The failure's own buttons stand in the row with Retry, and are built once per failure.
+      const failed = !out.actions.hidden;
+      const key = failed ? `${s.kind ?? ''}|${s.error}` : '';
+      if (key !== out.failKey) {
+        out.failKey = key;
+        out.fail.replaceChildren(...(failed ? failControls(s, i) : []));
+      }
+      out.fail.hidden = !failed || !out.fail.children.length;
+      const said = failed ? s.said : null;
+      out.say.hidden = !said;
+      out.say.textContent = said ? said.text : '';
+      out.say.className = said?.bad ? 'pl-out-say bad' : 'pl-out-say';
     });
     const last = run.steps.at(-1);
     const finalText = last?.status === 'done' ? last.text : '';
@@ -655,6 +695,9 @@
     if (finalText && view.finalText.textContent !== finalText) view.finalText.textContent = finalText;
     view.keep.disabled = busy || run.kept || !finalText;
     view.keep.textContent = run.kept ? 'Kept in the chat' : 'Keep in chat';
+    // One filled button at a time: Retry step after a failure, Keep in chat after the last step, and Run otherwise.
+    const other = !busy && (run.steps.some(s => s.status === 'failed') || (Boolean(finalText) && !run.kept));
+    view.go.className = other ? 'ghost small' : 'primary small';
   }
 
   // The line under the controls: what to do next, what a run is doing, or how the last one ended.
@@ -732,7 +775,7 @@
     current.message = message;
     // A retry keeps the steps before the failed one as they are (their replies are the proof of what ran); the rest start again.
     const first = resume ? resume.at : 0;
-    current.steps = current.steps.map((s, i) => (i < first ? s : { ...s, status: 'waiting', text: '', error: '' }));
+    current.steps = current.steps.map((s, i) => (i < first ? s : { ...s, status: 'waiting', text: '', error: '', kind: '', said: null }));
     current.active = true;
     current.started = true;
     current.kept = false;
@@ -811,6 +854,9 @@
       } else {
         s.status = 'failed';
         s.error = ev.error || 'No reply came back.';
+        // The failure's kind, when the server knows it: it picks the buttons under the step (failControls).
+        s.kind = typeof ev.kind === 'string' ? ev.kind : '';
+        s.said = null;
       }
     } else if (ev.type === 'error') {
       current.error = ev.message || 'The run failed.';
