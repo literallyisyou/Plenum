@@ -385,6 +385,7 @@
   const FAIL = 'ext-turns-fail';
   const CLI_ACTIONS = {
     'not-signed-in': ['sign-in'],
+    'sign-in-refused': ['retry', 'sign-in'],
     'model-unavailable': ['pick-model'],
     quota: ['pick-model'],
     overloaded: ['retry', 'pick-model'],

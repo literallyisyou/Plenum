@@ -716,7 +716,7 @@ function forgetRulesSessions(st, project) {
 }
 
 // What an error event carries besides its message when the failure has a kind: its kind (lib/cli-errors.mjs for a CLI: not-signed-in,
-// model-unavailable, quota, overloaded, network, flags-rejected, bad-output, crashed, unknown; lib/api-errors.mjs for an API model: auth,
+// sign-in-refused, model-unavailable, quota, overloaded, network, flags-rejected, bad-output, crashed, unknown; lib/api-errors.mjs for an API model: auth,
 // no-credit, rate-limit, model-gone, ...) and whether sending the same message again can work, so the page can offer the right button.
 // Added only when the error has a kind (retryable only when the error says it); every other error event is exactly what it was.
 const errorExtras = err => (typeof err?.kind === 'string' && err.kind ? { kind: err.kind, ...(typeof err.retryable === 'boolean' ? { retryable: err.retryable } : {}) } : {});
@@ -2407,9 +2407,9 @@ async function accountProviders() {
 }
 // Claude Code's sign-in for the Accounts page: `claude auth status`, one at a time. An answer of "signed in" is kept for 20 seconds
 // and any other for 3 (the rule of Codex's check), ?fresh=1 asks again, and the sign-in route drops what is kept.
-// lib/claude-cli.mjs ends the CLI after 15 seconds and reads the silence as "not signed in". A check that took that long without a
-// "signed in", or that says it does not know, gave no answer: it is thrown as such, so a Claude Code that hangs is never shown as
-// signed out, and softCheck falls back on the last real answer.
+// lib/claude-cli.mjs ends the CLI after 15 seconds and answers loggedIn null for that, and for an output that says neither (item
+// 152). A check that took that long without a "signed in", or that says it does not know, gave no answer: it is thrown as such, so a
+// Claude Code that hangs is never shown as signed out, and softCheck falls back on the last real answer.
 const CLAUDE_KEEP_MS = 20_000;
 const CLAUDE_KEEP_UNSURE_MS = 3000;
 const CLAUDE_NO_ANSWER_MS = 14_000;

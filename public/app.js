@@ -2140,10 +2140,18 @@ function renderStatus() {
   keepFocusAcross(el.statusbar, drawStatus);
 }
 
+// What the server knows of one state: true, false, or null when it does not know yet. The provider status holds null before its first
+// read after a start, and for Claude Code's sign-in when its check gave no answer (lib/provider-status.mjs, lib/claude-cli.mjs).
+const knownState = v => (v === true ? true : v === false ? false : null);
+// Claude Code is the route, it is installed, and its sign-in check gave no answer: the page asks again soon (readProviders).
+const claudeUnanswered = p => p?.anthropic?.route === 'cli' && p.anthropic.cliInstalled === true && knownState(p.anthropic.credentials) === null;
+
 function drawStatus() {
   el.statusbar.replaceChildren();
+  // ok is true, false or null. A state that is not known is said as "checking", never as "not installed", "key needed" or "sign-in
+  // needed": that would be untrue, and it would contradict Accounts and the setup guide, which wait for the real answer.
   const item = (ok, label, title, key) => {
-    const b = button(`st ${ok ? 'ok' : 'bad'}`, label);
+    const b = button(`st ${ok === true ? 'ok' : ok === null ? 'wait' : 'bad'}`, label);
     b.prepend(span('dot'));
     b.title = title;
     b.dataset.focusKey = `status:${key}`;
@@ -2151,14 +2159,27 @@ function drawStatus() {
     return b;
   };
   if (providers) {
+    const muse = knownState(providers.muse.installed);
+    const a = providers.anthropic;
+    // On the key route credentials says whether a key is saved; on the Claude Code route it is the sign-in check's answer.
+    const claude = a.route === 'api' ? a.credentials === true : knownState(a.credentials);
+    const codex = knownState(providers.codex.installed);
+    // "checking" is true only while the quick reads run (about a minute, readProviders). After them the item says "no answer": the
+    // page still asks, but more and more slowly.
+    const unknown = providersLate ? 'no answer' : 'checking';
     el.statusbar.append(
-      item(providers.muse.installed, providers.muse.installed ? 'Muse Code' : 'Muse Code not installed', 'Muse Code: open Accounts', 'muse'),
-      item(providers.anthropic.credentials, providers.anthropic.credentials ? 'Claude' : providers.anthropic.route === 'cli' ? 'Claude sign-in needed' : 'Claude key needed', 'Claude: open Accounts', 'claude'),
-      item(providers.codex.installed, providers.codex.installed ? 'Codex' : 'Codex not found', 'Codex: open Accounts', 'codex'),
+      item(muse, muse === null ? `Muse Code: ${unknown}` : muse ? 'Muse Code' : 'Muse Code not installed', 'Muse Code: open Accounts', 'muse'),
+      item(claude, claude === null ? `Claude: ${unknown}` : claude ? 'Claude' : a.route === 'cli' ? 'Claude sign-in needed' : 'Claude key needed',
+        claude !== null || a.route !== 'cli' ? 'Claude: open Accounts'
+          : providersLate ? 'Claude Code did not answer its sign-in check. Plenum keeps asking. Open Accounts to check it now.'
+            : 'Claude Code has not answered its sign-in check yet. Open Accounts to check it now.', 'claude'),
+      item(codex, codex === null ? `Codex: ${unknown}` : codex ? 'Codex' : 'Codex not found', 'Codex: open Accounts', 'codex'),
     );
     const g = providers.gemini;
     if (g) {
-      el.statusbar.append(item(g.installed && g.signedIn, !g.installed ? 'Gemini not installed' : g.signedIn ? 'Gemini' : 'Gemini sign-in needed', `Gemini: open Accounts. ${GEMINI_EDIT}`, 'gemini'));
+      const installed = knownState(g.installed);
+      const gemini = installed === true ? knownState(g.signedIn) : installed;
+      el.statusbar.append(item(gemini, installed === null || gemini === null ? `Gemini: ${unknown}` : !installed ? 'Gemini not installed' : gemini ? 'Gemini' : 'Gemini sign-in needed', `Gemini: open Accounts. ${GEMINI_EDIT}`, 'gemini'));
     }
   }
   if (S.running || activeRun()) {
@@ -5403,16 +5424,19 @@ events.on('run', ev => {
 let catalogKey = '';
 
 // GET /api/status always answers at once (DECISIONS item 91). The lists of models that a CLI reads (Codex, Antigravity, Muse Code) arrive
-// later, so the page asks again while one says reading: true (after 3 seconds, then every 6, at most 10 times) and whenever the events
-// channel says the providers or the catalog changed. Loads never overlap: every call made while one runs shares the one that follows it.
+// later, so the page asks again while one says reading: true (after 3 seconds, then every 6 for 10 quick reads, then each wait twice the
+// one before, up to every 10 minutes) and whenever the events channel says the providers or the catalog changed. The same asking runs
+// while a state is not known (DECISIONS item 152). Loads never overlap: every call made while one runs shares the one that follows it.
 let providersAsk = null;      // { refresh, waiters }: the next load, filled by every call made until it starts
 let providersLoop = null;     // the loop that runs the loads, while there is one
-let providersReading = false; // whether the last answer said a list is still being read
+let providersReading = false; // whether the last answer said a list is still being read or a state is not known
+let providersLate = false;    // whether the quick reads are used up with something still not known: the footer then says "no answer"
 let providersPolls = 0;       // how many reads were planned for the same wait
 let providersPollTimer = 0;
 const POLL_FIRST_MS = 3000;
 const POLL_NEXT_MS = 6000;
-const POLL_MAX = 10;
+const POLL_MAX = 10;          // the quick reads
+const POLL_SLOW_MS = 600000;  // the longest wait between two reads after them
 
 function loadProviders({ refreshCodex = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -5449,8 +5473,11 @@ async function readProviders(refreshCodex) {
   providers = data.providers;
   catalog = data.catalog;
   aliases = data.aliases;
-  // A first answer that says statusPending: true (the server has not read the providers yet) is asked for again like a list being read.
-  providersReading = data.statusPending === true || [data.codexModels, data.antigravityModels, data.museModels].some(m => m?.reading === true);
+  // A first answer that says statusPending: true (the server has not read the providers yet) is asked for again like a list being read,
+  // and so is one in which Claude Code's sign-in check gave no answer: the footer says "checking" and the next read asks the check again.
+  providersReading = data.statusPending === true || [data.codexModels, data.antigravityModels, data.museModels].some(m => m?.reading === true) || claudeUnanswered(providers);
+  // Late from the answer of the last quick read on (no timer is pending then), and for as long as something is still not known.
+  providersLate = providersReading && providersPolls >= POLL_MAX && (providersLate || !providersPollTimer);
   // The catalog grows when a CLI reports the models it offers (lib/codex-models.mjs), and an entry can say the CLI no longer offers it
   // (offered: false), so the menus are filled again when the list, a label or that mark changed. Each menu keeps the value it had.
   const key = catalog.map(c => `${c.provider}:${c.id}|${c.label}|${c.offered === false ? 'gone' : ''}`).join('\n');
@@ -5464,7 +5491,8 @@ async function readProviders(refreshCodex) {
 }
 
 // Asks again soon while a list is still being read. The server never waits for a CLI's list (DECISIONS items 89 and 90), so this is how
-// the first menu gets it.
+// the first menu gets it. The asking does not end while something is not known, so a late answer still puts the page right: after the
+// quick reads each wait is twice the one before, up to POLL_SLOW_MS.
 function planProvidersPoll() {
   if (!providersReading) {
     providersPolls = 0;
@@ -5472,8 +5500,10 @@ function planProvidersPoll() {
     providersPollTimer = 0;
     return;
   }
-  if (providersPollTimer || providersPolls >= POLL_MAX) return;
-  const wait = providersPolls === 0 ? POLL_FIRST_MS : POLL_NEXT_MS;
+  if (providersPollTimer) return;
+  const wait = providersPolls === 0 ? POLL_FIRST_MS
+    : providersPolls < POLL_MAX ? POLL_NEXT_MS
+      : Math.min(POLL_NEXT_MS * 2 ** (providersPolls - POLL_MAX + 1), POLL_SLOW_MS);
   providersPolls += 1;
   providersPollTimer = setTimeout(() => {
     providersPollTimer = 0;
