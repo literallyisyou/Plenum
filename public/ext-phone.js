@@ -2005,7 +2005,7 @@
 
   // The spend limit is a chip of the project's title bar (ext-budget), which sits in the "⋯" sheet on the phone. Its own drawer is the place to
   // raise the limit; without the chip the Settings page opens.
-  function goLimit() {
+  function goSpendLimit() {
     const chip = q('.ext-budget-chip');
     if (chip && !chip.hidden) {
       chip.click();
@@ -2016,6 +2016,25 @@
     } catch {
       MuseUI.toast('Open Settings to see your limits.');
     }
+  }
+
+  // The notification of a limit is one of two things: a spend limit that stopped a run, or an alert of the plan watch (a plan will run
+  // short or is used up; lib/plan-watch.mjs sends it as a limit so that every phone app shows it). While such an alert waits, the
+  // strip above the message box shows it (public/ext-planwatch.js), and its Plan use button is the way in: it opens the pop-up with the
+  // alert and the businesses it touches, also for a model that has no ring. Otherwise the spend limit's chip, or Settings.
+  function goLimit(tries = 8) {
+    const planUse = q('.pw-strip [data-fk="strip|open"]');
+    if (planUse) {
+      setTab('chat');
+      planUse.click();
+      return;
+    }
+    // The alerts may not be read yet when the app opens from the notification: this looks for a moment (2 seconds at most) before it
+    // takes the spend limit. A page without the plan watch (an older computer) has nothing to wait for.
+    const plan = MuseUI.planWatch;
+    const mayCome = Boolean(plan && typeof plan.settled === 'function' && !plan.settled());
+    if (mayCome && tries > 0) setTimeout(() => goLimit(tries - 1), 250);
+    else goSpendLimit();
   }
 
   function handleRoute(link) {

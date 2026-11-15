@@ -1920,6 +1920,168 @@ async function checkRemote(cfg, scopeSel) {
   if (!r.stop.inside || !r.stop.hit) log(cfg, `P-04 Stop not inside (${r.stop.inside}) or not hittable (${r.stop.hit}) with the controls shown`);
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// Plan watch on the phone (d-planwatch-p, DECISIONS item 153): the alerts strip in Chat, the Plan use pop-up opened from it (for a model
+// with a ring and for one without), the Businesses pane with a short business, and the route of a tap on the plan notification
+// ({ kind: 'settings', section: 'limit' }, H7). The answers of GET /api/plan-watch and GET /api/business come from a stand-in in the page
+// (MuseUI.request answers those two paths itself); no reading is real. MOB11_PART=pw (or p3) runs it with part 3: node build/mobile/run.mjs
+// --id d-planwatch-p ui-phone.test.mjs. Pictures: C:/t/mob/pw-*.png.
+// ---------------------------------------------------------------------------------------------------------------------------------------
+const PW_SKIP = SKIP || (PART === '' || PART === 'p3' || PART === 'pw' ? false : `MOB11_PART=${PART}`);
+
+function planWatchStandIn({ alert }) {
+  const now = Date.now();
+  const H = 3600_000;
+  const day = ms => new Date(ms).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const reset = now + 50 * H;
+  const used = now + 31 * H;
+  const win = (id, name, pct, resets, say, state, long) => ({
+    id, name, minutes: long ? 10080 : 300, usedPercent: pct, resetsAt: resets, seenAt: now - 120_000, pace: { perHour: 1.9, basis: 'recent', points: 9 },
+    projected: { atReset: pct > 60 ? 138 : 40, usedUpAt: state === 'short' ? used : null, state, sure: true }, say,
+  });
+  const sub = (provider, label, source, checkedAt, state, note, windows) => ({ provider, label, signedIn: true, source, checkedAt, state, note, windows });
+  const alerts = alert ? [{
+    id: 'ph1', level: 'short', provider: 'codex', window: 'weekly-limit', business: '', current: true, title: 'Shop will run out of plan use',
+    text: `Codex's weekly limit is used up ${day(used)}, 1 day 7 hours before it resets (${day(reset)}). This affects Shop (nothing is left until ${day(reset)}).`,
+    notice: 'Shop will run out of plan use.', at: now - 120_000, businesses: ['Shop'], seen: false,
+  }] : [];
+  return {
+    v: 1, at: now, on: true, why: '', settings: { on: true, paidEveryMin: 60, alerts: true }, checking: false, nextCheckAt: now + 240_000, note: '',
+    subs: [
+      sub('codex', 'Codex', 'free', now - 180_000, alert ? 'short' : 'fine', 'Codex answers when asked, at no cost.', [win('weekly-limit', 'Weekly limit', alert ? 64 : 22, reset, alert ? `At this pace it is used up ${day(used)}, before it resets on ${day(reset)}.` : `At this pace it is at 40% when it resets on ${day(reset)}.`, alert ? 'short' : 'fine', true)]),
+      sub('anthropic', 'Claude', 'replies', now - 2 * H, 'fine', 'Claude Code reports its plan use only with its replies.', [win('5-hour-limit', '5-hour limit', 55, now + 3 * H, 'There is not enough to tell the pace yet.', 'unknown', false)]),
+      sub('muse', 'Muse Code', 'request', now - 20_000, 'tight', 'Muse Code reports with every reply. A check sends one very small request to ask.', [win('plan-limit', 'Plan limit', 71, reset, `At this pace it is at 92% when it resets on ${day(reset)}, close to the limit.`, 'tight', true)]),
+      sub('gemini', 'Gemini', 'none', null, 'unknown', 'Gemini CLI does not report plan use, so Plenum cannot read it.', []),
+    ],
+    businesses: [{ id: 'b_shop', name: 'Shop', state: alert ? 'out' : 'fine', say: alert ? `Shop reaches the Codex limit on ${day(used)}. Nothing else is left for it until ${day(reset)}.` : 'Shop has plenty of plan use for the week: Codex is on track.', providers: [], next: null }],
+    alerts,
+  };
+}
+const BIZ_STAND_IN = {
+  v: 1, paused: false, atOnce: 1, templates: [],
+  businesses: [{ id: 'b_shop', name: 'Shop', purpose: 'Sells small things online for a fixed price.', status: 'active', priority: 1, projects: [], leads: [], goals: [], kinds: null, lines: {}, runsPerDay: 12, minutesPerDay: 180, allowApi: false, hubRoom: '', createdAt: 1, closedAt: 0, from: 'blank', waiting: 0, nextRun: 0, lastRun: null }],
+};
+
+// Installs the stand-in: MuseUI.request answers the two paths from window.__pwData and window.__bizData and passes everything else on.
+const PW_STAND_JS = String.raw`(function () {
+  const MU = window.MuseUI;
+  if (!window.__pwReal) window.__pwReal = MU.request;
+  MU.request = (path, opts) => {
+    const answer = body => Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }));
+    if (path === '/api/plan-watch' && window.__pwData) return answer(window.__pwData);
+    if (path === '/api/business' && window.__bizData) return answer(window.__bizData);
+    return window.__pwReal(path, opts);
+  };
+  window.__pw = {
+    strip: () => { const s = document.querySelector('.pw-strip'); if (!s) return null; const r = s.getBoundingClientRect(); return { text: s.innerText.replace(/\s+/g, ' ').trim(), top: r.top, bottom: r.bottom, left: r.left, right: r.right, role: s.getAttribute('role') }; },
+    pop: () => { const p = document.querySelector('.ext-quota-pop'); if (!p || p.hidden || !p.getClientRects().length) return null; const r = p.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, scrolls: p.scrollHeight > p.clientHeight, cards: p.querySelectorAll('.pw-sub').length }; },
+    small: scope => __ph.small(scope ? document.querySelector(scope) : null),
+  };
+  return true;
+})()`;
+
+describe('plan watch on the phone (d-planwatch-p): the strip, the Plan use pop-up, the Businesses line, the notification route', { skip: PW_SKIP, timeout: 900_000 }, () => {
+  before(async () => {
+    if (SKIP) return;
+    h = await startPhoneHarness({ name: 'pw-phone', mock: true, projects: ['p1'] });
+  });
+  after(async () => {
+    if (!h) return;
+    const left = await h.close();
+    h = null;
+    assert.deepEqual(left.leftover, [], 'processes left behind');
+  });
+
+  // Picks a model of a provider by prefix ('' = one that has no ring); returns its value, or null.
+  const model = prefix => js(`(() => { const m = document.getElementById('modelSel'); const ring = v => /^(codex|muse|gemini):/.test(v); const o = [...m.options].find(x => ${JSON.stringify(prefix)} ? x.value.startsWith(${JSON.stringify(prefix)}) : !ring(x.value)); if (!o) return null; m.value = o.value; m.dispatchEvent(new Event('change')); return o.value; })()`);
+  const install = async alert => {
+    await h.eval(PW_STAND_JS);
+    await js(`(window.__pwData = ${JSON.stringify(planWatchStandIn({ alert }))}, window.__bizData = ${JSON.stringify(BIZ_STAND_IN)}, true)`);
+    await js('(MuseUI.planWatch.load(), true)');
+    assert.ok(await waitFor(() => js('MuseUI.planWatch.mode() === "watch"'), 8000), 'the plan watch stand-in was not read');
+    await js('(window.dispatchEvent(new CustomEvent("plenum:event", { detail: { type: "plan-watch" } })), true)');
+  };
+  const trouble = [];
+  const check = async (name, scope) => {
+    const r = await js(`({ small: __pw.small(${JSON.stringify(scope)}), wide: __ph.hOverflow(), unnamed: __ph.unnamed(document.querySelector(${JSON.stringify(scope)})) })`);
+    if (r.small.length) trouble.push(`${name}: small targets ${JSON.stringify(r.small).slice(0, 300)}`);
+    if (r.wide) trouble.push(`${name}: horizontal scroll`);
+    if (r.unnamed.length) trouble.push(`${name}: unnamed ${r.unnamed.join(' | ')}`);
+  };
+  const closePop = async () => {
+    await js('(document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), true)');
+    await waitFor(async () => !(await js('!!__pw.pop()')), 3000);
+  };
+
+  test('the strip, the pop-up (ring and no ring) and the Businesses line fit a 390 x 844 phone, light and dark', { skip: SKIP }, async () => {
+    for (const theme of THEMES) {
+      await openPhone(VIEWS[1], theme);
+      await activeProject();
+      await js('plenumPhoneDebug.tab("chat")');
+      await install(true);
+      // The strip in Chat.
+      assert.ok(await waitFor(() => js('!!__pw.strip()'), 6000), 'the strip did not appear');
+      const strip = await js('__pw.strip()');
+      assert.equal(strip.role, 'status');
+      assert.ok(strip.left >= 0 && strip.right <= 390, `the strip is inside the screen ${JSON.stringify(strip)}`);
+      await check(`strip ${theme}`, '.pw-strip');
+      await h.shot(`pw-strip-chat-390-${theme}`);
+      // The pop-up from the strip, for a model with a ring.
+      assert.ok(await model('codex:') ?? await model('muse:'), 'no model with a ring in the catalog');
+      await new Promise(r => setTimeout(r, 400));
+      await js('(document.querySelector(\'.pw-strip [data-fk="strip|open"]\').click(), true)');
+      assert.ok(await waitFor(() => js('!!__pw.pop()'), 4000), 'the pop-up did not open from the strip');
+      let pop = await js('__pw.pop()');
+      assert.ok(pop.left >= 0 && pop.right <= 390 && pop.top >= 47 && pop.bottom <= 844 - 34, `the pop-up is inside the screen and the safe areas ${JSON.stringify(pop)}`);
+      assert.equal(pop.cards, 4);
+      await check(`pop with ring ${theme}`, '.ext-quota-pop');
+      await h.shot(`pw-pop-ring-390-${theme}`);
+      await closePop();
+      // A model with no ring: the strip still opens the pop-up.
+      await model('');
+      await new Promise(r => setTimeout(r, 500));
+      await js('(document.querySelector(\'.pw-strip [data-fk="strip|open"]\').click(), true)');
+      assert.ok(await waitFor(() => js('!!__pw.pop()'), 4000), 'the pop-up did not open for a model with no ring');
+      pop = await js('__pw.pop()');
+      assert.ok(pop.left >= 0 && pop.right <= 390 && pop.top >= 47 && pop.bottom <= 844 - 34, `the pop-up (no ring) is inside the screen and the safe areas ${JSON.stringify(pop)}`);
+      await check(`pop no ring ${theme}`, '.ext-quota-pop');
+      await h.shot(`pw-pop-noring-390-${theme}`);
+      await closePop();
+      // The Businesses pane with a short business.
+      await js('(MuseUI.pane.open("business"), true)');
+      assert.ok(await waitFor(() => js('!!document.querySelector(".pw-biz")'), 15000), 'the business line was not drawn');
+      assert.match(await js('document.querySelector(".pw-biz").textContent'), /^Shop reaches the Codex limit on /);
+      await js('(document.querySelector(".pw-biz").scrollIntoView({ block: "center" }), true)');
+      await check(`businesses ${theme}`, '.biz-card');
+      await h.shot(`pw-business-390-${theme}`);
+      await closeAll();
+    }
+    assert.deepEqual(trouble, [], `what does not fit a phone:\n${trouble.join('\n')}`);
+  });
+
+  test('H7: with an alert strip the limit route opens Plan use; without one it opens the spend chip or Settings as before', { skip: SKIP }, async () => {
+    await openPhone(VIEWS[1], 'light');
+    await activeProject();
+    await js('plenumPhoneDebug.tab("projects")');
+    const route = detail => js(`(window.dispatchEvent(new CustomEvent('plenum:route', { detail: ${JSON.stringify(detail)} })), true)`);
+    // Without a strip (no alert in the answer): the old behaviour.
+    await install(false);
+    assert.equal(await js('!!__pw.strip()'), false);
+    await route({ kind: 'settings', section: 'limit' });
+    assert.ok(await waitFor(() => js('!document.getElementById("settingsPage").hidden || !!document.querySelector(".ph-sheet, .ph-scrim, #budgetDrawer, .ext-budget-chip")'), 5000), 'without an alert the limit route did not open the spend chip or Settings');
+    assert.equal(await js('!!__pw.pop()'), false, 'without an alert Plan use is not opened');
+    await closeAll();
+    // With a strip: Plan use opens.
+    await js('plenumPhoneDebug.tab("projects")');
+    await install(true);
+    assert.ok(await waitFor(() => js('!!__pw.strip()'), 6000));
+    await model('codex:');
+    await route({ kind: 'settings', section: 'limit' });
+    assert.ok(await waitFor(() => js('!!__pw.pop()'), 6000), 'with an alert the limit route did not open Plan use');
+    assert.equal(await js('__ph.hOverflow()'), false);
+  });
+});
+
 // Track B runs with part 2 (MOB11_PART=p2) and on its own (MOB11_PART=rc); a full run (no MOB11_PART) runs it too.
 const RC_SKIP = SKIP || (PART === '' || PART === 'p2' || PART === 'rc' ? false : `MOB11_PART=${PART}`);
 describe('phone layer, track B (mob-11, wave 121): taps, drags, typing and keys on the picture; take over from phone', { skip: RC_SKIP, timeout: 1_500_000 }, () => {

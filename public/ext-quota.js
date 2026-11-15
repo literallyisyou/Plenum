@@ -2,6 +2,10 @@
 // Loaded by ext.js and adds itself through window.MuseUI. It reads GET /api/quota and sends POST /api/quota/refresh and
 // POST /api/handoff/draft (lib/quota.mjs, lib/routes/handoff.mjs). A poll never sends a model request, and a refresh can only
 // send one the server allows. A handoff is only written into the composer: this file never sends a message.
+// Plan watch (DECISIONS item 153): when the server answers GET /api/plan-watch, public/ext-planwatch.js gives the pop-up its body
+// (every signed-in subscription with its windows, the pace sentence, when and how it was checked, Check now and the settings) and this
+// file places it; the pop-up can then also be opened from the alerts strip (MuseUI.openPlanUse). Without that answer (a 404, or before
+// the License Agreement is accepted) the pop-up is exactly what it was.
 // Everything here is built with createElement, textContent and setAttribute; no inline style and no innerHTML (strict CSP).
 (function () {
   'use strict';
@@ -35,6 +39,9 @@
   // own card, and opening its project, or scrolling up to it, raises nothing.
   const limitSeen = new Set();
   let popOpen = false;
+  let bareOpen = false; // the pop-up was opened from the alerts strip while the ring is hidden: it opens where the ring would be
+  let opener = null; // the control that opened the pop-up from outside the ring; it gets the focus back
+  let popLate = false; // a redraw waited because a menu in the pop-up was open
   let busyRefresh = false;
   let painted = '';
   let banner = null; // { node, handle }
@@ -126,10 +133,17 @@
     if (key === painted) return;
     painted = key;
     if (!provider) {
+      ring.hidden = true;
+      if (bareOpen && popOpen) {
+        redrawPop();
+        return;
+      }
       ringWrap.hidden = true;
       closePop();
       return;
     }
+    ring.hidden = false;
+    bareOpen = false;
     const entry = entryFor(provider);
     const state = ['ok', 'warn', 'high'].includes(entry.state) ? entry.state : 'unknown';
     ringWrap.hidden = false;
@@ -138,7 +152,7 @@
     ring.title = text;
     ring.setAttribute('aria-label', text);
     arc.setAttribute('stroke-dasharray', state === 'unknown' ? `0 ${RING_LEN}` : `${((entry.usedPercent ?? 0) / 100) * RING_LEN} ${RING_LEN}`);
-    if (popOpen) renderPop();
+    redrawPop();
   }
 
   // The model picker sets its value without an event when the project changes, so the ring is checked on a short tick as well.
@@ -148,14 +162,22 @@
 
   // ---------- Plan use pop-up ----------
 
-  function openPop() {
-    if (ringWrap.hidden) return;
+  function openPop(from = null) {
+    if (ringWrap.hidden) {
+      // No ring for this model: with the plan watch the pop-up still opens from the alerts strip.
+      if (!from || MU.planWatch?.mode?.() !== 'watch') return;
+      ring.hidden = true;
+      ringWrap.hidden = false;
+      bareOpen = true;
+    }
+    opener = from;
     popOpen = true;
     pop.hidden = false;
     ring.setAttribute('aria-expanded', 'true');
     renderPop();
     pop.focus();
     loadQuota();
+    MU.planWatch?.load?.();
   }
 
   function closePop() {
@@ -163,6 +185,46 @@
     popOpen = false;
     pop.hidden = true;
     ring.setAttribute('aria-expanded', 'false');
+    if (bareOpen) {
+      bareOpen = false;
+      ring.hidden = !ringProvider(el.model.value);
+      ringWrap.hidden = ring.hidden;
+    }
+  }
+
+  // Closes the pop-up and gives the focus back to what opened it: the ring, or the control outside it that asked.
+  function closeAndReturn() {
+    const back = opener && opener.isConnected ? opener : ring;
+    opener = null;
+    closePop();
+    if (!back.hidden) back.focus();
+  }
+
+  // The pop-up is drawn again when a reading or a setting changes. The control that has the focus is found again by its data-fk, and
+  // while a menu (a select) is open the draw waits until it is closed: a redraw would close it under the person's hand.
+  const selectInFocus = () => pop.contains(document.activeElement) && document.activeElement.tagName === 'SELECT';
+  let popWait = 0;
+  function redrawPop() {
+    if (!popOpen) return;
+    if (selectInFocus()) {
+      popLate = true;
+      // The focus may leave without an event (a window that is not in front sends none), so the wait also looks by itself.
+      if (!popWait) {
+        popWait = setInterval(() => {
+          if (popOpen && selectInFocus()) return;
+          clearInterval(popWait);
+          popWait = 0;
+          if (popLate) redrawPop();
+        }, 300);
+      }
+      return;
+    }
+    popLate = false;
+    const held = pop.contains(document.activeElement) ? document.activeElement.dataset.fk ?? '' : '';
+    const top = pop.scrollTop;
+    renderPop();
+    pop.scrollTop = top;
+    if (held) [...pop.querySelectorAll('[data-fk]')].find(n => n.dataset.fk === held)?.focus();
   }
 
   function renderPop() {
@@ -170,15 +232,31 @@
     const title = make('span', 'ext-quota-pop-title', 'Plan use');
     const close = make('button', 'ghost small', 'Close');
     close.type = 'button';
-    close.addEventListener('click', () => {
-      closePop();
-      ring.focus();
-    });
+    close.dataset.fk = 'close';
+    close.addEventListener('click', closeAndReturn);
     head.append(title, close);
+    const foot = make('p', 'ext-quota-foot', 'Refreshing Muse Code or Claude Code can send one very small request.');
+    if (MU.planWatch?.mode?.() === 'watch') {
+      pop.replaceChildren(head, ...MU.planWatch.body(refreshButton), foot);
+      return;
+    }
     const cards = make('div', 'ext-quota-cards');
     for (const provider of QUOTA) cards.append(cardFor(provider));
-    const foot = make('p', 'ext-quota-foot', 'Refreshing Muse Code or Claude Code can send one very small request.');
-    pop.replaceChildren(head, cards, foot);
+    const terms = MU.planWatch?.notice?.();
+    pop.replaceChildren(head, ...(terms ? [terms] : []), cards, foot);
+  }
+
+  // Refresh for one provider in the plan watch's pop-up: the reading that can send one very small request. Null for a provider that has none.
+  // Only Muse Code and Claude Code are read by a very small request. Codex is read free (Check now) and Gemini reports nothing.
+  function refreshButton(provider) {
+    if (!['muse', 'anthropic'].includes(provider) || (provider === 'anthropic' && MU.providers?.anthropic?.route !== 'cli')) return null;
+    const refresh = make('button', 'ghost small ext-quota-refresh', 'Refresh');
+    refresh.type = 'button';
+    refresh.dataset.fk = `refresh|${provider}`;
+    refresh.disabled = busyRefresh;
+    refresh.setAttribute('aria-label', `Refresh ${labelOf(provider)} plan use`);
+    refresh.addEventListener('click', () => refreshOne(provider, refresh));
+    return refresh;
   }
 
   function cardFor(provider) {
@@ -229,7 +307,7 @@
       MU.toast(err.message || 'Plan use could not be refreshed.', 'bad');
     } finally {
       busyRefresh = false;
-      if (popOpen) renderPop();
+      redrawPop();
     }
   }
 
@@ -465,17 +543,26 @@
     if (popOpen) closePop();
     else openPop();
   });
+  // The alerts strip opens the pop-up (and a second press closes it). The control that asked gets the focus back.
+  MU.openPlanUse = from => {
+    if (popOpen) closeAndReturn();
+    else openPop(from ?? null);
+  };
+  // A reading, a setting or an alert changed (public/ext-planwatch.js): the pop-up is drawn again, with the focus kept.
+  window.addEventListener('plenum:plan-watch', () => redrawPop());
+  // A menu in the pop-up that has just closed lets a waiting redraw happen.
+  pop.addEventListener('change', () => setTimeout(() => { if (popLate) redrawPop(); }, 0));
+  pop.addEventListener('focusout', () => setTimeout(() => { if (popLate) redrawPop(); }, 0));
   // Escape closes the pop-up from anywhere while it is open (its own buttons re-draw and lose focus), and it is the topmost layer.
   document.addEventListener('keydown', event => {
     if (popOpen && event.key === 'Escape') {
       event.stopPropagation();
       event.preventDefault();
-      closePop();
-      ring.focus();
+      closeAndReturn();
     }
   }, true);
   document.addEventListener('pointerdown', event => {
-    if (popOpen && !ringWrap.contains(event.target)) closePop();
+    if (popOpen && !ringWrap.contains(event.target) && !(opener && opener.contains(event.target))) closePop();
   }, true);
 
   el.model.addEventListener('change', () => {

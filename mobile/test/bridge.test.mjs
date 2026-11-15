@@ -2230,6 +2230,37 @@ describe('events from the server', () => {
     bridge.remote.handleEvent({ type: 'drive', drive: { id: 'd1', state: 'stopped', kind: 'computer', projectId: 'p1' } });
   });
 
+  test('an alert of the plan watch is pushed as a limit with the computer\'s own sentence; a reading that changed is not pushed', async () => {
+    pushed.length = 0;
+    const text = "At the pace of the last day, Claude's weekly limit is used up Sat 3:10 PM, 1 day 4 hours before it resets (Sun 7:10 PM). This affects Garden Planner (Codex takes over).";
+    bridge.remote.handleEvent({ type: 'plan-watch' });
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: null });
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: 'a0', level: 'short', title: 'x', text: '   ' } });
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: 'a0', level: 'short', title: 'x' } });
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: 'words' });
+    assert.deepEqual(pushed, [], 'only an alert with a sentence is pushed');
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: 'anthropic|seven_day|k1|short', level: 'short', title: "Claude's weekly limit may run out", text } });
+    assert.deepEqual(pushed, [{ kind: 'limit', limitKind: 'plan', projectId: '', text, alertId: 'anthropic|seven_day|k1|short', projectName: '', computerName: 'Home PC' }]);
+    // The sentence is cleaned and cut before it leaves the Bridge; nothing else of the alert rides along.
+    pushed.length = 0;
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: `a${'9'.repeat(200)}`, level: 'out', title: 't', text: `one\ntwo ${'y'.repeat(400)}`, businesses: ['Garden Planner'], secret: 'never' } });
+    assert.equal(pushed.length, 1);
+    assert.deepEqual(Object.keys(pushed[0]).sort(), ['alertId', 'computerName', 'kind', 'limitKind', 'projectId', 'projectName', 'text']);
+    assert.equal(pushed[0].text.length, 240);
+    assert.ok(pushed[0].text.startsWith('one two yyy'));
+    assert.equal(pushed[0].alertId.length, 80);
+    // notice is the alert in one line (its title leads when it is about a business): the phone shows no title of the alert, so it gets that.
+    pushed.length = 0;
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: 'b1', level: 'short', title: 'Lantern Weekly will run out of plan use', text, notice: `Lantern Weekly will run out of plan use. ${text}` } });
+    assert.equal(pushed[0].text, `Lantern Weekly will run out of plan use. ${text}`.slice(0, 240));
+    pushed.length = 0;
+    for (const alert of [{ id: 'b2', text, notice: '  ' }, { id: 'b3', text, notice: 7 }, { id: 9, text }]) bridge.remote.handleEvent({ type: 'plan-watch', alert });
+    assert.deepEqual(pushed.map(p => [p.text, p.alertId]), [[text, 'b2'], [text, 'b3'], [text, '']], 'an empty or wrong notice falls back to the text, and an id that is not text is left out');
+    pushed.length = 0;
+    bridge.remote.handleEvent({ type: 'plan-watch', alert: { id: 'b4', text: { toString: () => 'not text' }, notice: ['x'] } });
+    assert.deepEqual(pushed, [], 'words that are not text are never sent');
+  });
+
   test('a spend cap or a plan limit that stops a run is pushed as a limit, once, in place of a failed run', async () => {
     pushed.length = 0;
     bridge.remote.handleEvent({ type: 'hello', pid: 1, startedAt: 1, version: '0.6.1', generation: 1, state: { projects: [{ id: 'p1', name: 'my-app' }], approvalsWaiting: 0 } });

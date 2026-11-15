@@ -40,6 +40,7 @@ import { findExtRoute } from './lib/routes/index.mjs';
 import { buildLine } from './lib/build-info.mjs';
 import { legalSummary, termsAccepted, termsGate } from './lib/legal.mjs';
 import { get as needsYouNotice } from './lib/needs-you.mjs';
+import { latestPlanAlert, startPlanWatch } from './lib/plan-watch.mjs';
 import { canStart as canStartDrive, DEFAULT_IDLE_MINUTES, hotkeyStatus, listDrives, normalizeIdleMinutes, normalizeStopOverride } from './lib/drive.mjs';
 import { bridge as computerBridge } from './lib/computer/bridge.mjs';
 import { createComputerRun } from './lib/computer/run.mjs';
@@ -540,6 +541,9 @@ function publicState({ messages = true } = {}) {
     // The last notice that a business left new items on the owner's list: { seq, business, name, count, at } or null (lib/needs-you.mjs).
     // The desktop app turns a new one into "<Business>: 2 things need you" (desktop/handlers/needs-you.cjs). A name and a count only.
     needsYou: needsYouNotice(),
+    // The newest plan-watch alert made since this start: { seq, id, level, title, text, at } or null (lib/plan-watch.mjs). The desktop
+    // app turns a new one (seq grew) into a notification when the window is not in front.
+    planAlert: latestPlanAlert(),
     effort: st.effort,
     theme: st.theme,
     // Whether the License Agreement is accepted (lib/legal.mjs). The page and the desktop app read legal.required.
@@ -3061,6 +3065,9 @@ import('./lib/child-ledger.mjs').then(m => m.sweepOnce?.()).catch(() => {});
 // The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them.
 prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) });
 await startPhones();
+// The plan watch (lib/plan-watch.mjs): reads every subscription's plan use by itself and warns before a business runs out. It does nothing
+// before the License Agreement is accepted, and has no timer with PLENUM_NO_SCHEDULER=1 or PLENUM_SMOKE=1.
+startPlanWatch({ accepted: () => termsAccepted(store.get()), dir: store.HOME });
 // The sign-in checks of the Accounts page (Codex, and Claude Code on its CLI route) are started once in the background a moment after
 // the start, when the License Agreement is accepted, so that the first open of Accounts or of the setup guide has an answer and does
 // not wait for a CLI. Nothing waits for them, and a check that fails is nothing: the first read asks again.

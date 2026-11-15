@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { buildPushText } from '../../lib/remote/push.mjs';
+import { EVENT_KINDS, buildPushText } from '../../lib/remote/push.mjs';
 import * as UP from '../plugins/unifiedpush/src/core.js';
 import * as DI from '../plugins/dictation/src/core.js';
 import * as IP from '../plugins/isolated-preview/src/core.js';
@@ -199,8 +199,11 @@ describe('UnifiedPush: the desktop payload contract (lib/remote/push.mjs builds 
       { kind: 'finished', projectName: 'my-app', projectId: 'p1', firstLine: 'Fix the login redirect' },
       { kind: 'failed', projectName: 'my-app', projectId: 'p1', firstLine: 'npm test exited with 1' },
       { kind: 'limit', limitKind: 'plan' },
+      { kind: 'limit', limitKind: 'plan', projectId: '', text: "Claude's weekly limit is used up. It resets Sun 7:10 PM. This affects Garden Planner (Codex takes over).", alertId: 'a1' },
+      { kind: 'needs', projectId: '', businessName: 'Garden Planner', count: 2 },
       { kind: 'test' },
     ];
+    assert.deepEqual([...new Set(cases.map(c => c.kind))].sort(), [...EVENT_KINDS].sort(), 'a case for every kind the desktop sends');
     for (const event of cases) {
       const built = buildPushText(event, { prefs: { firstLine: true }, device, computer });
       const parsed = UP.parsePushPayload(built.payload);
@@ -295,6 +298,7 @@ describe('UnifiedPush: routes, intents, channels and endpoints', () => {
     assert.equal(UP.channelForKind('approval'), 'plenum-approvals');
     assert.equal(UP.channelForKind('handover'), 'plenum-approvals');
     assert.equal(UP.channelForKind('limit'), 'plenum-limits');
+    assert.equal(UP.channelForKind('needs'), 'plenum-approvals', 'the computer sends it under the approvals switch');
     assert.equal(UP.channelForKind('finished'), 'plenum-finished');
     assert.equal(UP.channelForKind('test'), 'plenum-finished');
   });
@@ -693,6 +697,16 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     assert.match(manifest, /android:name="com\.literallyisyou\.plenum\.unifiedpush\.UnifiedPushService"\s+android:exported="false"/);
     assert.match(manifest, /org\.unifiedpush\.android\.connector\.PUSH_EVENT/);
     assert.match(manifest, /org\.unifiedpush\.android\.distributor\.REGISTER/);
+  });
+
+  test('the phone knows every kind the computer sends: the plugin core and the Kotlin notifier list the same kinds as lib/remote/push.mjs', () => {
+    // A kind that is missing on the phone is shown as "Plenum has an update." with its own words lost ('needs' was, until item 153).
+    assert.deepEqual([...UP.PUSH_KINDS].sort(), [...EVENT_KINDS].sort());
+    const notifier = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'PlenumNotifier.kt'), 'utf8');
+    const kinds = /private val KINDS = setOf\(([^)]*)\)/.exec(notifier);
+    assert.ok(kinds, 'the Kotlin list of kinds');
+    assert.deepEqual(kinds[1].split(',').map(s => s.trim().replace(/^"|"$/g, '')).sort(), [...EVENT_KINDS].sort());
+    assert.match(notifier, /"approval", "handover", "needs" -> CHANNEL_APPROVALS\n\s+"limit" -> CHANNEL_LIMITS\n\s+else -> CHANNEL_FINISHED/);
   });
 
   test('the closed-app notifications use the approval-only Approve rule and device authentication on every action', () => {

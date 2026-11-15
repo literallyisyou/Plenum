@@ -1209,3 +1209,6 @@ html[data-surface="phone"] .ph-settings-note {
   font-size: 15px;
   line-height: 1.4;
 }
+
+/* ---------- the Businesses pane: every select is a full touch target (the switcher "Business shown" was 35 px high) ---------- */
+html[data-surface="phone"] .biz-select { min-height: var(--tap); }

@@ -238,6 +238,43 @@ test('text: several approvals share the tag, handover, finished, failed and limi
   assert.equal(buildPushText({ kind: 'limit' }, { prefs: {}, computer }).payload.body, 'A spend limit was reached.');
 });
 
+// DECISIONS item 153: the plan watch (lib/plan-watch.mjs) warns before a plan runs out. The phone gets the computer's own sentence.
+test('a plan alert is a limit with the computer\'s own sentence, whatever the first-line switch says, and each alert has its own tag', () => {
+  const computer = { id: 'c1', name: 'Home PC' };
+  const text = "At the pace of the last day, Claude's weekly limit is used up Sat 3:10 PM, 1 day 4 hours before it resets (Sun 7:10 PM). This affects Garden Planner (Codex takes over).";
+  const alert = buildPushText({ kind: 'limit', limitKind: 'plan', projectId: '', text, alertId: 'a1', firstLine: "a model's words" }, { prefs: { firstLine: false }, computer });
+  assert.equal(alert.payload.kind, 'limit', 'a kind every phone app already knows');
+  assert.equal(alert.payload.body, text);
+  assert.equal(alert.payload.title, 'Home PC');
+  assert.equal(alert.payload.tap, '/#settings=limit');
+  assert.deepEqual(alert.payload.actions, []);
+  assert.equal(alert.payload.firstLine, undefined);
+  assert.equal(alert.urgency, 'normal');
+  assert.ok(!JSON.stringify(alert).includes("model's words"));
+  // A long sentence is cut at 240 characters (what the phone app keeps of a body), and line breaks and control characters become spaces.
+  const long = buildPushText({ kind: 'limit', limitKind: 'plan', text: `line one\nline\u0007two ${'x'.repeat(400)}`, alertId: 'a1' }, { prefs: {}, computer });
+  assert.equal(Array.from(long.payload.body).length, 241);
+  assert.ok(long.payload.body.startsWith('line one line two xxx'));
+  assert.ok(long.payload.body.endsWith('\u2026'));
+  // No sentence: the words a plan limit always had. A spend limit never carries a sentence.
+  for (const none of [undefined, null, '', '   ', '\n\t']) {
+    assert.equal(buildPushText({ kind: 'limit', limitKind: 'plan', text: none, alertId: 'a1' }, { prefs: {}, computer }).payload.body, 'A plan limit was reached.');
+  }
+  assert.equal(buildPushText({ kind: 'limit', limitKind: 'spend', text: 'anything' }, { prefs: {}, computer }).payload.body, 'A spend limit was reached.');
+  assert.equal(buildPushText({ kind: 'limit', text: 'anything' }, { prefs: {}, computer }).payload.body, 'A spend limit was reached.');
+  // The tag: one per alert, so the alert of one plan does not replace the alert of another; the same alert keeps its tag.
+  const other = buildPushText({ kind: 'limit', limitKind: 'plan', text, alertId: 'a2' }, { prefs: {}, computer });
+  const plain = buildPushText({ kind: 'limit', limitKind: 'plan' }, { prefs: {}, computer });
+  for (const built of [alert, other, plain]) assert.match(built.tag, /^plenum-[0-9a-f]{32}$/);
+  assert.notEqual(alert.tag, other.tag);
+  assert.notEqual(alert.tag, plain.tag);
+  assert.equal(alert.tag, buildPushText({ kind: 'limit', limitKind: 'plan', text: 'other words', alertId: 'a1' }, { prefs: {}, computer }).tag);
+  assert.equal(alert.payload.tag, alert.tag);
+  // A limit that stopped a run keeps the tag it always had: an alert id counts only for a plan alert.
+  assert.equal(plain.tag, buildPushText({ kind: 'limit', limitKind: 'spend' }, { prefs: {}, computer }).tag);
+  assert.equal(buildPushText({ kind: 'limit', limitKind: 'spend', alertId: 'a1' }, { prefs: {}, computer }).tag, plain.tag);
+});
+
 test('firstLineOf takes one cleaned line and caps it at 120 characters', () => {
   assert.equal(firstLineOf('\n\n  first  \nsecond'), 'first');
   assert.equal(firstLineOf('a\u0007b c'), 'a b c');
@@ -336,6 +373,15 @@ test('presence: no push while focused and idle under 2 minutes; the phone in fro
     assert.equal((await h.pusher.sendEvent(event))[0].reason, 'switch-off');
     const finished = await h.pusher.sendEvent({ kind: 'finished', projectName: 'my-app', projectId: 'p1' });
     assert.equal(finished[0].reason, 'at-computer');
+    // A plan alert (DECISIONS item 153) follows the limits switch and the presence rule, like a limit that stopped a run.
+    const planAlert = { kind: 'limit', limitKind: 'plan', projectId: '', text: "Claude's weekly limit is used up. It resets Sun 7:10 PM.", alertId: 'a1' };
+    assert.equal((await h.pusher.sendEvent(planAlert))[0].reason, 'at-computer');
+    h.state.presence = { focused: false, idleS: 900 };
+    assert.equal((await h.pusher.sendEvent(planAlert))[0].outcome, 'sent');
+    h.state.prefs = { ...h.state.prefs, limits: false };
+    assert.equal((await h.pusher.sendEvent(planAlert))[0].reason, 'switch-off');
+    h.state.prefs = { ...h.state.prefs, limits: true };
+    h.state.presence = { focused: true, idleS: 1 };
     const testPush = await h.pusher.sendEvent({ kind: 'test' });
     assert.equal(testPush[0].outcome, 'sent');
   } finally {

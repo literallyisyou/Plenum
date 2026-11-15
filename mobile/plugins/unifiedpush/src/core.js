@@ -10,7 +10,9 @@ export const FAILED_REASONS = Object.freeze(['INTERNAL_ERROR', 'NETWORK', 'ACTIO
 export const DEFAULT_INSTANCE = 'default';
 export const DEFAULT_MESSAGE_FOR_DISTRIBUTOR = 'Plenum';
 export const MAX_MESSAGE_BYTES = 256 * 1024;
-export const PUSH_KINDS = Object.freeze(['approval', 'handover', 'finished', 'failed', 'limit', 'test']);
+// Every kind the computer sends (lib/remote/push.mjs EVENT_KINDS). A kind that is missing here is shown as "Plenum has an update."
+// with its own words lost, so the two lists are pinned to each other (mobile/test/plugins.test.mjs).
+export const PUSH_KINDS = Object.freeze(['approval', 'handover', 'finished', 'failed', 'limit', 'needs', 'test']);
 export const PUSH_ACTIONS = Object.freeze(['deny', 'stop', 'approve']);
 export const NOTIFICATION_CHANNELS = Object.freeze({
   approvals: 'plenum-approvals',
@@ -187,7 +189,8 @@ export function intentUrlForRoute(route) {
 }
 
 export function channelForKind(kind) {
-  if (kind === 'approval' || kind === 'handover') return NOTIFICATION_CHANNELS.approvals;
+  // needs: a business left things on the owner's list. The computer sends it under the approvals switch, so it uses that channel.
+  if (kind === 'approval' || kind === 'handover' || kind === 'needs') return NOTIFICATION_CHANNELS.approvals;
   if (kind === 'limit') return NOTIFICATION_CHANNELS.limits;
   return NOTIFICATION_CHANNELS.finished;
 }

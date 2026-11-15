@@ -97,7 +97,7 @@ function routeForAction(action, firstLine) {
   return action.action !== "approve" || !firstLine ? action.route : `${action.route}&line=${encodeURIComponent(firstLine)}`;
 }
 function channelForKind(kind) {
-  return kind === "approval" || kind === "handover" ? NOTIFICATION_CHANNELS.approvals : kind === "limit" ? NOTIFICATION_CHANNELS.limits : NOTIFICATION_CHANNELS.finished;
+  return kind === "approval" || kind === "handover" || kind === "needs" ? NOTIFICATION_CHANNELS.approvals : kind === "limit" ? NOTIFICATION_CHANNELS.limits : NOTIFICATION_CHANNELS.finished;
 }
 function parseMessageEvent(event) {
   if (!isPlainObject(event)) throw new UnifiedPushError("bad-event", "The push event is not an object.");
@@ -114,7 +114,7 @@ function parseEndpointEvent(event) {
 }
 var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, ROUTE_RE, UnifiedPushError, init_core = __esm({
   "mobile/plugins/unifiedpush/src/core.js"() {
-    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "test"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
+    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
       approvals: "plenum-approvals",
       finished: "plenum-finished",
       limits: "plenum-limits"

@@ -1,0 +1,57 @@
+/* Plan watch (public/ext-planwatch.js): the alerts strip above the message box, and the parts of the Plan use pop-up that the watch adds
+   (alerts, the check, the settings; the cards use the classes of ext-quota.css). Colour and size come from the tokens in style.css, so
+   both themes and the look of the whole app are followed. Nothing here sets an inline style. */
+
+/* The strip sits in the banner slot with the other composer banners. It informs and never blocks. */
+.pw-strip {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); min-width: 0;
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-lg);
+  border: 1px solid var(--line); border-left: 3px solid var(--warn);
+  background: var(--surface); color: var(--text-2); font-size: var(--fs-body); line-height: var(--lh-ui);
+}
+.pw-strip[data-level="out"] { border-left-color: var(--bad); }
+.pw-strip-text { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.pw-strip-title { display: block; font-weight: 600; }
+.pw-strip-more { color: var(--muted); }
+.pw-strip-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+
+/* In the pop-up. */
+.pw-h { margin: 0; color: var(--muted); font-size: var(--fs-caption); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.pw-alerts, .pw-settings { display: grid; gap: var(--sp-2); min-width: 0; }
+.pw-alert {
+  display: grid; gap: var(--sp-1); justify-items: start; min-width: 0;
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md);
+  border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--surface);
+}
+.pw-alert[data-level="out"] { border-left-color: var(--bad); }
+.pw-alert[data-seen="1"] { border-left-color: var(--line-2); color: var(--muted); }
+.pw-alert-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.pw-alert-title { font-weight: 600; font-size: var(--fs-body); min-width: 0; overflow-wrap: anywhere; }
+.pw-new {
+  padding: 0 var(--sp-2); border-radius: var(--r-full); border: 1px solid var(--accent-line);
+  background: var(--accent-soft); color: var(--accent); font-size: var(--fs-caption); font-weight: 600;
+}
+.pw-alert-text, .pw-alert-at, .pw-alert-gone { margin: 0; font-size: var(--fs-small); line-height: var(--lh-ui); overflow-wrap: anywhere; }
+.pw-alert-at, .pw-alert-gone { color: var(--muted); }
+
+/* A sentence from the server under a window. The state is a data attribute, so the colour follows the tokens. */
+.pw-say { margin: 0; color: var(--text-2); font-size: var(--fs-small); line-height: var(--lh-ui); overflow-wrap: anywhere; }
+.pw-say[data-state="tight"], .pw-say[data-state="short"] { color: var(--warn); }
+.pw-say[data-state="out"] { color: var(--bad); }
+.pw-note, .pw-next { overflow-wrap: anywhere; }
+
+.pw-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+.pw-check .pw-note { flex-basis: 100%; }
+.pw-settings { padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.pw-switch, .pw-every { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; font-size: var(--fs-small); color: var(--text); }
+.pw-every { flex-wrap: wrap; justify-content: space-between; }
+.pw-switch input { flex: none; margin: 0; accent-color: var(--accent); }
+.pw-switch-text { min-width: 0; overflow-wrap: anywhere; }
+.pw-every select {
+  min-width: 0; max-width: 100%; height: var(--ctl-sm); padding: 0 var(--sp-2);
+  border: 1px solid var(--line-2); border-radius: var(--r-md); background-color: var(--bg); color: var(--text); cursor: pointer;
+}
+.pw-every select:focus-visible, .pw-switch input:focus-visible, .pw-strip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* One line for a business, in its card in the Businesses pane. */
+.pw-biz { margin: 0; }

@@ -1401,6 +1401,13 @@
     }
     card.append(head);
     if (str(rec.purpose)) card.append(make('p', 'biz-card-purpose', rec.purpose));
+    // One line from the plan watch (public/ext-planwatch.js): whether the plan use of this business's subscriptions will last, and what
+    // happens when it does not. The sentence is the server's own. It is drawn whether or not the brief could be read, and not at all
+    // when the server has no plan watch.
+    try {
+      const watch = MU.planWatch?.businessLine?.(b.id);
+      if (watch) card.append(watch);
+    } catch (err) { console.error('Businesses: the plan watch line could not be drawn.', err); }
     if (full) {
       for (const fn of BRIEF_LINES) {
         try {
@@ -2306,6 +2313,8 @@
 
   MU.openBusinesses = () => MU.pane.open(TAB);
   // The setups changed (public/ext-biz-setup.js read them again): Today is drawn again, and the list with it.
+  // The plan watch changed (public/ext-planwatch.js): the line for each business is drawn again with the rest, when the pane is on screen.
+  window.addEventListener('plenum:plan-watch', () => { if (shown()) { if (drawingWaits()) late = true; else paint(); } });
   window.addEventListener('plenum:biz-setup', () => { if (shown()) { if (drawingWaits()) late = true; else paint(); refreshSoon(); } });
 
   // The phone's access can change while the pane is open (the computer raises or lowers it): the pane is drawn again with what it allows.

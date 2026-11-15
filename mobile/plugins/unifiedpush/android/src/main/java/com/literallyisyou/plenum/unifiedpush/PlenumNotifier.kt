@@ -27,7 +27,7 @@ internal object PlenumNotifier {
 
     private const val NOTIFICATION_ID = 1
     private const val MAX_ACTIONS = 3
-    private val KINDS = setOf("approval", "handover", "finished", "failed", "limit", "test")
+    private val KINDS = setOf("approval", "handover", "finished", "failed", "limit", "needs", "test")
     private val ACTIONS = setOf("deny", "stop", "approve")
     private val TAG_PATTERN = Regex("^plenum-[0-9a-f]{32}$")
     private val ROUTE_PATTERN = Regex("^/#[\\x21-\\x7e]{1,200}$")
@@ -61,7 +61,7 @@ internal object PlenumNotifier {
 
     fun channelFor(kind: String): String =
         when (kind) {
-            "approval", "handover" -> CHANNEL_APPROVALS
+            "approval", "handover", "needs" -> CHANNEL_APPROVALS
             "limit" -> CHANNEL_LIMITS
             else -> CHANNEL_FINISHED
         }

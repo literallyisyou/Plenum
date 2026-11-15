@@ -11,6 +11,7 @@
   background: transparent; color: var(--text-2);
   transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
+.ext-quota-ring[hidden] { display: none; }
 .ext-quota-ring:hover { background: var(--fill-2); color: var(--text); }
 .ext-quota-ring[aria-expanded="true"] { background: var(--fill-3); color: var(--text); }
 .ext-quota-ring svg { width: 20px; height: 20px; overflow: visible; }
@@ -28,7 +29,7 @@
 /* The pop-up opens upward from the ring. Narrow windows keep it on screen by its right edge. */
 .ext-quota-pop {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40;
-  display: grid; gap: 10px; width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 540px); overflow: auto;
+  display: grid; align-content: start; gap: 10px; width: min(400px, calc(100vw - 32px)); max-height: min(70vh, 540px); overflow: auto;
   padding: 12px; border: 1px solid var(--line-2); border-radius: var(--r-lg);
   background: var(--material-menu); -webkit-backdrop-filter: var(--blur-menu); backdrop-filter: var(--blur-menu); color: var(--text);
   box-shadow: var(--shadow-2);
@@ -74,3 +75,12 @@
 .ext-quota-pick select:hover:not(:disabled) { border-color: var(--line-3); }
 .ext-quota-pick select:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ext-quota-pick select:disabled { opacity: 0.6; cursor: default; }
+
+/* The phone page (data-surface="phone"): the Plan use sheet keeps clear of the title bar, the tab bar and the safe areas, and scrolls inside. */
+html[data-surface="phone"] .ext-quota-pop {
+  top: calc(var(--sa-top, 0px) + var(--ph-title-h, 48px) + 8px);
+  bottom: calc(var(--sa-bottom, 0px) + var(--ph-bar-h, 56px) + 8px);
+  left: max(12px, var(--sa-left, 0px)); right: max(12px, var(--sa-right, 0px));
+  max-height: none; overscroll-behavior: contain;
+}
+html[data-surface="phone"] .ext-quota-pop button { min-height: var(--tap, 44px); }
