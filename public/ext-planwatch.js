@@ -216,10 +216,14 @@
     const row = make('div', 'ext-quota-win');
     const name = str(w.name) || 'Plan window';
     const used = num(w.usedPercent);
+    const reset = num(w.resetsAt);
+    // A limit whose reset time has passed and that has no newer reading: its number is the one from before the reset, so it is said as
+    // that and no bar is drawn (the server's sentence says that Plenum is waiting for a new reading).
+    const past = reset !== null && reset <= Date.now();
     const line = make('div', 'ext-quota-win-line');
-    line.append(make('span', 'ext-quota-win-name', name), make('span', 'ext-quota-win-pct', used === null ? 'no percentage reported' : `used ${Math.round(used)}%`));
+    line.append(make('span', 'ext-quota-win-name', name), make('span', 'ext-quota-win-pct', used === null ? 'no percentage reported' : past ? `was ${Math.round(used)}% before the reset` : `used ${Math.round(used)}%`));
     row.append(line);
-    if (used !== null) {
+    if (used !== null && !past) {
       const meter = document.createElement('meter');
       meter.setAttribute('min', '0');
       meter.setAttribute('max', '100');
@@ -230,8 +234,7 @@
       meter.setAttribute('aria-label', `${str(sub.label) || sub.provider} ${name}, ${Math.round(used)}% used`);
       row.append(meter);
     }
-    const reset = num(w.resetsAt);
-    row.append(make('p', 'ext-quota-win-reset', reset === null ? 'Reset time not reported' : `Resets ${dayTime(reset)}`));
+    row.append(make('p', 'ext-quota-win-reset', reset === null ? 'Reset time not reported' : past ? `Reset ${dayTime(reset)}` : `Resets ${dayTime(reset)}`));
     if (str(w.say)) {
       const say = make('p', 'pw-say', w.say);
       const state = str(w.projected?.state);
