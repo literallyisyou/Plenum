@@ -36,6 +36,8 @@
   const MARKS = { anthropic: ['C', 'claude'], codex: ['X', 'codex'], muse: ['M', 'muse'], gemini: ['G', 'gemini'], antigravity: ['A', 'antigravity'], cursor: ['Cu', 'cursor'], grok: ['Gr', 'grok'] };
   // What a window's state is called on its card. The words of the sentences come from the server.
   const PILLS = { fine: 'On track', tight: 'Tight', short: 'Will run short', out: 'Used up', unknown: 'Not known' };
+  // The same state while it rests on an early estimate only (projected.sure is false for every window in that state): it may, not it will.
+  const EARLY_PILLS = { tight: 'May get tight', short: 'May run short' };
   const TONES = { fine: 'green', tight: 'amber', short: 'amber', out: 'red' };
   const HOW = { free: 'with a free check', replies: 'with its last reply', request: 'with one very small request' };
   const TERMS_TEXT = 'Plan use is watched once the License Agreement is accepted.';
@@ -205,7 +207,9 @@
 
   const pillOf = sub => {
     const state = str(sub.state);
-    return [PILLS[state] ?? PILLS.unknown, TONES[state] ?? ''];
+    const inState = arr(sub.windows).filter(w => isObj(w) && str(w.projected?.state) === state);
+    const early = inState.length > 0 && inState.every(w => w.projected.sure !== true);
+    return [(early && EARLY_PILLS[state]) || PILLS[state] || PILLS.unknown, TONES[state] ?? ''];
   };
 
   function windowRow(sub, w) {
