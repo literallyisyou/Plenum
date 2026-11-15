@@ -1,6 +1,8 @@
 /* Plenum interface. The tokens come first, then the base that every element inherits, then layout, then each component.
    The look (visual refresh, 12 Nov 2026): neutral surfaces, one accent used sparingly, hairlines, a small set of radii,
-   soft layered shadows, quick ease-out motion. A new rule takes its values from the tokens below, never from a literal colour. */
+   soft layered shadows, quick ease-out motion. A new rule takes its values from the tokens below, never from a literal colour.
+   Direction C (UI 2, 14 Nov 2026) keeps all of that and adds the field (the window's ground, in the hues of the mark), layers
+   of material on it and larger radii. Its tokens end the block below, and its rules end this file. */
 
 /* Every colour is a light-dark(light, dark) pair, so one list serves both themes. The theme
    follows Windows unless the Theme button has set data-theme on the root element. */
@@ -9,14 +11,15 @@
 
   /* Surfaces, from the page background up to the most raised. The two values of the page background are repeated
      in app.js (the window colour the desktop app picks up) and in desktop/main.cjs: they do not change here alone.
-     Light: a soft grey page with white cards. Dark: a near-black page, and each layer above it is lighter.
+     Light: a soft grey page with white cards. Dark: a near-black page, and each layer above it is a lighter navy (the
+     navy of the mark's tile).
      Against the values before the refresh, a surface never moved toward the text and a text colour never moved toward
      the surface, so no pair of these tokens lost contrast (the drive bar, the Phone chip and the phone layer use them). */
   --bg: light-dark(#f6f6fb, #0a0a11);
   --bg-side: light-dark(#efeff4, #0d0d14);
-  --surface: light-dark(#ffffff, #13131a);
-  --surface-2: light-dark(#f2f2f9, #1a1a23);
-  --surface-3: light-dark(#e8e8ee, #24242f);
+  --surface: light-dark(#ffffff, #1b1c30);
+  --surface-2: light-dark(#f2f2f9, #222339);
+  --surface-3: light-dark(#e8e8ee, #2a2b43);
   /* Hairlines: 1 separators and card edges, 2 field and control edges, 3 a hovered field. */
   --line: light-dark(rgba(22, 22, 40, 0.10), rgba(255, 255, 255, 0.08));
   --line-2: light-dark(rgba(22, 22, 40, 0.16), rgba(255, 255, 255, 0.14));
@@ -34,9 +37,9 @@
      the three surfaces and fills 1 and 2 (muted on the third surface: 4.9 light, 5.1 dark). */
   --text: light-dark(#15151b, #efeff4);
   --text-2: light-dark(#42434e, #bdbeca);
-  --muted: light-dark(#61626e, #9394a2);
+  --muted: light-dark(#5a5b69, #abadc4);
   /* Disabled text and decorative marks only: it does not reach 4.5 to 1. */
-  --faint: light-dark(#9a9ba6, #5e5f6c);
+  --faint: light-dark(#9a9ba6, #6a6b80);
 
   /* The accent is the periwinkle of the loop in the app icon. Text, icons, focus and selection use the accent; a filled
      control uses the fill with white text (6.2 to 1 light, 5.2 dark). The older pairs still hold: the ink on the accent, on
@@ -77,27 +80,27 @@
   --grok: light-dark(#b5366f, #ff8fbe);
 
   /* Code: nearly white in the light theme (lifted a little on the page, a shallow well inside a card), a dark well in the dark one. */
-  --code-bg: light-dark(#fafafd, #08080c);
+  --code-bg: light-dark(#fafafd, #0c0c18);
   /* A quiet button: white with a hairline in the light theme, a lifted translucent layer in the dark one. Rest, hover, pressed. */
   --btn: light-dark(#ffffff, rgba(255, 255, 255, 0.09));
   --btn-hover: light-dark(#f2f2f9, rgba(255, 255, 255, 0.14));
   --btn-press: light-dark(#e8e8ee, rgba(255, 255, 255, 0.19));
   /* The chosen part of a segmented control or tab row, raised on its grey track. */
   --raised: light-dark(#ffffff, rgba(255, 255, 255, 0.16));
-  --scrim: light-dark(rgba(16, 16, 32, 0.30), rgba(0, 0, 0, 0.56));
+  --scrim: light-dark(rgba(20, 18, 60, 0.28), rgba(0, 0, 0, 0.56));
   /* Elevation. 1 raised (the composer, a floating card), 2 floating (menus, pop-ups, toasts), 3 modal (drawers, dialogs). */
-  --shade-1: light-dark(rgba(16, 16, 32, 0.06), rgba(0, 0, 0, 0.32));
-  --shade-2: light-dark(rgba(16, 16, 32, 0.12), rgba(0, 0, 0, 0.46));
-  --shade-3: light-dark(rgba(16, 16, 32, 0.20), rgba(0, 0, 0, 0.62));
+  --shade-1: light-dark(rgba(40, 32, 110, 0.07), rgba(0, 0, 0, 0.32));
+  --shade-2: light-dark(rgba(40, 32, 110, 0.14), rgba(0, 0, 0, 0.46));
+  --shade-3: light-dark(rgba(40, 32, 110, 0.22), rgba(0, 0, 0, 0.62));
   --shadow-1: 0 1px 2px var(--shade-1), 0 2px 8px -2px var(--shade-1);
   --shadow-2: 0 2px 6px var(--shade-1), 0 12px 32px -6px var(--shade-2);
   --shadow-3: 0 4px 12px var(--shade-1), 0 24px 64px -12px var(--shade-3);
   /* The soft halo of a focused field, with an accent edge. */
   --ring: 0 0 0 3px light-dark(rgba(90, 72, 221, 0.22), rgba(169, 178, 255, 0.28));
   /* Materials: a translucent layer with the blur beside it, for what floats over content (menus, toasts, a bar over a scroll). */
-  --material-bar: light-dark(rgba(246, 246, 251, 0.82), rgba(10, 10, 17, 0.80));
-  --material-menu: light-dark(rgba(255, 255, 255, 0.86), rgba(26, 26, 35, 0.86));
-  --material-sheet: light-dark(rgba(255, 255, 255, 0.95), rgba(19, 19, 26, 0.94));
+  --material-bar: light-dark(rgba(246, 246, 251, 0.82), rgba(16, 17, 32, 0.80));
+  --material-menu: light-dark(rgba(255, 255, 255, 0.86), rgba(34, 35, 58, 0.88));
+  --material-sheet: light-dark(rgba(255, 255, 255, 0.95), rgba(27, 28, 48, 0.94));
   --blur-bar: blur(20px) saturate(1.6);
   --blur-menu: blur(28px) saturate(1.8);
   --scroll-thumb: light-dark(rgba(22, 22, 40, 0.22), rgba(255, 255, 255, 0.22));
@@ -122,8 +125,9 @@
   --lh-body: 1.5;
   --lh-read: 1.6;
 
-  /* Space on a 4 px grid, the radii (6 small parts, 8 controls, 12 cards and menus, 16 sheets and the composer), and the
-     heights of a control (24 inline, 28 small and toolbar, 32 regular, 36 large). */
+  /* Space on a 4 px grid, the radii (6 marks, 8 small parts, 12 fields and controls with corners, 16 cards and menus,
+     22 sheets and panels, 26 the message capsule; a button is a pill), and the heights of a control (24 inline, 28 small
+     and toolbar, 32 regular, 36 large). */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -133,11 +137,11 @@
   --sp-8: 32px;
   --sp-10: 40px;
   --sp-12: 48px;
-  --r-xs: 4px;
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 12px;
-  --r-xl: 16px;
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
   --r-full: 999px;
   --ctl-xs: 24px;
   --ctl-sm: 28px;
@@ -161,10 +165,107 @@
   /* The same chevron in a mid grey, for menus the browser draws itself. */
   --i-chevron-grey: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238389a0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   --i-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+
+  /* ---- direction C (UI 2): the field, the layers of material on it, and the marks of a state ---- */
+  /* The field: the window's own ground. The three hues of the mark's arcs (blue at the left, green at the right, orange
+     below) and the lavender of its core, softly, over the page colour. Nothing but the shell paints it. */
+  --field-1: light-dark(rgba(138, 180, 255, 0.72), rgba(64, 104, 224, 0.34));
+  --field-2: light-dark(rgba(127, 211, 154, 0.48), rgba(46, 150, 100, 0.20));
+  --field-3: light-dark(rgba(232, 145, 95, 0.46), rgba(196, 104, 60, 0.22));
+  --field-4: light-dark(rgba(185, 169, 255, 0.70), rgba(118, 92, 232, 0.30));
+  --field-wash: linear-gradient(180deg, light-dark(rgba(112, 120, 240, 0.14), rgba(38, 33, 92, 0.62)), light-dark(rgba(112, 120, 240, 0.09), rgba(15, 13, 38, 0.62)));
+  --field: radial-gradient(880px 700px at 6% -4%, var(--field-1), transparent 62%), radial-gradient(760px 620px at 104% -6%, var(--field-2), transparent 58%), radial-gradient(860px 700px at 104% 108%, var(--field-3), transparent 58%), radial-gradient(900px 720px at -4% 106%, var(--field-4), transparent 58%), var(--field-wash), var(--bg);
+  /* Layers of material on the field: the side panel, a sheet (the chat, a pane, a page), what floats over moving text
+     (the message capsule, a notice, the dock), and a card inside a layer. */
+  --layer-panel: light-dark(rgba(255, 255, 255, 0.56), rgba(34, 36, 66, 0.50));
+  --layer-sheet: light-dark(rgba(255, 255, 255, 0.82), rgba(16, 17, 32, 0.78));
+  --layer-float: light-dark(rgba(255, 255, 255, 0.74), rgba(46, 48, 84, 0.66));
+  --layer-card: light-dark(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.06));
+  --blur-layer: blur(30px) saturate(1.8);
+  --edge-top: light-dark(rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.12));
+  --edge-in: light-dark(rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.08));
+  --shade-layer: light-dark(rgba(40, 32, 110, 0.34), rgba(0, 0, 0, 0.72));
+  --shade-soft: light-dark(rgba(40, 32, 110, 0.07), rgba(0, 0, 0, 0));
+  --shadow-panel: 0 1px 0 var(--edge-top) inset, 0 0 0 1px var(--edge-in) inset, 0 28px 60px -28px var(--shade-layer), 0 2px 8px var(--shade-soft);
+  --shadow-float: 0 1px 0 var(--edge-top) inset, 0 0 0 1px var(--edge-in) inset, 0 22px 48px -18px var(--shade-layer), 0 3px 10px var(--shade-soft);
+  --shadow-card: 0 0 0 1px light-dark(rgba(24, 22, 70, 0.06), rgba(255, 255, 255, 0.07)), 0 10px 24px -14px light-dark(rgba(40, 32, 110, 0.28), rgba(0, 0, 0, 0.70)), 0 1px 2px var(--shade-soft);
+  /* The accent as a material (a primary button), and as a mark in a drawing (a ring, a bar, a line of a chart). */
+  --accent-grad: linear-gradient(180deg, light-dark(#6a59ea, #675cee), light-dark(#5340d6, #554ad9));
+  --accent-mark: light-dark(#5a48dd, #8f84ff);
+  --shadow-accent: 0 1px 0 rgba(255, 255, 255, 0.30) inset, 0 10px 20px -10px light-dark(rgba(72, 56, 214, 0.70), rgba(0, 0, 0, 0.70));
+  /* Passed, attention and failure: a soft ground for a pill or a strip, a mark for drawings, a fill for the one red button. */
+  --ok-soft: light-dark(rgba(37, 182, 114, 0.16), rgba(98, 214, 160, 0.16));
+  --ok-mark: light-dark(#25b672, #37c985);
+  --warn-soft: light-dark(rgba(255, 176, 60, 0.20), rgba(255, 176, 60, 0.16));
+  --warn-mark: light-dark(#f29a1c, #f5a733);
+  --bad-soft: light-dark(rgba(255, 110, 90, 0.16), rgba(255, 96, 80, 0.17));
+  --bad-mark: light-dark(#f2564a, #ff6a5e);
+  --bad-fill: light-dark(#c22f3e, #cc3b4a);
+  --on-bad: light-dark(#ffffff, #ffffff);
+  /* The live island: what is running right now, with its Stop. Ink glass in the light theme, pale glass in the dark one. */
+  --live-bg: light-dark(rgba(22, 22, 48, 0.92), rgba(244, 244, 252, 0.95));
+  --live-text: light-dark(#ffffff, #15151b);
+  --live-text-2: light-dark(#c6c8e8, #4a4c6e);
+  --live-dot: light-dark(#a9a0ff, #5a48dd);
+  --live-halo: light-dark(rgba(169, 160, 255, 0.30), rgba(90, 72, 221, 0.24));
+  --bubble: light-dark(rgba(90, 72, 221, 0.12), rgba(150, 140, 255, 0.24));
+  --r-2xl: 26px;
 }
 
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
+
+/* Solid mode (direction C): the same tokens with every layer made solid and nothing blurred. It is on when
+   data-material="solid" is set on the root element, when Windows has its transparency effects off and in a high-contrast
+   theme (data-material="glass" keeps the glass against those two). The two lists are the same list. A sheet is the
+   card colour in the light theme; in the dark theme it stands between the page colour and the card colour, as the glass
+   sheet does, so a card on it is still a step lighter and a text on two fills keeps its contrast.
+   At 860 px and narrower the layout is the flat one (the side panel is a menu, the chat fills the window), so the field
+   and the layers of direction C are solid there too; the older materials (a menu, a toast, a bar) stay as they were. */
+:root[data-material="solid"] {
+  --field: var(--bg);
+  --layer-panel: var(--bg-side);
+  --layer-sheet: light-dark(var(--surface), color-mix(in srgb, var(--surface) 45%, var(--bg)));
+  --layer-float: var(--surface);
+  --layer-card: var(--surface);
+  --blur-layer: none;
+  --material-bar: var(--bg);
+  --material-menu: var(--surface);
+  --material-sheet: var(--surface);
+  --blur-bar: none;
+  --blur-menu: none;
+  --edge-top: light-dark(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.06));
+  --edge-in: var(--line);
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root:not([data-material="glass"]) {
+    --field: var(--bg);
+    --layer-panel: var(--bg-side);
+    --layer-sheet: light-dark(var(--surface), color-mix(in srgb, var(--surface) 45%, var(--bg)));
+    --layer-float: var(--surface);
+    --layer-card: var(--surface);
+    --blur-layer: none;
+    --material-bar: var(--bg);
+    --material-menu: var(--surface);
+    --material-sheet: var(--surface);
+    --blur-bar: none;
+    --blur-menu: none;
+    --edge-top: light-dark(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.06));
+    --edge-in: var(--line);
+  }
+}
+@media (max-width: 860px) {
+  :root {
+    --field: var(--bg);
+    --layer-panel: var(--bg-side);
+    --layer-sheet: light-dark(var(--surface), color-mix(in srgb, var(--surface) 45%, var(--bg)));
+    --layer-float: var(--surface);
+    --layer-card: var(--surface);
+    --blur-layer: none;
+    --edge-top: light-dark(rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.06));
+    --edge-in: var(--line);
+  }
+}
 
 /* ---------- base ---------- */
 
@@ -1819,3 +1920,117 @@ html[data-legal='pending'] #app { display: none; }
 .pt-effort { flex: none; max-width: 130px; font-size: 12px; }
 .pt-limits { color: var(--muted); font: 11.5px var(--mono); white-space: nowrap; }
 .bt-elapsed { flex: none; color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- direction C (UI 2): the shared pieces ---------- */
+/* Appended; no rule above was changed (the tokens in :root took C's values). A button is a pill: its corner is larger
+   than half the height of a one-line button, and a button whose words wrap keeps rounded corners. A primary button
+   carries the accent as a material; a quiet button lies on a soft shadow in place of its hairline; an icon button is a
+   circle; the chosen part of a segmented control is a pill on a pill. The padding and the type size of a button are as
+   they were, so no button (and no Stop button) got smaller. */
+.primary, .primary.small, .ghost, .ghost.small, .welcome > .primary { border-radius: var(--r-xl); }
+.primary { background: var(--accent-grad); background-color: var(--accent-fill); box-shadow: var(--shadow-accent); }
+.ghost { border-color: transparent; box-shadow: var(--shadow-card); }
+.ghost:active, .ghost:disabled { box-shadow: 0 0 0 1px var(--line); }
+.icon-btn { border-radius: var(--r-full); }
+.seg, .seg-btn, .pick { border-radius: var(--r-full); }
+.seg-btn[aria-pressed="true"] { box-shadow: var(--shadow-card); }
+/* What floats (a toast, the command list) lies on the float shadow, with the light top edge of a layer and no hairline. */
+.toast { border-color: transparent; border-radius: var(--r-xl); box-shadow: var(--shadow-float); }
+#palette { border-color: transparent; box-shadow: var(--shadow-float); }
+
+/* ---------- direction C (UI 2): the shell ---------- */
+/* Appended; no rule above was changed. The window's ground is the field. On it, 10 px apart: the side panel (a floating
+   layer), the title bar (on the field itself, across the chat and an open pane; it still moves the window), the chat on
+   its sheet with the message capsule, and an open pane as a second sheet under the title bar. That is the layout from
+   861 px up on the desktop's page. Narrower windows and the phone's page keep the flat layout, and their field is the
+   page colour. Each rule stands inside :where(), so it weighs what its own selector weighs, and the rules above for a
+   state (hover, pressed, the 56 px strip, an expanded pane, the fit steps of the title bar) decide what they decided. */
+:where(html:not([data-surface="phone"])) body { background: var(--field); }
+
+/* The message capsule, at every width: a floating layer with no hairline. Its controls are pills on a fill; each is as
+   wide as it was, so the row holds what it held. */
+:where(html:not([data-surface="phone"])) {
+  .composer { border-color: transparent; border-radius: var(--r-2xl); background: var(--layer-float); box-shadow: var(--shadow-float); }
+  .composer:focus-within { border-color: transparent; box-shadow: 0 0 0 1px var(--accent-line), 0 0 0 4px var(--accent-soft), var(--shadow-float); }
+  .composer-bar .attach-btn { width: 34px; height: 34px; background: var(--fill-2); color: var(--text-2); }
+  .composer-bar .attach-btn:hover { background: var(--fill-3); color: var(--text); }
+  .composer-bar .seg { height: 34px; }
+  .composer-bar .pick { height: 34px; background: var(--fill-2); }
+  .composer-bar .pick:hover { background: var(--fill-3); }
+  .composer-bar .mode-btn { height: 34px; border-radius: var(--r-full); background: var(--fill-2); }
+  .composer-bar .mode-btn:hover { background: var(--fill-3); }
+  .send { width: 38px; height: 38px; background: var(--accent-grad); box-shadow: var(--shadow-accent); }
+  /* The strips over the capsule. With three or more on screen the slot keeps to a part of the window's height and scrolls,
+     so the message box is never pushed off the window (six strips did that). One or two strips are as they were. */
+  .banner-slot:has(> :nth-child(3 of :not([hidden], .sr))) { max-height: min(46vh, 380px); overflow-y: auto; overscroll-behavior: contain; }
+  /* Your own message: a bubble in the accent's tint, with the corner toward the message box pulled in. */
+  .turn.user .turn-body { background: var(--bubble); border-radius: 20px 20px 6px 20px; box-shadow: 0 0 0 1px var(--accent-soft) inset; }
+}
+
+@media (min-width: 861px) {
+  :where(html:not([data-surface="phone"])) {
+    /* The gutters. The title bar starts at the window's top edge, so the top gutter belongs to the side panel and to the
+       sheets, not to the grid. The grid line itself is as it was. */
+    .app { padding: 0 10px 10px; }
+    .main { margin-left: 10px; }
+
+    /* The side panel: a floating layer. */
+    .sidebar { margin-top: 10px; border-right: 0; border-radius: var(--r-xl); background: var(--layer-panel); box-shadow: var(--shadow-panel); }
+    .proj-item.active { background: var(--layer-card); box-shadow: var(--shadow-card); }
+    .proj-item .pi-dot { box-shadow: 0 0 0 2px var(--surface); }
+    /* The provider states (app.js placeStatus puts them above the foot on a wide window). A state that is fine is its
+       name alone, so two stand in a line; one that needs something says so and takes a line of its own, and so does the
+       run's "Working". In the 56 px strip each is its dot. */
+    .sidebar > .statusbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 0; margin: 0 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+    .sidebar > .statusbar :is(.st, .run-state) { justify-content: flex-start; min-width: 0; margin: 0; padding: 4px 10px; font-size: 12px; }
+    .sidebar > .statusbar :is(.st:not(.ok), .run-state) { grid-column: 1 / -1; }
+    .app[data-strip] .sidebar > .statusbar { grid-template-columns: minmax(0, 1fr); }
+    .app[data-strip] .sidebar > .statusbar :is(.st, .run-state) { justify-content: center; padding: 7px 0; gap: 0; font-size: 0; }
+
+    /* The title bar stands on the field. It runs to the window's right edge, over the gutter, so its paddings at the
+       right are what they were (20 px, and the window buttons) and so is the room for its items. */
+    .topbar { padding-left: 8px; margin: 0 -10px 6px 0; }
+    /* The sheet of the chat: a layer of the main column that starts under the title bar. It lies over the field and
+       under everything in the column. */
+    .main::before {
+      content: ""; position: absolute; z-index: -1; inset: calc(var(--bar-now, var(--bar-h)) + 6px) 0 0; pointer-events: none;
+      border-radius: var(--r-xl); background: var(--layer-sheet); box-shadow: var(--shadow-panel);
+    }
+    /* The reading column keeps 16 px to the edge of its sheet where the sheet is narrow (it kept 28 px to the edge of the
+       main column). The gutters around the sheets took 40 px of the window's width; this gives 24 of them back to the
+       text and to the message capsule. In a wide sheet the column is 800 px, as it was. */
+    .main { --col: min(800px, 100% - 32px); }
+    .stream { width: min(800px, 100% - 8px); }
+    /* The line under the capsule holds the hint alone now: it is centred. */
+    .foot { justify-content: center; }
+    .foot .hint { margin-left: 0; }
+    .foot .hint:where(:has(> .hint-part)) { justify-content: center; }
+
+    /* An open pane: a second sheet, 10 px beside the chat's, under the title bar. Its head is clear of the window
+       buttons there, and its grip lies in the gap between the two sheets. */
+    .pane { margin: calc(var(--bar-now, var(--bar-h)) + 6px) 0 0 10px; border-left: 0; border-radius: var(--r-xl); background: var(--layer-sheet); box-shadow: var(--shadow-panel); }
+    .pane-head { padding: 0 8px 0 10px; }
+    .pane-body { border-radius: 0 0 var(--r-xl) var(--r-xl); }
+    .pane-grip { left: -10px; width: 10px; }
+    .pane-grip:is(:hover, :focus-visible)::before { left: 4px; top: 14px; bottom: 14px; border-radius: 1px; }
+    /* With a pane open the title bar runs on over the pane's column, to the window's edge, and keeps clear of the window
+       buttons there, as it does with no pane. app.js tells the app element the pane's width (--pane-w). */
+    .app:not([data-settings-open]):not([data-pane-expanded]):has(> .pane:not([hidden])) .topbar { margin-right: calc(-20px - clamp(380px, var(--pane-w, 440px), 60vw)); padding-right: calc(var(--win-controls) + 20px); }
+    .app:not([data-settings-open]):not([data-pane-expanded]):has(> .pane:not([hidden])) #titlebar:is([data-fit="3"],[data-fit="4"],[data-fit="5"]):not([data-chips="top"]) > .proj-title { margin-right: var(--win-controls); }
+    .app:not([data-settings-open]):not([data-pane-expanded]):has(> .pane:not([hidden])) #titlebar[data-chips="top"] > .titlebar-slot:not(.titlebar-pill) { margin-right: var(--win-controls); }
+    /* Expanded, the pane takes the place of the chat's sheet. */
+    .app[data-pane-expanded] .pane { margin: 0; top: calc(max(var(--win-top), var(--bar-now, var(--bar-h))) + 6px); left: calc(var(--side-w, 268px) + 20px); right: 10px; bottom: 10px; background: var(--layer-sheet); }
+    .app[data-pane-expanded]:not([data-settings-open]) .main::before { display: none; }
+
+    /* The Settings page lies on the chat's sheet and covers what is under it: the sheet's material over the field, drawn
+       where the field itself is (fixed to the window), so the page and the sheet are one surface. */
+    .settings-page { top: calc(var(--bar-now, var(--bar-h)) + 6px); border-radius: var(--r-xl); background: linear-gradient(var(--layer-sheet), var(--layer-sheet)), var(--field); background-attachment: fixed; }
+  }
+  /* The add-folder card hangs under the + button, which moved with the side panel. */
+  html:not([data-surface="phone"]) .add-project { left: 20px; top: 118px; }
+  html:not([data-surface="phone"]) .app[data-strip] .add-project { left: calc(var(--side-w) + 18px); top: 82px; }
+}
+/* The desktop app's window is moved by its top edge: the 10 px of field over the side panel move it too. */
+@media (min-width: 861px) {
+  :root[data-shell="desktop"] .app::before { content: ""; position: fixed; top: 0; left: 0; width: calc(var(--side-w, 268px) + 20px); height: 10px; -webkit-app-region: drag; }
+}

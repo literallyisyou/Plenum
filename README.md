@@ -39,7 +39,7 @@ The installer is written to `release/` as `Plenum Setup 0.6.0.exe`. It shows the
 
 To keep it on the taskbar, open Plenum, right-click its taskbar icon and choose **Pin to taskbar**.
 
-The look follows the system (light or dark). The **Theme** button in the sidebar, or `/theme dark`, overrides that. Both themes use one calm look: neutral surfaces, one accent for the main action, links and focus, and the same buttons, fields and menus in every panel. Motion is short and is off when the system asks for reduced motion.
+The look follows the system (light or dark). The **Theme** button in the sidebar, or `/theme dark`, overrides that. Both themes use one calm look: a soft field of colour with the side panel, the chat and an open pane lying on it as sheets, the message box as a capsule, round buttons, one accent for the main action, links and focus, and the same buttons, fields and menus in every panel. Where Windows has its transparency effects off, or a high-contrast theme is on, every layer is solid and nothing is blurred. Motion is short and is off when the system asks for reduced motion.
 
 Applied updates are kept in Plenum's state folder, never in the install folder, so the install location does not need to be writable for them. See [Updates to Plenum](#updates-to-plenum).
 

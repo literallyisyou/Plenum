@@ -88,6 +88,13 @@
   .ext-thread-new-text { display: none; }
   .ext-thread-new { padding: 5px 8px; }
 }
+/* A column narrower still (the pane open in a 960 px window, where the sheets have gutters around them): the tabs and the plus take
+   a little less room, so three threads and the plus fit and the plus is not cut at the sheet's edge. */
+@container (max-width: 400px) {
+  .ext-thread-btn { padding-left: 6px; }
+  .ext-thread-more { margin-right: 2px; }
+  .ext-thread-new { margin-left: 0; padding: 5px 6px; }
+}
 
 /* ---------- the thread header row ---------- */
 

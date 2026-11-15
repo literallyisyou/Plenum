@@ -2140,6 +2140,20 @@ function renderStatus() {
   keepFocusAcross(el.statusbar, drawStatus);
 }
 
+// Where the provider states stand. On a wide window they are in the side panel, above its foot. At 860 px and narrower the side
+// panel is a menu, so they stay under the message box, where index.html has them; the phone's page keeps them there at every
+// width. It is one element in either place, so drawStatus and a panel that looks for #statusbar find it both ways.
+const statusWide = window.matchMedia('(min-width: 861px)');
+function placeStatus() {
+  const sideFoot = document.querySelector('.sidebar > .side-foot');
+  const foot = el.hint.parentElement;
+  const inSide = statusWide.matches && document.documentElement.dataset.surface !== 'phone' && Boolean(sideFoot);
+  if (inSide && el.statusbar.nextElementSibling !== sideFoot) sideFoot.before(el.statusbar);
+  else if (!inSide && el.statusbar.parentElement !== foot) foot.prepend(el.statusbar);
+}
+placeStatus();
+statusWide.addEventListener('change', placeStatus);
+
 // What the server knows of one state: true, false, or null when it does not know yet. The provider status holds null before its first
 // read after a start, and for Claude Code's sign-in when its check gave no answer (lib/provider-status.mjs, lib/claude-cli.mjs).
 const knownState = v => (v === true ? true : v === false ? false : null);
@@ -6830,6 +6844,8 @@ function paneSetWidth(px) {
   const n = Number(px);
   paneW = Math.round(Math.min(max, Math.max(min, Number.isFinite(n) ? n : paneCurrentWidth())));
   el.pane.style.setProperty('--pane-w', `${paneW}px`);
+  // The app element is told the same width: the title bar runs on over the pane's column (style.css, the shell).
+  $('app').style.setProperty('--pane-w', `${paneW}px`);
   el.paneGrip.setAttribute('aria-valuenow', String(paneW));
   el.paneGrip.setAttribute('aria-valuemax', String(max));
   paneEvent('resize', paneActive);
@@ -6959,6 +6975,7 @@ function paneSyncChrome() {
   // Until the grip or MuseUI.pane.width sets a width, the pane takes the default for this window (480 px from 1440 px).
   if (paneShown && paneW === null) el.pane.style.setProperty('--pane-w', `${paneDefaultWidth()}px`);
   const app = $('app');
+  if (paneShown && paneW === null) app.style.setProperty('--pane-w', `${paneDefaultWidth()}px`);
   if (paneExpanded) app.dataset.paneExpanded = '';
   else delete app.dataset.paneExpanded;
   // With the column open the chat is narrower, so the title bar drops its secondary labels to keep one line (see style.css).
