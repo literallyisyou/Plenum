@@ -19,9 +19,10 @@ import { queueUpdate, listUpdates, applyUpdate, discardUpdate, rollbackUpdate, r
 import * as overlay from './lib/overlay.mjs';
 import { readUsage } from './lib/usage.mjs';
 import { invalidateProviderStatus, knownProviders, prewarmProviderStatus, providersQuick, statusPayload } from './lib/provider-status.mjs';
-import { claudeRoute, claudeCliStatus } from './lib/claude-cli.mjs';
+import { claudeRoute, claudeCliStatus, forgetClaudeStatus } from './lib/claude-cli.mjs';
 import { cleanReason } from './lib/tools.mjs';
 import { DEFAULT_COUNCIL, normalizeCouncil, retryCouncil, retryPlan, runCouncil } from './lib/council.mjs';
+import { noteSignInOpened } from './lib/signin-check.mjs';
 import { checkTasks, coderRefs, planBuild, runBuild } from './lib/delegate.mjs';
 import { effectiveAgents, typeByName } from './lib/agents.mjs';
 import { liveAgents, offerFor, openRun, registerRunScope, withRun } from './lib/agent-run.mjs';
@@ -2829,23 +2830,30 @@ async function handleApi(req, res, url) {
 
     case 'POST /api/accounts/claude/login':
       await openSignIn('claude', ['auth', 'login'], 'Claude sign-in');
+      // A council that finds Claude Code signed out opens no second window beside this one (lib/signin-check.mjs).
+      noteSignInOpened('anthropic');
+      // The kept answers are dropped, so the next read of Accounts and of the status asks the CLI (as Codex's route does): a kept
+      // "not signed in" would otherwise stand for 20 seconds after the sign-in.
+      forgetClaudeStatus();
       invalidateProviderStatus();
-      // The kept answer is dropped, so the next read of Accounts asks the CLI (as Codex's route does).
       readClaudeAccount.forget();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/gemini/login':
       await geminiSignIn();
+      noteSignInOpened('gemini');
       invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/muse/login':
       await openSignIn('muse', ['login'], 'Muse Code sign-in');
+      noteSignInOpened('muse');
       invalidateProviderStatus();
       return json(res, 200, { ok: true });
 
     case 'POST /api/accounts/codex/login':
       await openSignIn('codex', ['login'], 'Codex sign-in');
+      noteSignInOpened('codex');
       invalidateProviderStatus();
       forgetCodexLogin();
       return json(res, 200, { ok: true });

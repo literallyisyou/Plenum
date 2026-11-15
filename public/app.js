@@ -5468,6 +5468,7 @@ async function readProviders(refreshCodex) {
   } catch (err) {
     // A read that fails while a list is still being read is tried again on the same schedule.
     planProvidersPoll();
+    planNegativeWatch();
     throw err;
   }
   providers = data.providers;
@@ -5488,6 +5489,7 @@ async function readProviders(refreshCodex) {
   renderStatus();
   renderTop();
   planProvidersPoll();
+  planNegativeWatch();
 }
 
 // Asks again soon while a list is still being read. The server never waits for a CLI's list (DECISIONS items 89 and 90), so this is how
@@ -5510,6 +5512,38 @@ function planProvidersPoll() {
     loadProviders().catch(() => {});
   }, wait);
 }
+
+// A settled negative in the footer ("not installed", "not found", "sign-in needed", "key needed") is asked again, so it does not outlive the
+// truth: a CLI installed or signed in outside Plenum, or after Accounts' own watch ended, puts the footer right by itself. The page reads the
+// status again with loadProviders when the window gets focus or becomes visible, and once every 60 seconds while it is visible; nothing is
+// asked while the page is hidden, and nothing once no item is negative. Reads never overlap (loadProviders), and the server answers from its
+// 10 second snapshot.
+const POLL_NEGATIVE_MS = 60000;
+let negativeTimer = 0;
+function statusNegative(p) {
+  if (!p) return false;
+  const a = p.anthropic ?? {};
+  const claude = a.route === 'api' ? a.credentials === true : knownState(a.credentials);
+  const g = p.gemini;
+  const gInstalled = g ? knownState(g.installed) : null;
+  const gemini = gInstalled === true ? knownState(g.signedIn) : gInstalled;
+  return [knownState(p.muse?.installed), claude, knownState(p.codex?.installed), gemini].includes(false);
+}
+function planNegativeWatch() {
+  clearTimeout(negativeTimer);
+  negativeTimer = 0;
+  if (document.hidden || !statusNegative(providers)) return;
+  negativeTimer = setTimeout(() => {
+    negativeTimer = 0;
+    rereadNegative();
+  }, POLL_NEGATIVE_MS);
+}
+function rereadNegative() {
+  if (!document.hidden && statusNegative(providers) && !providersLoop) loadProviders().catch(() => {});
+  planNegativeWatch();
+}
+window.addEventListener('focus', rereadNegative);
+document.addEventListener('visibilitychange', rereadNegative);
 
 // The server publishes this when the provider status or the catalog changed in the background (a list was read, a sign-in changed).
 events.on('providers', () => {
