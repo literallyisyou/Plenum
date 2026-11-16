@@ -158,7 +158,7 @@ async function main(argv) {
 // compared by real path too; otherwise it would do nothing and say nothing.
 const sameFile = (a, b) => {
   try {
-    return fs.realpathSync(a) === fs.realpathSync(b);
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
   } catch {
     return false;
   }

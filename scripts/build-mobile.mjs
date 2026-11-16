@@ -541,7 +541,18 @@ export async function run(argv, io = {}) {
   return 0;
 }
 
-const isMain = process.argv[1] !== undefined && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Node gives import.meta.url the real path, while process.argv[1] keeps the path as it was typed: through a junction or a link the two
+// differ, and the script would do nothing and say nothing. Both are resolved to their real path; if that fails, the plain compare stands.
+const startedHere = () => {
+  const typed = pathToFileURL(path.resolve(process.argv[1])).href;
+  if (typed === import.meta.url) return true;
+  try {
+    return fs.realpathSync.native(fileURLToPath(import.meta.url)) === fs.realpathSync.native(path.resolve(process.argv[1]));
+  } catch {
+    return false;
+  }
+};
+const isMain = process.argv[1] !== undefined && startedHere();
 if (isMain) {
   run(process.argv.slice(2)).then(
     code => { process.exitCode = code; },

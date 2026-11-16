@@ -11,7 +11,7 @@
 // --out is where the file goes (tests use it so they never write into the project); --root is the project folder to read
 // package.json and git from (default: the folder above scripts/).
 import { execFileSync } from 'node:child_process';
-import { readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -70,7 +70,18 @@ const flag = (argv, name) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Node gives import.meta.url the real path, while process.argv[1] keeps the path as it was typed: through a junction or a link the two
+// differ, and the script would do nothing and say nothing. Both are resolved to their real path; if that fails, the plain compare stands.
+const startedHere = () => {
+  const typed = pathToFileURL(path.resolve(process.argv[1])).href;
+  if (typed === import.meta.url) return true;
+  try {
+    return realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(path.resolve(process.argv[1]));
+  } catch {
+    return false;
+  }
+};
+if (process.argv[1] && startedHere()) {
   const root = path.resolve(flag(process.argv, '--root') ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
   const out = path.resolve(flag(process.argv, '--out') ?? path.join(root, 'build-info.json'));
   try {
