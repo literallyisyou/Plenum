@@ -10,10 +10,11 @@ import android.webkit.WebView;
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 
-// No "show over the lock screen" here, for any route (wave 5, f2). A notification's Stop is an action button that opens this
-// activity, and Android's lock screen asks for the phone's unlock before it opens an activity from an action button, whatever the
-// activity's own lock-screen settings are. So a lock-screen switch in this activity is never reached from a notification. A Stop
-// with no unlock needs the action to reach a receiver that sends the signed Stop itself; that is an open item, not built yet.
+// No "show over the lock screen" here, for any route (wave 5, f2). Android's lock screen asks for the phone's unlock before it opens an
+// activity from a notification's action button, whatever the activity's own lock-screen settings are, so a lock-screen switch in this
+// activity is never reached from a notification. A Stop with no unlock does not come here at all (wave 6, k3): when the phone holds that
+// computer's Stop card, the notification's Stop is a broadcast to the UnifiedPush plugin's StopReceiver, which sends the signed Stop-only
+// message itself. Without a card, Stop opens this activity at #stop, after the unlock, as before.
 public class MainActivity extends BridgeActivity {
     // The page's own backgrounds (shell tokens; res/values/colors.xml and res/values-night/colors.xml plenum_background).
     static final int BACKGROUND_LIGHT = Color.rgb(0xf6, 0xf6, 0xfb);

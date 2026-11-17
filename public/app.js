@@ -3197,6 +3197,8 @@ async function drainQueue() {
 // Called when a run has ended and the state has been read again, however the run ended (finished, failed or stopped). It waits
 // one turn of the event loop, so the code that started the run finishes its own steps first.
 function scheduleDrain() {
+  // Called on every state event too (a thread other than the one on screen may have become idle), so nothing is scheduled with an empty queue.
+  if (!followUps.length) return;
   setTimeout(() => drainQueue().catch(err => toast(err.message, 'bad')), 0);
 }
 
@@ -3387,7 +3389,7 @@ async function watchRun() {
       S = next;
       renderAll({ keep: away && chatScope === (S.activeProject ? activeScope() : null) });
     }
-    if (!S.running) scheduleDrain();
+    scheduleDrain();
   } catch {
     // The next tick tries again.
   }
@@ -5594,7 +5596,9 @@ function applyState(next, { chat } = {}) {
   // Another project or thread opens at its end; a new message in the chat on screen leaves a reader who scrolled up where they are. A
   // reading already on its way may have been answered before this change, so refresh checks what it brings against this event (late).
   if (read) refresh(switched || threadSwitched ? { keep: false, late: next } : { late: next });
-  if (!S.running && !activeRun()) scheduleDrain();
+  // A queued message starts as soon as its own thread is idle, whether or not the thread on screen is (drainQueue checks each
+  // thread itself and sends nothing for a thread that still runs).
+  scheduleDrain();
   // Whether the state is being read again because of this event (the hello handler does not ask a second time).
   return read;
 }
@@ -9484,5 +9488,8 @@ if ($('titlebar')) {
   window.addEventListener('resize', queueFit);
   document.fonts?.ready.then(queueFit);
 }
+
+// A job's notice (route "night-shift") opens the Night shift pane through the same takers as every other place: public/ext-open-route.js
+// on the PC and in a paired browser's computer layout, public/ext-phone.js on the phone layout. Nothing here handles it a second time.
 
 boot();

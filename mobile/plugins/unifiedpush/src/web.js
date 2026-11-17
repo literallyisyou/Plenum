@@ -18,6 +18,23 @@ export class UnifiedPushWeb extends WebPlugin {
     return { cancelled: 0 };
   }
 
+  // Wave 6 (k3): no native Stop in a browser; the PWA's lock screen sends its own Stop (mobile/shell/app.js lockedStop).
+  async setStopCards() {
+    return { count: 0, stored: false };
+  }
+
+  async noteStopCounter() {
+    return undefined;
+  }
+
+  async stopCounters() {
+    return { counters: {} };
+  }
+
+  async showNotification() {
+    return { shown: false };
+  }
+
   async getDistributors() {
     return { distributors: [], saved: null };
   }

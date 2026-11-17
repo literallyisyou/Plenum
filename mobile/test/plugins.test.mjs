@@ -441,9 +441,12 @@ describe('UnifiedPush wave 4: the payload fields, the clear kind and the routes 
       '/#waiting=ap1', '/#handover=ho-1', '/#chat=p1', '/#deny=0f7c-AA_1.2', '/#approve=ap1', '/#today=garden_planner',
       `/#deny=ap1&nt=${TAG}`, `/#stop&nt=${TAG}&computer=${COMPUTER}`, `/#today&computer=${COMPUTER}`, `/#waiting=ap1&computer=${COMPUTER}`,
       '/#deny=' + 'x'.repeat(80),
+      // Wave 6: a Night shift job's notice.
+      '/#night-shift', `/#night-shift&computer=${COMPUTER}`, `/#night-shift&nt=${TAG}`,
     ];
     const bad = [
       '', '/#', '#home', '/home', 'javascript:alert(1)', '/#evil', '/#settings=other', '/#today=', '/#deny=',
+      '/#night-shift=1', '/#night-shifts', '/#night', '/#night-shift&computer=x',
       '/#deny=' + 'x'.repeat(81), '/#deny=a b', '/#deny=a%20b', '/#chat=a/b', '/#stop=1', '/#home=1',
       `/#stop&computer=${COMPUTER}&nt=${TAG}`, `/#stop&nt=plenum`, `/#stop&computer=${'AB'.repeat(32)}`, `/#stop&computer=${COMPUTER}0`,
       '/#approve=ap1&line=npm', '/#stop&x=1', '/#home\n',
@@ -473,10 +476,13 @@ describe('UnifiedPush wave 4: the payload fields, the clear kind and the routes 
       { kind: 'limit', limitKind: 'spend' },
       { kind: 'needs', businessName: 'Garden Planner', businessId: 'garden-planner', count: 2 },
       { kind: 'test' },
+      // Wave 6: a notice of every route lib/notify.mjs knows, Night shift's included; none may fall back to Home.
+      ...['accounts', 'today', 'plan-use', 'services', 'chat', 'night-shift'].map(route => ({ kind: 'needs', businessId: 'garden-planner', notice: { key: `k:${route}`, level: 'needs-you', title: 'T', text: 'B', route } })),
     ];
     for (const event of events) {
       const built = buildPushText(event, { prefs: { firstLine: true }, device, computer });
       assert.equal(UP.isRoute(built.payload.tap), true, `${event.kind} tap ${built.payload.tap}`);
+      if (event.notice) assert.notEqual(UP.parsePushPayload(built.payload).tap, '/#home', `${event.notice.route}: the tap is not turned into Home`);
       for (const a of built.payload.actions) assert.equal(UP.isRoute(a.route), true, `${event.kind} ${a.action} ${a.route}`);
       assert.deepEqual(UP.parsePushPayload(built.payload).actions.length, built.payload.actions.length, `${event.kind}: every action kept`);
     }
@@ -570,7 +576,8 @@ describe('UnifiedPush wave 4: channels at install, grouping, clearing, shown mes
     const show = /fun show\(context: Context, payload: Payload\): Boolean \{([\s\S]*?)\n    \}\n/.exec(kt)[1];
     assert.match(show, /val group = payload\.group \?: payload\.tag/);
     assert.match(show, /\.setGroup\(group\)/);
-    assert.match(show, /val updating = active\.any \{ it\.id == NOTIFICATION_ID && it\.tag == payload\.tag \}/);
+    // Wave 6 (k3): a Stop's Stopping… or Stopped under the same tag is not an earlier version, so a new approval after it still alerts.
+    assert.match(show, /val updating = active\.any \{ it\.id == NOTIFICATION_ID && it\.tag == payload\.tag && !isStopShowing\(it\) \}/);
     assert.match(show, /if \(updating\) builder\.setOnlyAlertOnce\(true\)/);
     assert.match(show, /if \(payload\.silent\) builder\.setSilent\(true\)/);
     assert.match(show, /\.setWhen\(System\.currentTimeMillis\(\)\)/);
@@ -658,13 +665,22 @@ describe('UnifiedPush wave 4: channels at install, grouping, clearing, shown mes
     assert.match(read('plugins/unifiedpush/src/web.js'), /endpointChanged: false/);
   });
 
-  test('no foreground service, no new permission and no socket: the plugin manifest declares only the service and the query', () => {
+  // Wave 6 (k3): the plugin now has one socket, StopSender.java's: a Stop pressed on a notification sends one signed Stop-only message on a
+  // fresh WebSocket and closes it (no background socket, no Noise session). The manifest gains one receiver, not exported and with no filter.
+  // Before wave 6 this test said "no socket" and read only .kt, .xml and .gradle files; it now reads .java too.
+  test('no foreground service, no new permission, and no socket but the Stop sender\'s: the manifest declares the service, the query and the Stop receiver', () => {
     const manifest = stripXmlComments(read('plugins/unifiedpush/android/src/main/AndroidManifest.xml'));
     assert.ok(!/FOREGROUND_SERVICE|uses-permission|foregroundServiceType/.test(manifest));
+    assert.deepEqual([...manifest.matchAll(/<(service|receiver|activity|provider)\s+android:name="([^"]+)"/g)].map(m => `${m[1]} ${m[2]}`), [
+      'service com.literallyisyou.plenum.unifiedpush.UnifiedPushService',
+      'receiver com.literallyisyou.plenum.unifiedpush.StopReceiver',
+    ]);
+    assert.match(manifest, /<receiver\s+android:name="com\.literallyisyou\.plenum\.unifiedpush\.StopReceiver"\s+android:exported="false"\s*\/>/, 'not exported, no intent filter');
     for (const file of walk(path.join(MOBILE, 'plugins/unifiedpush'))) {
-      if (!/\.(kt|xml|gradle)$/.test(file)) continue;
+      if (!/\.(kt|java|xml|gradle)$/.test(file)) continue;
       const text = fs.readFileSync(file, 'utf8');
-      assert.ok(!/FOREGROUND_SERVICE|startForeground|java\.net\.Socket|WebSocket/.test(text), path.basename(file));
+      assert.ok(!/FOREGROUND_SERVICE|startForeground/.test(text), path.basename(file));
+      if (path.basename(file) !== 'StopSender.java') assert.ok(!/java\.net\.Socket|WebSocket/.test(text), path.basename(file));
     }
     // The only permission the plugin asks for is the existing notifications one.
     assert.match(kotlin('UnifiedPushPlugin.kt'), /permissions = \[Permission\(strings = \["android\.permission\.POST_NOTIFICATIONS"\], alias = "notifications"\)\]/);

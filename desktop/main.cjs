@@ -14,7 +14,7 @@
 // cache (see settingsNow) instead of parsing the whole state file at every event, a second launch during a quit opens Plenum again once it has
 // ended (relaunchAfterQuit), the question boxes can copy their details (desktop/error-box.cjs), and a quit leaves alone a hub launcher that is
 // still starting the hub (hubLaunchers).
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, shell: electronShell, utilityProcess } = require('electron');
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, powerSaveBlocker, safeStorage, shell: electronShell, utilityProcess } = require('electron');
 const { execFile, execFileSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
@@ -279,6 +279,7 @@ const desktopShell = {
   Notification,
   nativeImage,
   powerSaveBlocker,
+  powerMonitor,
   ipcMain,
   win: () => win,
   // A notification's click: the window comes to the front and, with a route ({ kind, id? }), the page opens that place (openInPage).
@@ -1267,8 +1268,9 @@ function showWindow(route) {
 }
 
 // The places a notification can open (public/ext-open-route.js does the opening): the waiting card of a project, a project's chat, Today
-// (with a business), Plan use, Accounts and Background services. An id is a plain id (a project's or a business's), never a path or text.
-const OPEN_KINDS = new Set(['waiting', 'chat', 'today', 'plan-use', 'accounts', 'services']);
+// (with a business), Plan use, Accounts, Background services and Night shift. An id is a plain id (a project's or a business's), never a
+// path or text.
+const OPEN_KINDS = new Set(['waiting', 'chat', 'today', 'plan-use', 'accounts', 'services', 'night-shift']);
 const OPEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 // A route that waits for the page: the window was made again, or its page has not finished loading. Sent once it has.
 let pendingOpen = null;

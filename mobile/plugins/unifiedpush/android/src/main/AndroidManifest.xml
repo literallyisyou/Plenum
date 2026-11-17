@@ -18,6 +18,12 @@
                 <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
             </intent-filter>
         </service>
+        <!-- Wave 6 (k3): the Stop button of a Plenum notification, a broadcast so it needs no unlock. Not exported and no intent filter:
+             only Plenum's own immutable PendingIntents (StopReceiver.pendingFor) reach it. It sends one signed Stop-only message and
+             closes the socket; no foreground service, no new permission (INTERNET is the app's). -->
+        <receiver
+            android:name="com.literallyisyou.plenum.unifiedpush.StopReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

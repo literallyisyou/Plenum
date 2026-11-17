@@ -1293,6 +1293,21 @@ function stopOnClose(req, res, ac) {
   res.on('close', () => { if (!res.writableFinished) ac.abort(); });
 }
 
+// Wave 6: whether this turn is a Night shift job's run (lib/routines.mjs runs it with the key 's:nj_<id>' and has it in its running map
+// before it POSTs /api/chat). Its run events are then marked { routine: true, job: true }: the desktop's run alerts and the phone's run
+// pushes leave it to the job's own notice (job:<id>). The routines module is read without a static import and without an await here; a
+// turn that starts before it is loaded (none of Night shift's can) is a plain run.
+let routinesForRuns = null;
+import('./lib/routines.mjs').then(m => { routinesForRuns = m; }, () => {});
+function isNightShiftRun(projectId, threadId) {
+  try {
+    const key = routinesForRuns?.runKey?.(projectId, threadId);
+    return typeof key === 'string' && key.startsWith('s:nj_');
+  } catch {
+    return false;
+  }
+}
+
 // Chat turns and /review share this path. /review reviews the last answer plus the working-tree diff, and streams the
 // answer as server-sent events. A message that arrives while the project is running is refused with 409. Follow-ups
 // typed during a run wait in the page, which sends each one as a normal message when the run before it ends, so every
@@ -1330,7 +1345,7 @@ async function handleTurn(req, res, { review }) {
   // as it goes. The stream here carries the same events, each with that id and the id of the thread the run belongs to (thread).
   // The Agents board reads the same events (lib/activity.mjs).
   const runId = randomUUID();
-  const tagged = events.tag(runId, project.id, review ? 'review' : 'chat');
+  const tagged = events.tag(runId, project.id, review ? 'review' : 'chat', !review && isNightShiftRun(project.id, scope.id) ? { routine: true, job: true } : null);
   const send = obj => {
     const ev = tagged({ ...obj, thread: scope.id });
     activity.runEvent(scope.id, ev);
@@ -1593,7 +1608,7 @@ async function handleTurn(req, res, { review }) {
         hookCtx.record = store.transcript(scope.id).at(-1);
         await runBefore(hookCtx);
         return runTurn({
-          ref, system, messages: [...history, { role: 'user', content: String(followText) }], root, kind: 'chat', scope, mode, effort: eff.effort, send, signal: ac.signal,
+          ref, system, messages: [...history, { role: 'user', content: String(followText) }], root, kind: 'chat', scope, mode, effort: kind === 'chat' && EFFORTS.includes(body.effort) ? body.effort : eff.effort, send, signal: ac.signal,
           requestApproval, agent: agent && kind === 'chat', tools, denyPatterns, answerBlocked, covers: approveAllCoversOf(st, project), readOnly: false, images: [], documents: [],
           focus, rules,
         });
@@ -1611,7 +1626,7 @@ async function handleTurn(req, res, { review }) {
     ceilingMs = RUN_TIMEOUT_MS + (computerSettings ? computerSettings.minutes * 60_000 : 0) + agentMinutes * 60_000;
     timer = setTimeout(() => { timedOut = true; ac.abort(); }, ceilingMs);
     const turn = await runTurn({
-      ref, system, messages, root, kind, scope, mode, effort: eff.effort, send, signal: ac.signal, requestApproval, agent: agent && kind === 'chat', tools, denyPatterns, answerBlocked, covers: approveAllCoversOf(st, project), readOnly: review || planMode, images, documents,
+      ref, system, messages, root, kind, scope, mode, effort: kind === 'chat' && EFFORTS.includes(body.effort) ? body.effort : eff.effort, send, signal: ac.signal, requestApproval, agent: agent && kind === 'chat', tools, denyPatterns, answerBlocked, covers: approveAllCoversOf(st, project), readOnly: review || planMode, images, documents,
       // The computer run this message starts (the person pressed Start in the Computer panel), the project's switch that lets the model
       // start one itself, and whether the model may use the Browser pane (on unless the pane's switch is off; desktop app only).
       computer: computerSettings ? { settings: computerSettings, task: computerTask } : null,

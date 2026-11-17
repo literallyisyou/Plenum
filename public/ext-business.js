@@ -13,7 +13,9 @@
 //   GET  /api/business                         { v, paused, atOnce, businesses: [record + { waiting, nextRun, lastRun }], templates: [{ id, label, about }],
 //                                              newer?, damaged? }
 //   POST /api/business                         { name, purpose, project, template?, leads? } -> { business, created: [files], skipped: [text], routines: [name] }
-//   POST /api/business/update                  { id, ...fields }            400 with one sentence
+//   POST /api/business/update                  { id, ...fields }            400 with one sentence. Auto routing (wave 6, ar3): Setup's switch
+//                                              sends { id, autoLeads } and its Effort menu { id, leadEffort: '' | low | medium | high }, each
+//                                              at once; a routine's last carries auto ("Auto: ..."), which its last-run line goes on with
 //   POST /api/business/status                  { id, status }               active | paused | closed
 //   POST /api/business/pause-all               { paused }
 //   GET  /api/business/one?id=                 the record, the files' state ({ charter, state, plan: { items: [{ mark, text }] }, playbooks: [name] }), today's numbers.
@@ -75,7 +77,11 @@
   const TITLE = 'Businesses';
   const ALL = 'all';
 
+  // The effort levels a lead run may be given (lib/business.mjs LEAD_EFFORTS), in the words of the menu.
+  const EFFORT_WORDS = { low: 'low', medium: 'medium', high: 'high' };
   const TEXT = {
+    autoLeads: 'Let Plenum pick the lead and its effort for each run',
+    autoLeadsNote: 'From the run itself and the room left in each plan, among the leads above. A routine that names its own leads keeps them. Each run says which lead it used and why.',
     approved: 'A yes tells the model it may go ahead. The step it then takes shows its own card only in a folder on Ask first, and only from a model or program that asks Plenum before it acts. Codex, Gemini CLI and Muse Code do not ask.',
     startHead: 'A program waits to start',
     startText: 'The task text that is sent',
@@ -940,6 +946,24 @@
     refresh();
   }
 
+  // Auto routing (ar3): the switch and the Effort menu under Leads apply at once, as the per-token switch does; a refusal puts them back.
+  async function setLeadAuto(b, patch, key, boxEl) {
+    const was = { autoLeads: b.autoLeads !== false, leadEffort: str(b.leadEffort) };
+    const r = await act(key, '/api/business/update', { id: b.id, ...patch });
+    if (r.status === -1) { if (boxEl) boxEl.checked = was.autoLeads; return; }
+    if (r.ok) {
+      if (isObj(r.data.business) && D.biz.data) D.biz.data = { ...D.biz.data, businesses: businesses().map(x => (x.id === b.id ? r.data.business : x)) };
+      if ('autoLeads' in patch) say(patch.autoLeads ? `Plenum picks the lead of each run of ${str(b.name)}.` : `Each run of ${str(b.name)} takes the first lead in your order that can run.`);
+      else say(patch.leadEffort ? `Each run of ${str(b.name)} uses ${EFFORT_WORDS[patch.leadEffort] ?? patch.leadEffort} effort.` : `Plenum picks the effort of each run of ${str(b.name)}.`);
+    } else {
+      if (boxEl) boxEl.checked = was.autoLeads;
+      say(`${str(b.name)} was not changed. ${sentence(r.error)}`, true);
+    }
+    ui.focus = key;
+    paint();
+    refresh();
+  }
+
   // Shows one business, or all. The brief and the files' state are read for it.
   function pick(id, andRead = true) {
     ui.sel = id;
@@ -1583,9 +1607,15 @@
     return `${which} at ${str(w.at) || '00:00'}`;
   }
 
+  // With Auto routing the line goes on with the run's own Auto sentence (which lead it picked and why).
   function lastWords(r) {
     const l = isObj(r.last) ? r.last : {};
     if (!num(l.at)) return 'It has not run yet.';
+    const auto = sentence(str(l.auto));
+    const said = lastWordsOf(r, l);
+    return auto && ['running', 'done', 'failed', 'stopped', 'interrupted'].includes(l.state) ? `${said} ${auto}` : said;
+  }
+  function lastWordsOf(r, l) {
     const at = whenText(l.at);
     const lead = str(l.lead) ? `, led by ${modelLabel(l.lead)}` : '';
     const tail = [str(l.done) ? `Finished: ${sentence(l.done)}` : '', str(l.next) ? `Next step: ${sentence(l.next)}` : ''].filter(Boolean).join(' ');
@@ -2139,7 +2169,19 @@
     stSec.append(row, make('p', 'biz-note', status === 'active' ? 'Its routines run at their times.' : status === 'paused' ? 'Nothing new starts for it until you press Resume.' : 'Closed: kept for the record, with its files. It is hidden from Today.'));
 
     const leads = section('Leads', 'biz-leads-sec');
-    leads.append(make('p', 'biz-note', 'The models that may lead its routines, in your order. The first that can run is used; Plenum never swaps in one you did not list.'), leadsEditor(f.leads, arr(MU.catalog).map(refOf), 'su|lead', 'No lead yet. Add the model that should run its routines.', () => { touch(); paint(); }));
+    leads.append(make('p', 'biz-note', b.autoLeads !== false ? 'The models that may lead its routines, in your order. Plenum never swaps in one you did not list.' : 'The models that may lead its routines, in your order. The first that can run is used; Plenum never swaps in one you did not list.'), leadsEditor(f.leads, arr(MU.catalog).map(refOf), 'su|lead', 'No lead yet. Add the model that should run its routines.', () => { touch(); paint(); }));
+    // Auto routing (ar3): one switch for who leads the business's runs (routine runs and Night shift jobs with no pinned lead) and for
+    // its own kind lists (lib/business.mjs overlayFor carries autoLeads; lib/team.mjs pick routes a business's own list only while it is
+    // on, and a kind's own Auto switch on the Team page must be on too). Not a field of the form: it applies at once.
+    const autoOn = b.autoLeads !== false;
+    const autoRow = switchRow(TEXT.autoLeads, TEXT.autoLeadsNote, autoOn, 'su|auto', (on, boxEl) => setLeadAuto(b, { autoLeads: on }, 'su|auto', boxEl));
+    autoRow.querySelector('input').disabled = ui.busy.has('su|auto');
+    leads.append(autoRow);
+    if (autoOn) {
+      const effort = select([['', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], EFFORT_WORDS[str(b.leadEffort)] ? str(b.leadEffort) : '', 'su|effort', v => setLeadAuto(b, { leadEffort: v }, 'su|effort'));
+      effort.disabled = ui.busy.has('su|effort');
+      leads.append(field('Effort', effort));
+    }
 
     const one = ones.get(b.id)?.data;
     const today = isObj(one?.today) ? one.today : isObj(one) ? one : {};

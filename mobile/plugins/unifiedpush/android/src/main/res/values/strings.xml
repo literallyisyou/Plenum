@@ -13,4 +13,17 @@
     <!-- The line above a group of two or more notifications from one business or project. -->
     <string name="plenum_group_title">Plenum</string>
     <string name="plenum_group_summary">%1$d updates</string>
+    <!-- Wave 6 (k3): Stop sent from a notification, with no unlock (StopReceiver.kt, PlenumNotifier.showStop). The *_public lines are
+         what the lock screen shows when it hides notification words: they do not name the computer. -->
+    <string name="plenum_stop_your_computer">your computer</string>
+    <string name="plenum_stop_stopping">Stopping…</string>
+    <string name="plenum_stop_stopping_text">Stopping everything on %1$s.</string>
+    <string name="plenum_stop_stopping_public">Stopping everything on your computer.</string>
+    <string name="plenum_stop_stopped">Stopped</string>
+    <string name="plenum_stop_stopped_public">Stopped everything on your computer.</string>
+    <string name="plenum_stop_failed">Could not stop</string>
+    <string name="plenum_stop_failed_text">Could not reach %1$s. Open Plenum to stop it.</string>
+    <string name="plenum_stop_failed_public">Could not reach your computer. Open Plenum to stop it.</string>
+    <string name="plenum_stop_not_accepted_text">%1$s did not accept this Stop. This phone may have been removed there. Open Plenum, or press Stop at the computer.</string>
+    <string name="plenum_stop_again">Try again</string>
 </resources>

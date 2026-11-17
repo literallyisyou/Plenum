@@ -92,6 +92,66 @@ class UnifiedPushPlugin : Plugin() {
         call.resolve(out)
     }
 
+    /**
+     * Wave 6 (k3): the Stop cards (mobile/shell/native.js hands them over each time the shell writes its computers). Replaces them all;
+     * a computer that is not in the list is forgotten. Each card holds only what a Stop-only message needs (StopCards).
+     */
+    @PluginMethod
+    fun setStopCards(call: PluginCall) {
+        val list = call.getArray("cards")
+        if (list == null) {
+            call.reject("Give the Stop cards as a list.", "bad-cards")
+            return
+        }
+        val cards = (0 until list.length()).mapNotNull { StopCards.fromJson(list.optJSONObject(it)) }
+        val kept = StopCards.replace(context, cards)
+        val out = JSObject()
+        out.put("count", maxOf(kept, 0))
+        out.put("stored", kept >= 0)
+        call.resolve(out)
+    }
+
+    /** Wave 6 (k3): the shell raised its handshake counter for one computer; the native Stop goes above it. */
+    @PluginMethod
+    fun noteStopCounter(call: PluginCall) {
+        val computer = call.getString("computer")
+        val counter = call.getData().optLong("counter", -1L)
+        if (computer == null || !STOP_COMPUTER_PATTERN.matches(computer) || counter < 0) {
+            call.reject("Name the computer and its counter.", "bad-counter")
+            return
+        }
+        StopCards.note(context, computer, counter)
+        call.resolve()
+    }
+
+    /** Wave 6 (k3): the counter each computer with a card is at (a native Stop may have raised it); the shell starts above it. No key. */
+    @PluginMethod
+    fun stopCounters(call: PluginCall) {
+        val counters = JSObject()
+        for ((id, value) in StopCards.counters(context)) counters.put(id, value)
+        val out = JSObject()
+        out.put("counters", counters)
+        call.resolve(out)
+    }
+
+    /**
+     * Wave 6 (k3): shows a push message as the plugin's own notification while Plenum is in front (the shell calls it for an approval,
+     * a handover or a test), so it has the same channels and grouping as one shown with Plenum closed, and a Stop that needs no unlock.
+     */
+    @PluginMethod
+    fun showNotification(call: PluginCall) {
+        val content = call.getString("content")
+        val bytes = try {
+            if (content == null || content.length > MAX_CONTENT) null else android.util.Base64.decode(content, android.util.Base64.NO_WRAP)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+        val payload = bytes?.let { PlenumNotifier.parse(it) }
+        val out = JSObject()
+        out.put("shown", payload != null && PlenumNotifier.show(context, payload))
+        call.resolve(out)
+    }
+
     @PluginMethod
     fun getDistributors(call: PluginCall) {
         val ctx = context
@@ -209,6 +269,8 @@ class UnifiedPushPlugin : Plugin() {
         private val VAPID_PATTERN = Regex("^[A-Za-z0-9_-]{87}$")
         private val PACKAGE_PATTERN = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
         private val CONTROL = Regex("[\\u0000-\\u001f\\u007f]")
+        private val STOP_COMPUTER_PATTERN = Regex("^[0-9a-f]{64}$")
+        private const val MAX_CONTENT = 16384
 
         @Volatile
         private var live: WeakReference<UnifiedPushPlugin>? = null

@@ -1,0 +1,80 @@
+/* The Night shift pane (public/ext-night-shift.js). Every colour, size, radius and time is a token from style.css, so both themes follow;
+   nothing is set inline. The pane is laid out for its own width (380 px and up beside the chat, the whole window on a phone), so there is
+   no viewport query: rows wrap, long words break, and nothing is wider than the pane. Amber marks what waits on the owner; the
+   keep-awake line is plain text that is always shown while the PC is kept awake. */
+
+.ns { display: grid; gap: var(--sp-4); padding: var(--sp-3) var(--sp-4) var(--sp-6); min-width: 0; color: var(--text); font-size: var(--fs-body); line-height: var(--lh-body); }
+.ns [hidden] { display: none !important; }
+.ns p, .ns h3 { margin: 0; }
+.ns ol, .ns fieldset, .ns legend { margin: 0; padding: 0; }
+.ns fieldset { border: 0; min-width: 0; }
+.ns ol { list-style: none; }
+
+.ns-head { font: 600 var(--fs-read)/var(--lh-tight) var(--ui); color: var(--text); }
+.ns-note { color: var(--muted); font-size: var(--fs-small); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.ns-note:empty { display: none; }
+
+/* The status line: the first thing in the pane, with Resume under it after a Stop. */
+.ns-status { display: grid; gap: var(--sp-2); justify-items: start; min-width: 0; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.ns-line { font: 600 var(--fs-base)/var(--lh-tight) var(--ui); color: var(--text); overflow-wrap: anywhere; text-wrap: pretty; }
+.ns-line[data-code="hold"], .ns-line[data-code="here"], .ns-line[data-code="using"], .ns-line[data-code="noroom"], .ns-line[data-code="day"] { color: var(--text-2); }
+.ns-stale { color: var(--warn); }
+
+/* The keep-awake line: plain, always in view while it is on. */
+.ns-awake { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-2); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.ns-awake::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.ns-awake[data-on="true"] { color: var(--text); }
+.ns-awake[data-on="true"]::before { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.ns-notes { display: grid; gap: var(--sp-2); }
+.ns-newer, .ns-damaged, .ns-needfull {
+  padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--warn) 36%, var(--line)); border-left-width: 3px; border-left-color: var(--warn);
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); color: var(--text);
+}
+
+/* What the last action did, or the server's own sentence when it refused. Empty until something was done. */
+.ns-say { color: var(--ok); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.ns-say:empty { display: none; }
+.ns-say[data-tone="bad"] { color: var(--bad); }
+
+/* The job list: one card a job. */
+.ns-jobs { display: grid; gap: var(--sp-3); min-width: 0; }
+.ns-empty { color: var(--muted); overflow-wrap: anywhere; text-wrap: balance; }
+.ns-list { display: grid; gap: var(--sp-3); min-width: 0; }
+.ns-job { display: grid; gap: var(--sp-1); min-width: 0; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.ns-job[data-state="needs-you"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.ns-job[data-state="done"] .ns-job-name { color: var(--text-2); }
+.ns-job-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.ns-job-name { flex: 1 1 140px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.ns-pill { margin-left: 0; flex: none; }
+.ns-job-sub, .ns-job-run { color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.ns-job-why { color: var(--text-2); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.ns-job[data-state="needs-you"] .ns-job-why { color: var(--warn); }
+.ns-job-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-1); }
+.ns-stop { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 36%, var(--line)); font-weight: 600; }
+
+/* The form and the settings. */
+.ns-add, .ns-settings { display: grid; gap: var(--sp-3); min-width: 0; }
+.ns-field { display: grid; gap: var(--sp-1); min-width: 0; }
+.ns-label { color: var(--text-2); font-size: var(--fs-small); font-weight: 600; }
+.ns-input {
+  width: 100%; min-width: 0; box-sizing: border-box; min-height: var(--ctl); padding: 6px var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); color: var(--text); font: inherit;
+}
+.ns-input:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
+.ns-input:disabled { color: var(--muted); cursor: default; }
+textarea.ns-input { resize: vertical; min-height: calc(var(--ctl) * 2); line-height: var(--lh-body); }
+.ns-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--sp-3); min-width: 0; }
+.ns-addbtn { justify-self: start; }
+.ns-hours-pair { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.ns-time { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.ns-time .ns-input { width: auto; }
+.ns-time-word { color: var(--muted); font-size: var(--fs-small); }
+.ns-counts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--sp-2); }
+.ns-switch { display: flex; align-items: flex-start; gap: var(--sp-2); min-width: 0; cursor: pointer; }
+.ns-check { flex: none; margin: 3px 0 0; accent-color: var(--accent); }
+.ns-switch-words { display: grid; gap: 2px; min-width: 0; }
+.ns-switch-label { color: var(--text); overflow-wrap: anywhere; }
+
+/* On a phone a control is at least the touch floor high (ext-phone.css). */
+:root[data-surface="phone"] .ns .ghost.small, :root[data-surface="phone"] .ns .primary.small, :root[data-surface="phone"] .ns-input { min-height: 44px; }

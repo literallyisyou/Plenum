@@ -11,7 +11,7 @@
 //  - Event 'notice': { type: 'notice', notice: { key, level, title, text, route, business, project, seq, at, repeat, quiet, silent, clear } }.
 //    A notice that is a repeat, is held back as quiet, or is a clear, is not shown as a toast. A clear takes the key off the open list.
 //    A notice without stamps is shown the way notices always were. Event 'hello' (a reconnect): the list is read again.
-// Going to a place (route 'accounts' | 'today' | 'plan-use' | 'services' | 'chat'): the page's own message { op: 'open', kind, id } that
+// Going to a place (route 'accounts' | 'today' | 'plan-use' | 'services' | 'chat' | 'night-shift'): the page's own message { op: 'open', kind, id } that
 // public/ext-open-route.js takes (it also sends window event 'plenum:open'). Where that file is not part of the page, the panel opens the
 // place itself with the calls it has and sends 'plenum:open' on its own. A place that cannot be opened does nothing and never throws.
 // Text reaches the page through textContent only. No key, token, status number or raw error text is shown: every failure is one fixed sentence.
@@ -45,6 +45,7 @@
     'plan-use': 'See plan use',
     services: 'Open Background services',
     chat: 'Open the chat',
+    'night-shift': 'Open Night shift',
   };
 
   // ---------- helpers (text only) ----------
@@ -180,6 +181,7 @@
       else if (kind === 'services') MuseUI.openSettings?.('services');
       else if (kind === 'today') MuseUI.openBusinesses?.();
       else if (kind === 'plan-use') MuseUI.openPlanUse?.(null);
+      else if (kind === 'night-shift' && MuseUI.pane?.list?.().includes('night-shift')) MuseUI.pane.open('night-shift');
     } catch {
       // The place could not be opened.
     }

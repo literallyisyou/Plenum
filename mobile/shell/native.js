@@ -29,7 +29,7 @@ import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
 import { Dictation } from '../plugins/dictation/src/index.js';
 import { IsolatedPreview } from '../plugins/isolated-preview/src/index.js';
-import { UnifiedPush } from '../plugins/unifiedpush/src/index.js';
+import { UnifiedPush, stopCardFromRecord } from '../plugins/unifiedpush/src/index.js';
 
 // The plugins this file registers by name, in one list: the build test looks for each of them in the shell bundle.
 export const REGISTERED_NAMES = Object.freeze([
@@ -66,6 +66,96 @@ export function secureStorageAdapter(plugin) {
   };
 }
 
+// ----- Stop from a notification with no unlock (wave 6, k3) -----
+// The notification's Stop button is sent natively (the UnifiedPush plugin's StopReceiver) when the plugin holds that computer's Stop card. The
+// cards come from here: the secure-storage adapter is wrapped, and each time the store writes its computers ('computers' under the plugin's
+// prefix: pairing, a new Stop key, new ways, Forget) the cards of every record that holds a Stop key go to UnifiedPush.setStopCards, which
+// replaces them all, so a forgotten computer's card goes too. A card is only what a Stop-only message needs (core.js stopCardFromRecord):
+// never myPriv, the psk or the push key. The handshake counter goes along (noteStopCounter), and a read of the counter answers the higher
+// of the store's and the plugin's (a Stop sent from a notification raised it), so the next handshake is above every Stop ever sent.
+// Nothing here can fail a store read or write: a plugin that is missing, old or slow (STOP_MIRROR_WAIT_MS) changes nothing, and Stop then
+// opens Plenum as before. Nothing is logged.
+export const STOP_MIRROR_WAIT_MS = 1500;
+const STORE_PREFIX = 'plenum.';
+const COMPUTERS_KEY = `${STORE_PREFIX}computers`;
+const COUNTER_KEY = /^plenum\.ctr:([0-9a-f]{64})$/;
+
+function within(ms, promise) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// adapter: the secureStorageAdapter shape. up: the UnifiedPush plugin. Answers the same shape, plus syncStopCards() (a first hand-over at start,
+// for a phone paired before this existed). waitMs: how long one plugin call may take before it is given up.
+export function withStopMirror(adapter, up, { waitMs = STOP_MIRROR_WAIT_MS } = {}) {
+  if (!adapter || !up) return adapter;
+  const call = (name, arg) => within(waitMs, Promise.resolve().then(() => up[name](arg)));
+  let generation = 0;
+  const cardsOf = text => {
+    let list;
+    try { list = JSON.parse(String(text)); } catch { return null; }
+    if (!Array.isArray(list)) return null;
+    return list.map(r => { try { return stopCardFromRecord(r); } catch { return null; } }).filter(Boolean);
+  };
+  const hand = async cards => {
+    if (!cards) return;
+    await call('setStopCards', { cards }).catch(() => {});
+  };
+  return {
+    async getItem({ key }) {
+      const answer = await adapter.getItem({ key });
+      const m = COUNTER_KEY.exec(String(key));
+      if (!m) return answer;
+      try {
+        const native = Number((await call('stopCounters'))?.counters?.[m[1]]);
+        let mine = null;
+        try { mine = answer?.value === null || answer?.value === undefined ? null : JSON.parse(String(answer.value)); } catch { mine = null; }
+        if (Number.isSafeInteger(native) && native > 0 && !(Number.isSafeInteger(mine) && mine >= native)) return { value: JSON.stringify(native) };
+      } catch {
+        // The store's own counter stands.
+      }
+      return answer;
+    },
+    async setItem({ key, value }) {
+      await adapter.setItem({ key, value });
+      if (key === COMPUTERS_KEY) {
+        generation += 1;
+        await hand(cardsOf(value));
+        return;
+      }
+      const m = COUNTER_KEY.exec(String(key));
+      if (m) {
+        let counter = null;
+        try { counter = JSON.parse(String(value)); } catch { counter = null; }
+        if (Number.isSafeInteger(counter) && counter >= 0) await call('noteStopCounter', { computer: m[1], counter }).catch(() => {});
+      }
+    },
+    async removeItem({ key }) {
+      await adapter.removeItem({ key });
+      if (key === COMPUTERS_KEY) {
+        generation += 1;
+        await hand([]);
+      }
+    },
+    keys: () => adapter.keys(),
+    // The cards of the computers the store holds now. A write of the computers that comes while this reads wins: this one then sends nothing.
+    async syncStopCards() {
+      const at = generation;
+      let answer;
+      try { answer = await adapter.getItem({ key: COMPUTERS_KEY }); } catch { return false; }
+      if (at !== generation) return false;
+      const text = answer?.value;
+      const cards = text === null || text === undefined ? [] : cardsOf(text);
+      if (!cards) return false;
+      await hand(cards);
+      return true;
+    },
+  };
+}
+
 // The scan result as the shell wants it: { ok, text } or { ok: false, reason: 'denied' | 'cancelled' | 'failed' }.
 export function scanOutcome(error, result) {
   if (!error) {
@@ -94,9 +184,11 @@ export function buildNative(parts, { platform = '' } = {}) {
     LocalNotifications: register('LocalNotifications'),
     PlenumPrivacy: register('PlenumPrivacy'),
   };
+  // Wave 6 (k3): on Android the store's writes of its computers also hand the Stop cards to the UnifiedPush plugin (withStopMirror).
+  const storage = secureStorageAdapter(parts.SecureStorage);
   return {
     ...plugins,
-    secureStorage: secureStorageAdapter(parts.SecureStorage),
+    secureStorage: platform === 'android' && parts.UnifiedPush ? withStopMirror(storage, parts.UnifiedPush) : storage,
     // Settings the shell wants for the keys: never synchronised to iCloud, and on this device only. On iOS the Keychain setting must hold:
     // when it cannot be set, this throws, and app.js treats a throwing loadPlugins as no secure storage, so no key is stored.
     async configureStorage() {
@@ -138,5 +230,7 @@ export function buildNative(parts, { platform = '' } = {}) {
 export async function loadNativePlugins() {
   const native = buildNative({ registerPlugin, WebView, SystemBars, SecureStorage, BiometricAuth, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
   await native.configureStorage();
+  // Wave 6 (k3): a phone paired before the native Stop existed hands its Stop cards over now, not only at the store's next write.
+  Promise.resolve(native.secureStorage.syncStopCards?.()).catch(() => {});
   return native;
 }

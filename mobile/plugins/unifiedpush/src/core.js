@@ -51,7 +51,7 @@ const COMPUTER_RE = /^[0-9a-f]{64}$/;
 // (letters, digits, dots, dashes, underscores; the shell's parseNotificationHash allows the same 80). The phone may add '&nt=<tag>' (the
 // notification to take down after acting) and '&computer=<64 hex>' (the computer that sent it), in that order. PlenumNotifier.kt
 // ROUTE_PATTERN is the same expression.
-const ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/;
+const ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/;
 
 export class UnifiedPushError extends Error {
   constructor(code, message) {
@@ -310,4 +310,44 @@ export function describeRegistrationFailure(reason) {
     default:
       return { reason: 'INTERNAL_ERROR', retry: 'now', message: 'The push app failed. Try again.' };
   }
+}
+
+// ----- Stop from a notification with no unlock (wave 6, k3) -----
+// The shell hands each computer's Stop card to the plugin (setStopCards), so the notification's Stop button can send the signed Stop-only
+// message natively (StopReceiver.kt, StopSender.java) instead of opening Plenum, which a locked phone would first ask to unlock. A card is
+// what a Stop-only message needs and nothing more: the computer's id and name, this phone's id there, the Stop key, the ways and the
+// handshake counter. Never the phone's private key, the psk or the push key (mobile/shell/store.js keeps those).
+export const STOP_CARD_KINDS = Object.freeze(['lan', 'tailscale', 'relay']);
+export const STOP_CARD_MAX_WAYS = 12;
+const STOP_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+const WAY_URL_RE = /^wss?:\/\/[^\s]{1,500}$/;
+
+// The card of one store record (mobile/shell/store.js), or null when the record holds no Stop key, no id of this phone, or no way.
+// carriers is the record's [{ kind, urls }] (or { kind, url }); the native side checks every address again (StopSender.carrierUrlOk).
+export function stopCardFromRecord(record) {
+  if (!isPlainObject(record) || typeof record.id !== 'string' || !COMPUTER_RE.test(record.id)) return null;
+  if (typeof record.stopKey !== 'string' || !STOP_KEY_RE.test(record.stopKey)) return null;
+  if (typeof record.myDeviceId !== 'string' || !COMPUTER_RE.test(record.myDeviceId)) return null;
+  const ways = [];
+  const seen = new Set();
+  for (const c of Array.isArray(record.carriers) ? record.carriers : []) {
+    if (!isPlainObject(c) || !STOP_CARD_KINDS.includes(c.kind) || seen.has(c.kind)) continue;
+    seen.add(c.kind);
+    const urls = Array.isArray(c.urls) ? c.urls : typeof c.url === 'string' ? [c.url] : [];
+    for (const url of urls.filter(u => typeof u === 'string' && WAY_URL_RE.test(u)).slice(0, 4)) {
+      if (ways.length < STOP_CARD_MAX_WAYS) ways.push({ kind: c.kind, url });
+    }
+  }
+  if (!ways.length) return null;
+  const card = {
+    id: record.id,
+    name: String(record.name ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60),
+    deviceId: record.myDeviceId,
+    stopKey: record.stopKey,
+    ways,
+    counter: Number.isSafeInteger(record.counter) && record.counter >= 0 ? record.counter : 0,
+  };
+  if (STOP_CARD_KINDS.includes(record.lastCarrier)) card.lastCarrier = record.lastCarrier;
+  if (typeof record.lastUrl === 'string' && ways.some(w => w.url === record.lastUrl)) card.lastUrl = record.lastUrl;
+  return card;
 }

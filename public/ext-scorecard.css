@@ -1,0 +1,40 @@
+/* Settings > Agents > Scorecard (public/ext-scorecard.js). Every colour, size, radius and time is a token from style.css, so both themes
+   follow; nothing is set inline. One calm card on a 16 px rhythm: a hairline between the parts, one suggestion box, one primary button
+   (Move). Nothing moves; there is no animation. */
+
+.sc-root, .sc-main { display: grid; gap: var(--sp-3); min-width: 0; }
+.sc-root [hidden] { display: none !important; }
+.sc-root[aria-busy="true"] { cursor: progress; }
+
+/* The paragraphs carry the section's class twice over, so the card's own paragraph rule (.card p) does not set their size and colour. */
+.sc-root .sc-line, .sc-root .sc-note { margin: 0; font-size: var(--fs-small); line-height: var(--lh-body); color: var(--muted); overflow-wrap: anywhere; }
+.sc-root .sc-line { font-size: var(--fs-body); color: var(--text-2); }
+.sc-root .sc-bad { color: var(--bad); }
+.sc-root .sc-warn {
+  padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--warn) 36%, var(--line));
+  border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); color: var(--text);
+}
+.sc-retry { justify-self: start; }
+.sc-status { display: grid; gap: var(--sp-1); min-width: 0; }
+.sc-status:empty { display: none; }
+.sc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+
+/* One kind of work: its name, a suggestion when there is one, then a line for each model. */
+.sc-results { display: grid; gap: var(--sp-4); min-width: 0; }
+.sc-kind { display: grid; gap: var(--sp-2); padding-top: var(--sp-3); border-top: 1px solid var(--line); min-width: 0; }
+.sc-kind-title { margin: 0; font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); }
+.sc-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-1); min-width: 0; }
+.sc-row { font-size: var(--fs-body); line-height: var(--lh-ui); color: var(--text-2); overflow-wrap: anywhere; }
+
+/* The suggestion: a hairline box with a title, one sentence and two buttons. */
+.sc-suggest {
+  display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); min-width: 0;
+}
+.sc-root .sc-suggest-title { margin: 0; font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text); overflow-wrap: anywhere; }
+
+/* The try: a button, what it does, and what came of the last one. */
+.sc-sec { display: grid; gap: var(--sp-2); padding-top: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
+.sc-try-button { justify-self: start; max-width: 100%; white-space: normal; text-align: left; }
+.sc-try-out { display: grid; gap: var(--sp-1); min-width: 0; }
+.sc-try-out:empty { display: none; }

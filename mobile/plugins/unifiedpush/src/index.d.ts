@@ -31,8 +31,28 @@ export interface UnifiedPushMessageEvent {
   clear?: boolean;
 }
 
+/** Wave 6 (k3): what a Stop-only message needs for one computer (core.js stopCardFromRecord). Never any other key. */
+export interface StopCard {
+  id: string;
+  name: string;
+  deviceId: string;
+  stopKey: string;
+  ways: { kind: 'lan' | 'tailscale' | 'relay'; url: string }[];
+  lastCarrier?: 'lan' | 'tailscale' | 'relay';
+  lastUrl?: string;
+  counter: number;
+}
+
 export interface UnifiedPushPlugin {
   getState(): Promise<UnifiedPushState>;
+  /** Wave 6 (k3): replaces the native Stop cards (a computer left out is forgotten). stored is false when the Keystore could not be used. */
+  setStopCards(options: { cards: StopCard[] }): Promise<{ count: number; stored: boolean }>;
+  /** Wave 6 (k3): the shell raised its handshake counter for this computer. */
+  noteStopCounter(options: { computer: string; counter: number }): Promise<void>;
+  /** Wave 6 (k3): the counter of each computer with a card, which a Stop sent from a notification may have raised. */
+  stopCounters(): Promise<{ counters: Record<string, number> }>;
+  /** Wave 6 (k3): shows a message (the event's base64 content) as the plugin's own notification. */
+  showNotification(options: { content: string }): Promise<{ shown: boolean }>;
   cancel(options: { tag: string }): Promise<{ cancelled: number }>;
   cancelAll(options?: { channel?: NotificationChannelId }): Promise<{ cancelled: number }>;
   getDistributors(): Promise<{ distributors: string[]; saved: string | null }>;

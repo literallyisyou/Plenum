@@ -86,7 +86,7 @@
     { id: 'review', label: 'Review', icon: 'list' },
   ];
   const TAB_LABEL = { projects: 'Projects', chat: 'Chat', agents: 'Agents', review: 'Review' };
-  const PANE_TITLE = { artifacts: 'Artifacts', browser: 'Browser', agents: 'Agents', review: 'Review', business: 'Businesses' };
+  const PANE_TITLE = { artifacts: 'Artifacts', browser: 'Browser', agents: 'Agents', review: 'Review', business: 'Businesses', 'night-shift': 'Night shift' };
   const CARRIER_WORD = { lan: 'LAN', tailscale: 'Tailnet', relay: 'Relay' };
   const CARRIER_LONG = { lan: 'the same network', tailscale: 'Tailscale', relay: 'your relay' };
   const CONN_WORD = { reconnecting: 'Reconnecting', offline: 'Offline', asleep: 'Asleep' };
@@ -2116,6 +2116,22 @@
     goLimit();
   }
 
+  // A job's notice (route night-shift, tap #night-shift) opens the Night shift pane, as the More sheet does.
+  function goNightShift(tries = 15) {
+    try {
+      if (!MuseUI.pane.list().includes('night-shift')) {
+        // The pane comes from an extra script that may still be loading: try again for a few seconds before saying anything.
+        if (tries > 0) setTimeout(() => goNightShift(tries - 1), 200);
+        else MuseUI.toast('Night shift could not open. Try again in a moment.', 'bad');
+        return;
+      }
+      closeLayers(entry => entry.kind !== 'pane');
+      MuseUI.pane.open('night-shift');
+    } catch {
+      MuseUI.toast('Night shift could not open.', 'bad');
+    }
+  }
+
   // A notification of an approval names the project it waits in (the desktop's routes do), or the approval itself (the phone's #waiting=).
   function goWaitingFor(id) {
     const items = waitingItems();
@@ -2135,6 +2151,7 @@
     else if (link.kind === 'accounts') goSettings('accounts');
     else if (link.kind === 'services') goSettings('services');
     else if (link.kind === 'plan-use') goPlanUse();
+    else if (link.kind === 'night-shift') goNightShift();
   }
 
   // { kind, id } from another part of the page (window event 'plenum:open'): the same places, with chat and waiting named by an id.
@@ -2143,14 +2160,14 @@
     const id = safeId(d.id);
     if (d.kind === 'chat') goChat(id);
     else if (d.kind === 'waiting') goWaitingFor(id);
-    else if (['today', 'accounts', 'services', 'plan-use'].includes(d.kind)) handleRoute({ kind: d.kind, id });
+    else if (['today', 'accounts', 'services', 'plan-use', 'night-shift'].includes(d.kind)) handleRoute({ kind: d.kind, id });
   }
 
-  // The page's own address can name one of the new places too (#today, #today=<business id>, #accounts, #services). It is taken off the
+  // The page's own address can name one of the new places too (#today, #today=<business id>, #accounts, #services, #night-shift). It is taken off the
   // address once it is followed, so Back and a reload do not follow it again.
   function placeOfHash(hash) {
     const text = String(hash || '').replace(/^#/, '');
-    if (text === 'today' || text === 'accounts' || text === 'services') return { kind: text };
+    if (text === 'today' || text === 'accounts' || text === 'services' || text === 'night-shift') return { kind: text };
     const m = /^today=([A-Za-z0-9_.-]{1,80})$/.exec(text);
     return m ? { kind: 'today', id: m[1] } : null;
   }

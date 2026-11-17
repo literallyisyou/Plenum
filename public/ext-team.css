@@ -110,3 +110,13 @@
 
 /* The row of Use this team takes no room while it has neither the button nor a word to say. */
 .team-actions:not(:has(> button:not([hidden]))):has(> .team-save:empty) { display: none; }
+
+/* Auto (wave 6): the Auto box and the Effort menu at the end of a kind's head, and the line under its list. The box is the app's own
+   checkbox in the accent colour; the menu is the small field. Both wrap under the name on a narrow window. */
+.team-kind-ctl { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); margin-left: auto; min-width: 0; }
+.team-auto, .team-effort { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-small); line-height: var(--lh-ui); color: var(--text-2); cursor: pointer; }
+.team-auto input { margin: 0; accent-color: var(--accent); }
+.team-auto input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.team-effort-word { color: var(--muted); }
+.team-kind-head .team-effort-menu { height: var(--ctl-sm); padding: 0 var(--sp-2); font-size: var(--fs-small); }
+.team-root .team-kind-how { margin-top: calc(-1 * var(--sp-1)); }

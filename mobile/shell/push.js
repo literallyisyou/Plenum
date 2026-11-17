@@ -20,6 +20,10 @@
 // Notifications are also taken down after a Stop, Deny or Approve from one (clear()), and an approval one of a computer that says nothing
 // waits (clearApprovals: only the approval notifications this phone heard of from that computer). The endpoint is handed again at every
 // start and HELLO (renew), but only to a computer that already holds it, and the push app is asked again when the computer lost it (repair).
+//
+// Wave 6 (k3): a notification's Stop needs no unlock when the plugin holds that computer's Stop card (native.js hands the cards over): the
+// plugin sends the Stop-only message itself. So in front, too, the plugin's own notifier shows an approval, handover or test when the app
+// has it (showNative), and the local notification is the fallback.
 
 import { channelForKind, NOTIFICATION_CHANNEL_LIST, NOTIFICATION_CHANNELS, parseEndpointEvent, parseMessageEvent, routeForAction } from '../plugins/unifiedpush/src/core.js';
 
@@ -29,8 +33,8 @@ const ID = /^[A-Za-z0-9_.-]{1,80}$/;
 const TAG = /^plenum(?:-[0-9a-f]{32})?$/;
 const FIRST_LINE_MAX = 200;
 // The places a notification (or a launcher shortcut) can open that need no id or take an optional one.
-const PLACES = Object.freeze(['stop', 'home', 'waiting', 'chat', 'today', 'accounts', 'services']);
-const ROUTE_KINDS = Object.freeze(['waiting', 'handover', 'chat', 'settings', 'home', 'today', 'accounts', 'services']);
+const PLACES = Object.freeze(['stop', 'home', 'waiting', 'chat', 'today', 'accounts', 'services', 'night-shift']);
+const ROUTE_KINDS = Object.freeze(['waiting', 'handover', 'chat', 'settings', 'home', 'today', 'accounts', 'services', 'night-shift']);
 
 export function pushAvailable(env = globalThis) {
   const nav = env.navigator;
@@ -421,7 +425,20 @@ export function createAndroidPush({
     try { onState(); } catch { /* the status is read again at the next HELLO */ }
   }
 
-  async function showLocal(payload) {
+  // Wave 6 (k3): while Plenum is in front, an approval, handover or test is shown by the plugin's own notifier when the app has it
+  // (showNotification), so it looks and groups like one shown with Plenum closed, and its Stop is sent natively with no unlock once the
+  // phone locks. An older app, or a message the plugin did not show, falls back to the local notification below.
+  async function showNative(event) {
+    if (typeof up?.showNotification !== 'function' || event?.decrypted !== true || typeof event?.content !== 'string') return false;
+    try {
+      return (await up.showNotification({ content: event.content }))?.shown === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function showLocal(payload, event = null) {
+    if (await showNative(event)) return;
     if (!local?.schedule) return;
     const note = notificationFor(payload);
     if (note.actionTypeId && !types.has(note.actionTypeId)) {
@@ -530,7 +547,7 @@ export function createAndroidPush({
     try { showing = isShowing(payload) === true; } catch { showing = false; }
     if (showing) return;
     try {
-      await showLocal(payload);
+      await showLocal(payload, event);
     } catch (err) {
       log(`push: local notification ${err?.code ?? 'failed'}`);
     }

@@ -9,12 +9,15 @@
 //   plan-use             the Plan use pop-up (the alerts strip's button when an alert waits, else the ring's pop-up)
 //   accounts             Settings > Accounts
 //   services             Settings > Background services
+//   night-shift          the Night shift pane (a job's notice; public/ext-night-shift.js registers the pane, an extra panel that can
+//                        load after this file, so it is tried again for about 3 seconds before the page says it could not open)
 // An unknown kind does nothing. Every message also goes out as window event 'plenum:open' with detail { kind, id }, so a panel can take
 // a place it owns further (the Businesses pane can pick the business). Nothing here asks the server for anything or changes a setting.
 // Wave 5 (integration): a paired browser in the computer layout (data-surface "wide") has no phone layer, and public/ext-phone.js is the
 // phone's only taker of the shell's routes. So on a shell page that is not the desktop app and not the phone layout, this file takes them:
 // plenumShell.onRoute (else the 'plenum:route' event) and plenumShell.takeRoute() once at start, as ext-phone does. A tapped notification
-// (#waiting=<approval>, #handover=<approval>, #chat=<project>, #today[=<business>], #accounts, #services, #settings=limit, #home) opens the
+// (#waiting=<approval>, #handover=<approval>, #chat=<project>, #today[=<business>], #accounts, #services, #night-shift, #settings=limit,
+// #home) opens the
 // same places as above. The shell already reads the address and its hashchange (mobile/shell/app.js), so this file reads the address only
 // when the shell had no route for it at start.
 (function () {
@@ -22,7 +25,7 @@
   const MU = window.MuseUI;
   if (!MU) return;
 
-  const KINDS = new Set(['waiting', 'chat', 'today', 'plan-use', 'accounts', 'services']);
+  const KINDS = new Set(['waiting', 'chat', 'today', 'plan-use', 'accounts', 'services', 'night-shift']);
   const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
   // A message older than this is from another moment (a page that was loaded much later) and is not opened.
   const FRESH_MS = 60_000;
@@ -117,6 +120,21 @@
     call(MU.openPlanUse, null);
   }
 
+  // The Night shift pane. Its panel (public/ext-night-shift.js) is an extra, added only after the page has asked the server for its
+  // panels, which can be after the window's load and after the desktop's message: the pane is looked for again before anything is said.
+  function goNightShift() {
+    soon(() => {
+      const pane = MU.pane;
+      if (!pane || typeof pane.list !== 'function' || !pane.list().includes('night-shift')) return false;
+      try {
+        pane.open('night-shift');
+      } catch {
+        // The pane could not be drawn; the window is in front anyway.
+      }
+      return true;
+    }, 15, 200, () => call(MU.toast, 'Night shift could not open. Try again in a moment.', 'bad'));
+  }
+
   function open(kind, id) {
     if (kind === 'chat') goChat(id);
     else if (kind === 'waiting') goWaiting(id);
@@ -124,6 +142,7 @@
     else if (kind === 'plan-use') goPlanUse();
     else if (kind === 'accounts') call(MU.openAccountsAt);
     else if (kind === 'services') call(MU.openSettings, 'services');
+    else if (kind === 'night-shift') goNightShift();
   }
 
   function take(data) {
@@ -256,15 +275,16 @@
     else if (kind === 'chat') place('chat', routeId(link.project));
     else if (kind === 'settings' && link.section === 'limit') goLimit();
     else if (kind === 'today') place('today', routeId(link.id) || routeId(link.business));
-    else if (kind === 'accounts' || kind === 'services' || kind === 'plan-use') place(kind, '');
+    else if (kind === 'accounts' || kind === 'services' || kind === 'plan-use' || kind === 'night-shift') place(kind, '');
     // Home is the project list, which the computer layout always shows in its sidebar.
     else if (kind === 'home') leaveSettings();
   }
 
-  // #today, #today=<business>, #accounts, #services left in the address when the shell had no route at start. Taken off once followed.
+  // #today, #today=<business>, #accounts, #services, #night-shift left in the address when the shell had no route at start. Taken off
+  // once followed.
   function placeOfHash(hash) {
     const text = String(hash || '').replace(/^#/, '');
-    if (text === 'today' || text === 'accounts' || text === 'services') return { kind: text };
+    if (text === 'today' || text === 'accounts' || text === 'services' || text === 'night-shift') return { kind: text };
     const m = /^today=([A-Za-z0-9_.-]{1,80})$/.exec(text);
     return m ? { kind: 'today', id: m[1] } : null;
   }

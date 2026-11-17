@@ -116,7 +116,28 @@ function parseEndpointEvent(event) {
   let keys = isPlainObject(event.pubKeySet) && typeof event.pubKeySet.pubKey == "string" && BASE64URL_RE.test(event.pubKeySet.pubKey) && typeof event.pubKeySet.auth == "string" && BASE64URL_RE.test(event.pubKeySet.auth) ? { pubKey: event.pubKeySet.pubKey, auth: event.pubKeySet.auth } : null;
   return { instance, url: event.url, temporary: event.temporary === !0, keys };
 }
-var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LIST, APPROVAL_TIMEOUT_MS, GROUP_MAX, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, COMPUTER_RE, ROUTE_RE, UnifiedPushError, init_core = __esm({
+function stopCardFromRecord(record) {
+  if (!isPlainObject(record) || typeof record.id != "string" || !COMPUTER_RE.test(record.id) || typeof record.stopKey != "string" || !STOP_KEY_RE.test(record.stopKey) || typeof record.myDeviceId != "string" || !COMPUTER_RE.test(record.myDeviceId)) return null;
+  let ways = [], seen = /* @__PURE__ */ new Set();
+  for (let c of Array.isArray(record.carriers) ? record.carriers : []) {
+    if (!isPlainObject(c) || !STOP_CARD_KINDS.includes(c.kind) || seen.has(c.kind)) continue;
+    seen.add(c.kind);
+    let urls = Array.isArray(c.urls) ? c.urls : typeof c.url == "string" ? [c.url] : [];
+    for (let url of urls.filter((u) => typeof u == "string" && WAY_URL_RE.test(u)).slice(0, 4))
+      ways.length < STOP_CARD_MAX_WAYS && ways.push({ kind: c.kind, url });
+  }
+  if (!ways.length) return null;
+  let card = {
+    id: record.id,
+    name: String(record.name ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 60),
+    deviceId: record.myDeviceId,
+    stopKey: record.stopKey,
+    ways,
+    counter: Number.isSafeInteger(record.counter) && record.counter >= 0 ? record.counter : 0
+  };
+  return STOP_CARD_KINDS.includes(record.lastCarrier) && (card.lastCarrier = record.lastCarrier), typeof record.lastUrl == "string" && ways.some((w) => w.url === record.lastUrl) && (card.lastUrl = record.lastUrl), card;
+}
+var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LIST, APPROVAL_TIMEOUT_MS, GROUP_MAX, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, COMPUTER_RE, ROUTE_RE, UnifiedPushError, STOP_CARD_KINDS, STOP_CARD_MAX_WAYS, STOP_KEY_RE, WAY_URL_RE, init_core = __esm({
   "mobile/plugins/unifiedpush/src/core.js"() {
     UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test", "clear"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
       approvals: "plenum-approvals",
@@ -128,11 +149,12 @@ var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUS
       Object.freeze({ id: "plenum-finished", name: "Finished runs", description: "A run or a council finished.", importance: 3 }),
       Object.freeze({ id: "plenum-problems", name: "Problems", description: "A run failed, or something stopped working and needs a look.", importance: 3 }),
       Object.freeze({ id: "plenum-limits", name: "Limits", description: "A plan or spend limit was reached.", importance: 3 })
-    ]), APPROVAL_TIMEOUT_MS = 3600 * 1e3, GROUP_MAX = 64, INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, COMPUTER_RE = /^[0-9a-f]{64}$/, ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/, UnifiedPushError = class extends Error {
+    ]), APPROVAL_TIMEOUT_MS = 3600 * 1e3, GROUP_MAX = 64, INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, COMPUTER_RE = /^[0-9a-f]{64}$/, ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/, UnifiedPushError = class extends Error {
       constructor(code, message) {
         super(message), this.name = "UnifiedPushError", this.code = code;
       }
     };
+    STOP_CARD_KINDS = Object.freeze(["lan", "tailscale", "relay"]), STOP_CARD_MAX_WAYS = 12, STOP_KEY_RE = /^[A-Za-z0-9_-]{43}$/, WAY_URL_RE = /^wss?:\/\/[^\s]{1,500}$/;
   }
 });
 
@@ -1144,6 +1166,18 @@ var NOT_ON_WEB2, UnifiedPushWeb, init_web6 = __esm({
       async cancelAll() {
         return { cancelled: 0 };
       }
+      // Wave 6 (k3): no native Stop in a browser; the PWA's lock screen sends its own Stop (mobile/shell/app.js lockedStop).
+      async setStopCards() {
+        return { count: 0, stored: !1 };
+      }
+      async noteStopCounter() {
+      }
+      async stopCounters() {
+        return { counters: {} };
+      }
+      async showNotification() {
+        return { shown: !1 };
+      }
       async getDistributors() {
         return { distributors: [], saved: null };
       }
@@ -1185,10 +1219,12 @@ var native_exports3 = {};
 __export(native_exports3, {
   CORE_NAMES: () => CORE_NAMES,
   REGISTERED_NAMES: () => REGISTERED_NAMES,
+  STOP_MIRROR_WAIT_MS: () => STOP_MIRROR_WAIT_MS,
   buildNative: () => buildNative,
   loadNativePlugins: () => loadNativePlugins,
   scanOutcome: () => scanOutcome,
-  secureStorageAdapter: () => secureStorageAdapter
+  secureStorageAdapter: () => secureStorageAdapter,
+  withStopMirror: () => withStopMirror
 });
 function secureStorageAdapter(plugin) {
   return {
@@ -1206,6 +1242,86 @@ function secureStorageAdapter(plugin) {
     }
   };
 }
+function within(ms, promise) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), ms);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+function withStopMirror(adapter, up, { waitMs = STOP_MIRROR_WAIT_MS } = {}) {
+  if (!adapter || !up) return adapter;
+  let call = (name, arg) => within(waitMs, Promise.resolve().then(() => up[name](arg))), generation = 0, cardsOf = (text) => {
+    let list;
+    try {
+      list = JSON.parse(String(text));
+    } catch {
+      return null;
+    }
+    return Array.isArray(list) ? list.map((r) => {
+      try {
+        return stopCardFromRecord(r);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean) : null;
+  }, hand = async (cards) => {
+    cards && await call("setStopCards", { cards }).catch(() => {
+    });
+  };
+  return {
+    async getItem({ key }) {
+      let answer = await adapter.getItem({ key }), m = COUNTER_KEY.exec(String(key));
+      if (!m) return answer;
+      try {
+        let native = Number((await call("stopCounters"))?.counters?.[m[1]]), mine = null;
+        try {
+          mine = answer?.value === null || answer?.value === void 0 ? null : JSON.parse(String(answer.value));
+        } catch {
+          mine = null;
+        }
+        if (Number.isSafeInteger(native) && native > 0 && !(Number.isSafeInteger(mine) && mine >= native)) return { value: JSON.stringify(native) };
+      } catch {
+      }
+      return answer;
+    },
+    async setItem({ key, value }) {
+      if (await adapter.setItem({ key, value }), key === COMPUTERS_KEY) {
+        generation += 1, await hand(cardsOf(value));
+        return;
+      }
+      let m = COUNTER_KEY.exec(String(key));
+      if (m) {
+        let counter = null;
+        try {
+          counter = JSON.parse(String(value));
+        } catch {
+          counter = null;
+        }
+        Number.isSafeInteger(counter) && counter >= 0 && await call("noteStopCounter", { computer: m[1], counter }).catch(() => {
+        });
+      }
+    },
+    async removeItem({ key }) {
+      await adapter.removeItem({ key }), key === COMPUTERS_KEY && (generation += 1, await hand([]));
+    },
+    keys: () => adapter.keys(),
+    // The cards of the computers the store holds now. A write of the computers that comes while this reads wins: this one then sends nothing.
+    async syncStopCards() {
+      let at = generation, answer;
+      try {
+        answer = await adapter.getItem({ key: COMPUTERS_KEY });
+      } catch {
+        return !1;
+      }
+      if (at !== generation) return !1;
+      let text = answer?.value, cards = text == null ? [] : cardsOf(text);
+      return cards ? (await hand(cards), !0) : !1;
+    }
+  };
+}
 function scanOutcome(error, result) {
   if (!error) {
     let text = typeof result?.ScanResult == "string" ? result.ScanResult : "";
@@ -1215,20 +1331,20 @@ function scanOutcome(error, result) {
   return /permission|denied|not authori[sz]ed|restricted/i.test(said) ? { ok: !1, reason: "denied" } : /cancel|dismiss|closed/i.test(said) ? { ok: !1, reason: "cancelled" } : { ok: !1, reason: "failed" };
 }
 function buildNative(parts, { platform = "" } = {}) {
-  let register = parts.registerPlugin, scanner = register("CapacitorBarcodeScanner");
+  let register = parts.registerPlugin, scanner = register("CapacitorBarcodeScanner"), plugins = {
+    App: register("App"),
+    Haptics: register("Haptics"),
+    Browser: register("Browser"),
+    Share: register("Share"),
+    Filesystem: register("Filesystem"),
+    TextZoom: register("TextZoom"),
+    Network: register("Network"),
+    LocalNotifications: register("LocalNotifications"),
+    PlenumPrivacy: register("PlenumPrivacy")
+  }, storage = secureStorageAdapter(parts.SecureStorage);
   return {
-    ...{
-      App: register("App"),
-      Haptics: register("Haptics"),
-      Browser: register("Browser"),
-      Share: register("Share"),
-      Filesystem: register("Filesystem"),
-      TextZoom: register("TextZoom"),
-      Network: register("Network"),
-      LocalNotifications: register("LocalNotifications"),
-      PlenumPrivacy: register("PlenumPrivacy")
-    },
-    secureStorage: secureStorageAdapter(parts.SecureStorage),
+    ...plugins,
+    secureStorage: platform === "android" && parts.UnifiedPush ? withStopMirror(storage, parts.UnifiedPush) : storage,
     // Settings the shell wants for the keys: never synchronised to iCloud, and on this device only. On iOS the Keychain setting must hold:
     // when it cannot be set, this throws, and app.js treats a throwing loadPlugins as no secure storage, so no key is stored.
     async configureStorage() {
@@ -1268,9 +1384,10 @@ function buildNative(parts, { platform = "" } = {}) {
 }
 async function loadNativePlugins() {
   let native = buildNative({ registerPlugin, WebView, SystemBars, SecureStorage: proxy, BiometricAuth: proxy2, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
-  return await native.configureStorage(), native;
+  return await native.configureStorage(), Promise.resolve(native.secureStorage.syncStopCards?.()).catch(() => {
+  }), native;
 }
-var REGISTERED_NAMES, CORE_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIVE, init_native3 = __esm({
+var REGISTERED_NAMES, CORE_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIVE, STOP_MIRROR_WAIT_MS, STORE_PREFIX, COMPUTERS_KEY, COUNTER_KEY, init_native3 = __esm({
   "mobile/shell/native.js"() {
     init_dist();
     init_esm();
@@ -1290,6 +1407,7 @@ var REGISTERED_NAMES, CORE_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIV
       "CapacitorBarcodeScanner",
       "PlenumPrivacy"
     ]), CORE_NAMES = Object.freeze(["SystemBars"]), QR_CODE_HINT = 0, CAMERA_BACK = 1, ORIENTATION_ADAPTIVE = 3;
+    STOP_MIRROR_WAIT_MS = 1500, STORE_PREFIX = "plenum.", COMPUTERS_KEY = `${STORE_PREFIX}computers`, COUNTER_KEY = /^plenum\.ctr:([0-9a-f]{64})$/;
   }
 });
 
@@ -3160,7 +3278,7 @@ function createDebugLog({ now = () => Date.now(), capacity = 500 } = {}) {
 
 // mobile/shell/push.js
 init_core();
-var ID = /^[A-Za-z0-9_.-]{1,80}$/, TAG = /^plenum(?:-[0-9a-f]{32})?$/, FIRST_LINE_MAX = 200, PLACES = Object.freeze(["stop", "home", "waiting", "chat", "today", "accounts", "services"]), ROUTE_KINDS = Object.freeze(["waiting", "handover", "chat", "settings", "home", "today", "accounts", "services"]);
+var ID = /^[A-Za-z0-9_.-]{1,80}$/, TAG = /^plenum(?:-[0-9a-f]{32})?$/, FIRST_LINE_MAX = 200, PLACES = Object.freeze(["stop", "home", "waiting", "chat", "today", "accounts", "services", "night-shift"]), ROUTE_KINDS = Object.freeze(["waiting", "handover", "chat", "settings", "home", "today", "accounts", "services", "night-shift"]);
 function pushAvailable(env = globalThis) {
   let nav = env.navigator;
   return !!(env.isSecureContext && nav && "serviceWorker" in nav && env.PushManager && env.Notification);
@@ -3430,8 +3548,16 @@ function createAndroidPush({
     } catch {
     }
   }
-  async function showLocal(payload) {
-    if (!local?.schedule) return;
+  async function showNative(event) {
+    if (typeof up?.showNotification != "function" || event?.decrypted !== !0 || typeof event?.content != "string") return !1;
+    try {
+      return (await up.showNotification({ content: event.content }))?.shown === !0;
+    } catch {
+      return !1;
+    }
+  }
+  async function showLocal(payload, event = null) {
+    if (await showNative(event) || !local?.schedule) return;
     let note = notificationFor(payload);
     note.actionTypeId && !types.has(note.actionTypeId) && (types.add(note.actionTypeId), await local.registerActionTypes?.({ types: [{ id: note.actionTypeId, actions: note.actions }] }));
     let id = notificationId(payload.tag);
@@ -3509,7 +3635,7 @@ function createAndroidPush({
     }
     if (!showing)
       try {
-        await showLocal(payload);
+        await showLocal(payload, event);
       } catch (err) {
         log(`push: local notification ${err?.code ?? "failed"}`);
       }

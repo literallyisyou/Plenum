@@ -24,6 +24,9 @@
 //    it means the task is refused; no answer means not known, and the page then says only what is sure (the team does not choose
 //    for that kind). The page never writes this rule down itself. With the team off the type's own model does the task, as before.
 //  - A model billed per token gets no delegated work while limits.allowApi is not true (lib/team.mjs pick): its row says Off.
+//  - Auto (wave 6): a kind with `auto` (boolean) and `pinEffort` gets an Auto box and an Effort menu in its head (Auto, shown only
+//    while Auto is on, Low, Medium, High, Extra high), and a line under its list; choosing a level sets pinEffort: true, choosing Auto
+//    sets it false. Each is one POST /api/team with the whole record. A kind without `auto` (a server from before) shows none of it.
 //  - POST /api/team/use-suggested -> the same answer, with the suggested team saved and on. 409 with a sentence while sign-ins are unknown.
 //  - GET /api/team/usage?days=7 -> { days, byProvider: [{ provider, label, count, ok, failed, minutes, input, output, dollars }], byKind }.
 //  - GET /api/agents (an existing route) -> effective.types [{ name, label, kind }]: an editing type takes only a model whose tool calls
@@ -53,7 +56,16 @@
     order: 'For each kind of work, the first model in the list that can run now does the task.',
     orderOff: 'The team is off, so these lists are not used yet. Once it is on, the first model in a kind\'s list that can run now does the task.',
     pickFirst: 'Choose a model in the menu first.',
+    // Auto routing (wave 6, AUTOROUTE-BRIEF.md section 2), word for word.
+    autoNote: 'With Auto on, Plenum picks one model from a kind\'s list and an effort for each task, from the task itself and the room left in each plan. It never uses a model that is not in the list, and each task says which model it chose and why.',
+    autoKind: 'Auto picks from this list for each task. Your order breaks ties.',
+    orderOffAuto: 'The team is off, so these lists are not used yet.',
   };
+  // The Effort menu of a kind: Auto only while the kind's Auto is on; a level chosen here is kept (pinEffort), also under Auto.
+  const EFFORT_MENU = [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']];
+  // An effort the menu does not offer, as a saved kind may hold it, is shown as it is.
+  const EFFORT_OTHER = { '': 'Default', max: 'Maximum' };
+  const LEVELS = ['low', 'medium', 'high', 'xhigh'];
   // A kind with no model. Team off: the type's own model, as before. Team on: the team does not choose for it, and what happens to
   // its tasks is the server's to say (emptyRule: 'type', 'refuse' or '' while not known, when only what is sure is said).
   const EMPTY = {
@@ -499,6 +511,9 @@
     const onWarn = make('p', 'team-warn');
     onWarn.setAttribute('role', 'status');
     onWarn.hidden = true;
+    // What Auto does, under the switch, while a kind has Auto on (paint).
+    const autoNote = make('p', 'team-note team-auto-note', TEXT.autoNote);
+    autoNote.hidden = true;
     const cannotAsk = make('p', 'team-note', TEXT.cannotAsk);
     // What the person should know now, in the server's words.
     const alerts = make('div', 'team-alerts');
@@ -551,10 +566,10 @@
     const apiBox = make('div', 'team-sec team-api');
     apiBox.append(apiRow.row, sayLine('api'));
 
-    main.append(alerts, onRow.row, sayLine('switch'), onWarn, cannotAsk, sugg, yours, use7, others, inTeam, apiBox);
+    main.append(alerts, onRow.row, sayLine('switch'), onWarn, autoNote, cannotAsk, sugg, yours, use7, others, inTeam, apiBox);
     root.append(line, retry, main);
     body.append(root);
-    view = { root, line, retry, main, alerts, onRow, onWarn, yoursNote, sugg, suggIntro, suggList, facts, use, kindsBox, use7, usageList, usageNote, others, othersList, inTeam, inTeamList, apiRow, shape: '' };
+    view = { root, line, retry, main, alerts, onRow, onWarn, autoNote, yoursNote, sugg, suggIntro, suggList, facts, use, kindsBox, use7, usageList, usageNote, others, othersList, inTeam, inTeamList, apiRow, shape: '' };
   }
 
   // ---------- drawing ----------
@@ -601,7 +616,11 @@
       paintUsage(v);
       paintModels(v);
     }
-    v.yoursNote.textContent = team.on === true ? TEXT.order : TEXT.orderOff;
+    // A server that knows Auto sends `auto` with every kind: each kind then says how its list is used, and this note says only what holds
+    // for all of them. From a server without it, the notes are as before.
+    const autoKnown = kinds().some(hasAuto);
+    v.yoursNote.textContent = !autoKnown ? (team.on === true ? TEXT.order : TEXT.orderOff) : team.on === true ? '' : TEXT.orderOffAuto;
+    v.autoNote.hidden = !kinds().some(k => k.auto === true);
     paintWarn(v);
     askEmptyRule();
     drawSaid();
@@ -689,6 +708,77 @@
     v.onWarn.hidden = !text;
   }
 
+  // ---------- Auto (wave 6) ----------
+
+  // A server that knows Auto sends `auto` (and `pinEffort`) with each kind; without it, nothing about Auto is drawn.
+  const hasAuto = kind => typeof kind?.auto === 'boolean';
+  // What the Effort menu shows: Auto while the kind's Auto is on and no level was chosen, else the kind's own effort.
+  const effortShown = kind => (kind.auto === true && kind.pinEffort !== true ? 'auto' : str(kind.effort));
+
+  // The Auto box and the Effort menu of a kind, in its head.
+  function autoControls(kind, label) {
+    const ctl = make('span', 'team-kind-ctl');
+    const box = make('label', 'team-auto');
+    const input = make('input');
+    input.type = 'checkbox';
+    input.checked = kind.auto === true;
+    input.dataset.fk = fk(kind.id, '', 'auto');
+    input.setAttribute('aria-label', `Auto for ${label}`);
+    input.addEventListener('change', () => setAuto(kind, input));
+    box.append(input, make('span', null, 'Auto'));
+
+    const effort = make('label', 'team-effort');
+    const select = make('select', 'team-select team-effort-menu');
+    select.dataset.fk = fk(kind.id, '', 'effort');
+    select.setAttribute('aria-label', `Effort for ${label}`);
+    const shown = effortShown(kind);
+    for (const [value, text] of EFFORT_MENU) {
+      if (value === 'auto' && kind.auto !== true) continue;
+      select.append(new Option(text, value));
+    }
+    if (!EFFORT_MENU.some(([value]) => value === shown) && Object.hasOwn(EFFORT_OTHER, shown)) select.append(new Option(EFFORT_OTHER[shown], shown));
+    select.value = shown;
+    select.addEventListener('change', () => setEffort(kind, select));
+    effort.append(make('span', 'team-effort-word', 'Effort'), select);
+    ctl.append(box, effort);
+    return ctl;
+  }
+
+  // A control whose change was refused, or had nothing to send, shows again what the server has.
+  const redraw = ok => {
+    if (ok || !onPage()) return;
+    view.shape = '';
+    paint();
+  };
+
+  function setAuto(kind, input) {
+    const want = input.checked;
+    save(`kind:${kind.id}`, rec => {
+      const k = kindIn(rec, kind.id);
+      if (!k || (k.auto === true) === want) return false;
+      k.auto = want;
+      return true;
+    }, { focus: [fk(kind.id, '', 'auto')] }).then(redraw);
+  }
+
+  // Auto lets Auto choose the effort again (the kind's own effort is kept for when Auto is off); a level is kept for every task.
+  function setEffort(kind, select) {
+    const want = select.value;
+    save(`kind:${kind.id}`, rec => {
+      const k = kindIn(rec, kind.id);
+      if (!k) return false;
+      if (want === 'auto') {
+        if (k.pinEffort !== true) return false;
+        k.pinEffort = false;
+        return true;
+      }
+      if (!LEVELS.includes(want) || (k.effort === want && k.pinEffort === true)) return false;
+      k.effort = want;
+      k.pinEffort = true;
+      return true;
+    }, { focus: [fk(kind.id, '', 'effort')] }).then(redraw);
+  }
+
   function kindEl(kind) {
     const box = make('div', 'team-kind');
     box.dataset.kind = kind.id;
@@ -698,16 +788,19 @@
     const typeLabel = str(types?.get(str(kind.agent))?.label);
     head.append(name);
     if (typeLabel) head.append(make('span', 'team-kind-type', typeLabel));
+    const workers = list(kind.workers).filter(w => refOf(w));
+    const label = str(kind.label) || kind.id;
+    if (hasAuto(kind)) head.append(autoControls(kind, label));
     box.append(head);
     if (str(kind.about)) box.append(make('p', 'team-kind-about', kind.about));
 
-    const workers = list(kind.workers).filter(w => refOf(w));
-    const label = str(kind.label) || kind.id;
     if (workers.length) {
       const ol = make('ol', 'team-workers');
       ol.setAttribute('aria-labelledby', name.id);
       workers.forEach((w, i) => ol.append(workerEl(kind, label, w, i, workers.length)));
       box.append(ol);
+      // How this list is used: by Auto, or in the person's order.
+      if (hasAuto(kind)) box.append(make('p', 'team-note team-kind-how', kind.auto === true ? TEXT.autoKind : TEXT.order));
     } else {
       box.append(make('p', 'team-empty', EMPTY[team.on === true ? emptyRule : 'off'](label)));
     }

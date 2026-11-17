@@ -227,7 +227,8 @@ describe('notification routes: #today, #accounts, #services, &nt and &computer',
 
   it('the shell hands #today=<id>, #accounts and #services to the UI page as its route', async () => {
     const k = await androidShell();
-    for (const [link, want] of [['#today=biz-1', { kind: 'today', id: 'biz-1' }], ['#today', { kind: 'today' }], ['#accounts', { kind: 'accounts' }], ['#services', { kind: 'services' }]]) {
+    // Wave 6: #night-shift (a Night shift job's notice) is handed over the same way.
+    for (const [link, want] of [['#today=biz-1', { kind: 'today', id: 'biz-1' }], ['#today', { kind: 'today' }], ['#accounts', { kind: 'accounts' }], ['#services', { kind: 'services' }], ['#night-shift', { kind: 'night-shift' }]]) {
       const out = await k.shell.handleHash(link);
       assert.equal(out.ok, true, link);
       const { seq, taken, ...intent } = k.shell.state().intent;
@@ -236,6 +237,7 @@ describe('notification routes: #today, #accounts, #services, &nt and &computer',
       assert.ok(seq > 0);
     }
     assert.equal((await k.shell.handleHash('#services=x')).reason, 'no link');
+    assert.equal((await k.shell.handleHash('#night-shift=x')).reason, 'no link');
   });
 });
 

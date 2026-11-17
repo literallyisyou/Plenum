@@ -17,8 +17,8 @@
 //  - One notification per key: a newer one for the same key replaces the older.
 // The words are the notice's own title (or "Plenum") and text, which the producers write in Plenum's own words (never a model's text, a
 // path or a key); they are cut to one line here. A click opens the place the notice names (route): Accounts, Today, Plan use,
-// Background services or the chat. An old-style notice (a line of text with no notice record) is the page's alone and shows nothing here.
-const ROUTES = new Set(['accounts', 'today', 'plan-use', 'services', 'chat']);
+// Background services, the chat or Night shift. An old-style notice (a line of text with no notice record) is the page's alone and shows nothing here.
+const ROUTES = new Set(['accounts', 'today', 'plan-use', 'services', 'chat', 'night-shift']);
 const LEVELS = new Set(['needs-you', 'problem', 'fyi']);
 const MAX_KEPT = 20;
 
