@@ -611,6 +611,8 @@
     const catalog = MuseUI.catalog ?? [];
     const byProvider = new Map();
     for (const c of catalog) {
+      // A model the account no longer has is left out, unless it is the one shown (it is marked then).
+      if (c.offered === false && `${c.provider}:${c.id}` !== shown) continue;
       if (!byProvider.has(c.provider)) byProvider.set(c.provider, []);
       byProvider.get(c.provider).push(c);
     }
@@ -618,7 +620,7 @@
     for (const [provider, items] of byProvider) {
       const group = document.createElement('optgroup');
       group.label = GROUP_NAMES[provider] ?? provider;
-      for (const c of items) group.append(new Option(c.label, `${c.provider}:${c.id}`));
+      for (const c of items) group.append(new Option(c.offered === false ? `${c.label} — not offered to this account` : c.label, `${c.provider}:${c.id}`));
       nodes.push(group);
     }
     if (shown && !catalog.some(c => `${c.provider}:${c.id}` === shown)) nodes.unshift(new Option(shown, shown));

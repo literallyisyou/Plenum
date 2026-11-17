@@ -443,7 +443,8 @@
     const names = new Map(GROUPS);
     const providers = [...new Set([...GROUPS.map(g => g[0]), ...MuseUI.catalog.map(c => c.provider)])];
     for (const provider of providers) {
-      const models = MuseUI.catalog.filter(c => c.provider === provider);
+      // A model the account no longer has is left out (the catalog marks it offered: false).
+      const models = MuseUI.catalog.filter(c => c.provider === provider && c.offered !== false);
       if (!models.length) continue;
       const group = document.createElement('optgroup');
       group.label = names.get(provider) ?? provider;

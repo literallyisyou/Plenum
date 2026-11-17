@@ -2018,7 +2018,10 @@ function fillModels(select, withOff) {
   const nodes = menuHead();
   if (withOff) nodes.push(menuOption('off', 'Off', 'No second opinion', ''));
   for (const [provider, name] of GROUPS) {
-    const items = catalog.filter(x => x.provider === provider);
+    // A model the CLI's own list (or a refused run) says the account no longer has is left out, so nobody picks it again (17 Nov 2026: a
+    // council seat was set to Muse Wonder Full, which Muse Code 1.4.23 refuses). A menu whose saved choice is that model still shows it,
+    // marked, through ensureOption, and the line under the menu says to pick another.
+    const items = catalog.filter(x => x.provider === provider && x.offered !== false);
     if (!items.length) continue;
     const group = document.createElement('optgroup');
     group.label = name;
@@ -2029,8 +2032,14 @@ function fillModels(select, withOff) {
 }
 
 // Makes sure a saved model is an option even before the catalog has loaded.
+// A saved model the account no longer has (offered: false) is added with the note "not offered to this account", the words the chat's
+// menus get from public/ext-model-info.js (which does not repeat them).
+const NOT_OFFERED_NOTE = 'not offered to this account';
 function ensureOption(select, ref) {
-  if (ref && ![...select.options].some(o => o.value === ref)) select.append(new Option(modelName(ref) || ref, ref));
+  if (!ref || [...select.options].some(o => o.value === ref)) return;
+  const entry = catalog.find(c => `${c.provider}:${c.id}` === ref);
+  const name = modelName(ref) || ref;
+  select.append(entry?.offered === false ? menuOption(ref, splitLabel(entry.label)[0], NOT_OFFERED_NOTE, entry.provider) : new Option(name, ref));
 }
 
 // The project list and the status bar are rebuilt on every state event. The node with keyboard focus goes with the old list, so the

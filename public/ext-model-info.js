@@ -57,7 +57,8 @@
     return [price, context, TOOL_WORDS[info.tools] ?? 'text only'].join(' · ');
   }
 
-  // The catalog says a model is gone with offered: false. It stays in the menu and can still be chosen.
+  // The catalog says a model is gone with offered: false. Since DECISIONS item 182 the menus leave it out, except a menu whose saved
+  // choice it is: that option already carries these words (ensureOption in app.js), and they are not added twice.
   const goneRef = ref => (MuseUI.catalog ?? []).some(c => `${c.provider}:${c.id}` === ref && c.offered === false);
   const NOT_OFFERED = 'not offered to this account';
 
@@ -73,11 +74,14 @@
     return parts.join(' · ');
   }
 
+  // The parts (joined by ' · ') that the text a choice already shows does not say yet.
+  const unsaid = (said, parts) => String(parts ?? '').split(' · ').filter(p => p && !String(said ?? '').includes(p)).join(' · ');
+
   // A rich menu (where the browser can style one) shows a choice's name and an optional note on two lines. The note is
   // kept as it was, and the facts follow it. A choice with no note gets one.
   function decorateRich(option, text, parts) {
     if (text.dataset.note === undefined) text.dataset.note = text.querySelector('.o-note')?.textContent ?? '';
-    const note = [text.dataset.note, parts].filter(Boolean).join(' · ');
+    const note = [text.dataset.note, unsaid(text.dataset.note, parts)].filter(Boolean).join(' · ');
     let el = text.querySelector('.o-note');
     if (!note) {
       el?.remove();
@@ -93,7 +97,8 @@
   // A plain menu shows the whole choice as text, so the facts go after a dash. The text it had is remembered in dataset.base.
   function decoratePlain(option, parts) {
     if (option.dataset.base === undefined) option.dataset.base = option.text;
-    option.text = parts ? `${option.dataset.base} — ${parts}` : option.dataset.base;
+    const rest = unsaid(option.dataset.base, parts);
+    option.text = rest ? `${option.dataset.base} — ${rest}` : option.dataset.base;
   }
 
   // Adds the facts to every model choice in one menu. A choice whose value has no provider ("off") is left as it is.
