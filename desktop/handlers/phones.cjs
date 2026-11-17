@@ -48,6 +48,32 @@ const QR_KINDS = ['tailscale', 'lan', 'relay', 'native'];
 const TIERS = ['full', 'approve', 'read'];
 const DEVICE_APPS = ['pwa', 'android', 'ios', 'lan-web'];
 const ANSWERS = ['allow', 'deny', 'copy', 'new-code', 'cancel', 'done', 'show-code'];
+// Add a browser (wave 5): the window's two modes, the claim code the server sends (drawn here as a picture, never sent to the window as
+// text), the short /pair/ addresses (not secret: Copy puts one on the clipboard and leaves it there), and the Copy of the n-th address.
+const MODES = ['phone', 'browser'];
+const CLAIM = /^[0-9A-HJKMNP-TV-Z]{12}$/;
+const MAX_ADDRESSES = 4;
+const MAX_ADDRESS = 200;
+const COPY_ADDRESS = /^copy-address-([0-3])$/;
+// The tray item for the devices connected now (desktop/main.cjs): "Phones (n connected)" while every one is a phone, "Phones and browsers
+// (n connected)" once any is a browser.
+function trayLabel(count, devices) {
+  const anyBrowser = Array.isArray(devices) && devices.some(d => d && d.form === 'browser');
+  return `${anyBrowser ? 'Phones and browsers' : 'Phones'} (${count} connected)`;
+}
+
+// An http or https address of the code page, or '' for anything else (no user, no password, no fragment, at most MAX_ADDRESS long).
+function addressOf(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_ADDRESS) return '';
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return '';
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || url.hash || !url.hostname) return '';
+  return url.href;
+}
 // States in which the offer is still open on the server, so closing the window must cancel it.
 const LIVE_STATES = ['offer', 'confirm'];
 const PAIR_SIZE = { width: 420, height: 640 };
@@ -197,6 +223,11 @@ function drawQr(link, loadQr) {
   qr.addData(link);
   qr.make();
   return pngDataUrl(qr);
+}
+
+// The claim code of Add a browser as a PNG data URL, drawn in this process (desktop/pair-code-image.cjs): the window gets the picture only.
+function drawClaim(code) {
+  return require(path.join(__dirname, '..', 'pair-code-image.cjs')).claimPng(code);
 }
 
 // ---------- the encrypted store (phones.json) ----------
@@ -463,9 +494,24 @@ function readOffer(message) {
     qrKind: QR_KINDS.includes(message.qrKind) ? message.qrKind : 'native',
     tier: TIERS.includes(message.tier) ? message.tier : 'full',
     link: typeof message.link === 'string' && message.link.length > 0 && message.link.length <= MAX_LINK ? message.link : '',
+    mode: message.mode === undefined ? 'phone' : message.mode,
+    claim: typeof message.claim === 'string' && CLAIM.test(message.claim) ? message.claim : '',
+    addresses: [],
+    claimed: message.claimed === true,
   };
+  if (!MODES.includes(offer.mode)) return { error: 'That pairing window is not known.' };
+  if (message.addresses !== undefined) {
+    if (!Array.isArray(message.addresses) || message.addresses.length > MAX_ADDRESSES) return { error: 'The addresses for the browser are not valid.' };
+    for (const value of message.addresses) {
+      const href = addressOf(value);
+      if (!href) return { error: 'The addresses for the browser are not valid.' };
+      offer.addresses.push(href);
+    }
+  }
+  if (offer.mode !== 'browser') offer.addresses = [];
   if ((state === 'offer' || state === 'confirm') && !offer.offer) return { error: 'The pairing code has no id.' };
   if (state === 'offer' && !offer.link) return { error: 'The pairing code has no link.' };
+  if (state === 'offer' && offer.mode === 'browser' && !offer.claim) return { error: 'The code for the browser is missing.' };
   if (state === 'confirm' && !offer.code) return { error: 'The pairing check code is missing.' };
   return offer;
 }
@@ -613,6 +659,12 @@ function createPhones(options = {}) {
       captureVisible: p.captureVisible,
       showAnyway: p.showAnyway,
       copied: p.copied,
+      // Add a browser: the mode, the addresses to open, whether the browser has the code, and the code as a picture (never as text).
+      mode: p.mode,
+      addresses: p.addresses,
+      claimed: p.claimed,
+      claimPng: p.claimPng,
+      copiedAddress: p.copiedAddress,
     });
   }
 
@@ -638,7 +690,23 @@ function createPhones(options = {}) {
   function onAnswer(event, action) {
     const p = pair;
     if (!p || p.win.isDestroyed() || !event || event.sender !== p.win.webContents) return;
-    if (typeof action !== 'string' || !ANSWERS.includes(action)) return;
+    if (typeof action !== 'string') return;
+    // Copy one of the browser addresses (Add a browser). They hold no key, so the clipboard keeps them.
+    const copyAt = COPY_ADDRESS.exec(action);
+    if (copyAt) {
+      const text = p.mode === 'browser' ? p.addresses[Number(copyAt[1])] : '';
+      const clipboard = electron()?.clipboard;
+      if (!text || !clipboard || p.serverState !== 'offer') return undefined;
+      try {
+        clipboard.writeText(text);
+      } catch {
+        return undefined;
+      }
+      p.copiedAddress = Number(copyAt[1]);
+      pushPayload(p);
+      return undefined;
+    }
+    if (!ANSWERS.includes(action)) return;
     if (action === 'done') return closePairing(false);
     if (action === 'cancel') return closePairing(true);
     if (action === 'copy') {
@@ -648,9 +716,11 @@ function createPhones(options = {}) {
     // Show the code anyway (B-112): the person's choice, for this window, to see a code that screen capture can read. The window says so
     // next to the code. Pairing still needs Allow on this computer.
     if (action === 'show-code') {
-      if (p.shown !== 'offer' || !p.captureVisible || !p.qrDrawn || p.showAnyway) return undefined;
+      const drawn = p.mode === 'browser' ? p.claimDrawn : p.qrDrawn;
+      if (p.shown !== 'offer' || !p.captureVisible || !drawn || p.showAnyway) return undefined;
       p.showAnyway = true;
-      p.qrPng = p.qrDrawn;
+      if (p.mode === 'browser') p.claimPng = p.claimDrawn;
+      else p.qrPng = p.qrDrawn;
       p.shell?.log?.('the code is shown although screen capture can see the pairing window (the person chose Show the code anyway)');
       pushPayload(p);
       return undefined;
@@ -681,7 +751,10 @@ function createPhones(options = {}) {
       if (pair !== p || p.win.isDestroyed()) return;
       if (visible === true && !p.captureVisible) {
         p.captureVisible = true;
-        if (!p.showAnyway) p.qrPng = '';
+        if (!p.showAnyway) {
+          p.qrPng = '';
+          p.claimPng = '';
+        }
         p.shell?.log?.('the pairing window is visible to screen capture; the code is hidden');
         pushPayload(p);
       }
@@ -690,7 +763,7 @@ function createPhones(options = {}) {
   }
 
   // The window for this pairing, made on first use. Null when this process has no windows (plain Node).
-  function windowFor(shell) {
+  function windowFor(shell, mode = 'phone') {
     if (pair && !pair.win.isDestroyed()) {
       pair.shell = shell;
       return pair;
@@ -703,7 +776,7 @@ function createPhones(options = {}) {
       width: PAIR_SIZE.width,
       height: PAIR_SIZE.height,
       useContentSize: true,
-      title: 'Add a phone',
+      title: mode === 'browser' ? 'Add a browser' : 'Add a phone',
       autoHideMenuBar: true,
       resizable: false,
       minimizable: false,
@@ -768,6 +841,13 @@ function createPhones(options = {}) {
       checked: false,
       pending: '',
       seq: 0,
+      mode: 'phone',
+      addresses: [],
+      claimed: false,
+      claimPng: '',
+      // The last claim code drawn, for Show the code anyway (the code itself is not kept here).
+      claimDrawn: '',
+      copiedAddress: -1,
     };
     pair = p;
     // Electron keeps a window out of screen capture only on macOS and Windows (setContentProtection), so on Linux the code is hidden
@@ -815,7 +895,16 @@ function createPhones(options = {}) {
     if (offer.error) return { ok: false, message: offer.error };
     let shown = offer.state;
     let qrPng = '';
-    if (offer.state === 'offer') {
+    let claimPng = '';
+    const browser = offer.mode === 'browser';
+    if (offer.state === 'offer' && browser) {
+      // Add a browser: the claim code is drawn here as a picture; a browser on another computer has no camera for a QR.
+      try {
+        claimPng = drawClaim(offer.claim);
+      } catch {
+        return { ok: false, message: 'The code could not be drawn. Try again.' };
+      }
+    } else if (offer.state === 'offer') {
       try {
         qrPng = drawQr(offer.link, loadQr);
       } catch (err) {
@@ -823,8 +912,18 @@ function createPhones(options = {}) {
         shown = 'needs-build';
       }
     }
-    const p = windowFor(shell);
+    const p = windowFor(shell, offer.mode);
     if (!p) return { ok: false, message: NO_WINDOW };
+    if (p.mode !== offer.mode) {
+      // Add phone after Add a browser (or the other way): the same window, a new choice to make about Show the code anyway.
+      p.showAnyway = false;
+    }
+    p.mode = offer.mode;
+    p.addresses = offer.addresses;
+    p.claimed = offer.claimed;
+    p.claimDrawn = shown === 'offer' ? claimPng : '';
+    p.claimPng = shown === 'offer' && (!p.captureVisible || p.showAnyway) ? claimPng : '';
+    if (shown !== 'offer') p.copiedAddress = -1;
     p.serverState = offer.state;
     p.shown = shown;
     p.offer = offer.offer;
@@ -851,22 +950,24 @@ function createPhones(options = {}) {
 
   // ----- the other messages -----
 
-  function notifyConnected(shell, name) {
+  function notifyConnected(shell, name, form = 'phone') {
     const Notification = shell.Notification;
     if (!Notification || typeof Notification.isSupported !== 'function' || !Notification.isSupported()) return;
     const computer = cleanText(os.hostname(), 60) || 'this computer';
-    indicatorNote = new Notification({ title: `Phone connected: ${name}`, body: `Plenum on ${computer}` });
+    const title = form === 'browser' ? `Browser connected: ${name}` : `Phone connected: ${name}`;
+    indicatorNote = new Notification({ title, body: `Plenum on ${computer}` });
     indicatorNote.on('click', () => shell.showWindow());
     indicatorNote.show();
   }
 
+  // devices: [{ name, form }] from a server of wave 5 and later; an older one sends only the names (every one a phone).
   function indicate(message, shell) {
-    const names = Array.isArray(message.connected)
-      ? message.connected.map(name => cleanText(name, 60)).filter(Boolean).slice(0, 8)
-      : [];
-    if (names.length > 0 && !notifiedThisLaunch) {
+    const devices = Array.isArray(message.devices)
+      ? message.devices.map(d => ({ name: cleanText(d?.name, 60), form: d?.form === 'browser' ? 'browser' : 'phone' })).filter(d => d.name).slice(0, 8)
+      : (Array.isArray(message.connected) ? message.connected : []).map(name => ({ name: cleanText(name, 60), form: 'phone' })).filter(d => d.name).slice(0, 8);
+    if (devices.length > 0 && !notifiedThisLaunch) {
       notifiedThisLaunch = true;
-      notifyConnected(shell, names[0]);
+      notifyConnected(shell, devices[0].name, devices[0].form);
     }
     return { ok: true };
   }
@@ -1140,6 +1241,8 @@ module.exports = {
   createStore,
   pngDataUrl,
   drawQr,
+  drawClaim,
+  trayLabel,
   crc32,
   STORE_FILE,
   PAIR_PAGE,

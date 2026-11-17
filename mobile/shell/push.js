@@ -9,15 +9,28 @@
 //                showed the notification, so none is shown a second time.
 //
 // A notification opens the app at a fragment (parseNotificationHash): #stop, #deny=<id>, #approve=<id>&line=<first line>, #waiting[=<id>],
-// #handover=<id>, #chat[=<project>], #settings=limit or #home. app.js runs them (handleHash); a Stop is sent at once, a Deny after the card is
-// checked by the computer, and an Approve only with the first line the notification showed (the computer compares it with the waiting card).
+// #handover=<id>, #chat[=<project>], #settings=limit, #home, and (wave 4) #today[=<business>], #accounts, #services. app.js runs them
+// (handleHash); a Stop is sent at once, a Deny after the card is checked by the computer, and an Approve only with the first line the
+// notification showed (the computer compares it with the waiting card).
 // Not available on the plain LAN web page (no service worker, no push); the caller shows that copy instead.
+//
+// Wave 4 (m2): Plenum in front is calm. A finished, failed, limit or needs message becomes the shell's own notice (the toast); only an
+// approval or a handover posts a system notification, and only when the page is not showing that card already. A test is always a system
+// notification (it is the proof that Android shows one). A 'clear' message shows nothing and takes the named notification down.
+// Notifications are also taken down after a Stop, Deny or Approve from one (clear()), and an approval one of a computer that says nothing
+// waits (clearApprovals: only the approval notifications this phone heard of from that computer). The endpoint is handed again at every
+// start and HELLO (renew), but only to a computer that already holds it, and the push app is asked again when the computer lost it (repair).
 
-import { channelForKind, parseEndpointEvent, parseMessageEvent, routeForAction } from '../plugins/unifiedpush/src/core.js';
+import { channelForKind, NOTIFICATION_CHANNEL_LIST, NOTIFICATION_CHANNELS, parseEndpointEvent, parseMessageEvent, routeForAction } from '../plugins/unifiedpush/src/core.js';
 
 // An id the computer made: letters, digits, dots, dashes and underscores (a UUID for an approval card, hex for a stop).
 const ID = /^[A-Za-z0-9_.-]{1,80}$/;
+// A notification's tag (lib/remote/push.mjs pushTag), or the plain 'plenum' a payload without one gets.
+const TAG = /^plenum(?:-[0-9a-f]{32})?$/;
 const FIRST_LINE_MAX = 200;
+// The places a notification (or a launcher shortcut) can open that need no id or take an optional one.
+const PLACES = Object.freeze(['stop', 'home', 'waiting', 'chat', 'today', 'accounts', 'services']);
+const ROUTE_KINDS = Object.freeze(['waiting', 'handover', 'chat', 'settings', 'home', 'today', 'accounts', 'services']);
 
 export function pushAvailable(env = globalThis) {
   const nav = env.navigator;
@@ -37,42 +50,68 @@ function cleanLine(value) {
 //   #chat[=<project>]           { kind: 'chat', project? }      the project's chat
 //   #settings=limit             { kind: 'settings', section: 'limit' }
 //   #home                       { kind: 'home' }
+//   #today[=<business>]         { kind: 'today', id? }          wave 4: the Today list (of one business)
+//   #accounts, #services        { kind: 'accounts' }, { kind: 'services' }   wave 4: those Settings pages of the UI
 // B-117: any of them may end in &computer=<id>, the computer that sent the notification (the service worker adds it to a cold start, and an
 // Android route may carry it): the result then has computer: <id>. Without it there is no computer key, and the shell acts on the open one.
+// Wave 4: an action route may also carry &nt=<tag>, the notification it came from (the result then has nt: <tag>), so the shell can take
+// that notification down once the action is handled. &line, &nt and &computer may come in any order, each once; &line only on approve.
 export function parseNotificationHash(hash) {
-  let text = String(hash ?? '').replace(/^#/, '');
-  const named = /&computer=([A-Za-z0-9_.-]{1,80})$/.exec(text);
-  if (named) {
-    const link = parseNotificationHash(text.slice(0, named.index));
-    return link ? { ...link, computer: named[1] } : null;
+  const text = String(hash ?? '').replace(/^#/, '');
+  if (!text) return null;
+  const parts = text.split('&');
+  const head = parts.shift();
+  const extra = {};
+  for (const part of parts) {
+    const m = /^(line|nt|computer)=(.*)$/.exec(part);
+    if (!m || extra[m[1]] !== undefined) return null;
+    extra[m[1]] = m[2];
   }
-  if (text === 'stop') return { kind: 'stop' };
-  if (text === 'home') return { kind: 'home' };
-  if (text === 'waiting') return { kind: 'waiting' };
-  if (text === 'chat') return { kind: 'chat' };
-  if (text === 'settings=limit') return { kind: 'settings', section: 'limit' };
-  let m = /^(deny|approve|waiting|handover)=([A-Za-z0-9_.-]{1,80})(?:&line=([^&]*))?$/.exec(text);
-  if (m && ID.test(m[2])) {
-    if (m[1] === 'approve') {
-      let line = '';
-      try {
-        line = cleanLine(decodeURIComponent(m[3] ?? ''));
-      } catch {
-        line = '';
-      }
-      return { kind: 'approve', id: m[2], line };
+  if (extra.computer !== undefined && !ID.test(extra.computer)) return null;
+  if (extra.nt !== undefined && !TAG.test(extra.nt)) return null;
+  const link = headLink(head);
+  if (!link) return null;
+  if (link.kind === 'approve') {
+    let line = '';
+    try {
+      line = cleanLine(decodeURIComponent(extra.line ?? ''));
+    } catch {
+      line = '';
     }
-    if (m[3] !== undefined) return null;
-    return { kind: m[1], id: m[2] };
+    link.line = line;
+  } else if (extra.line !== undefined) {
+    return null;
   }
-  m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(text);
+  if (extra.nt !== undefined) link.nt = extra.nt;
+  if (extra.computer !== undefined) link.computer = extra.computer;
+  return link;
+}
+
+function headLink(head) {
+  if (PLACES.includes(head)) return { kind: head };
+  if (head === 'settings=limit') return { kind: 'settings', section: 'limit' };
+  let m = /^(deny|approve|waiting|handover|today)=([A-Za-z0-9_.-]{1,80})$/.exec(head);
+  if (m && ID.test(m[2])) return { kind: m[1], id: m[2] };
+  m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(head);
   if (m) return { kind: 'chat', project: m[1] };
   return null;
 }
 
 // True for the fragments that only name a place in the UI (the shell hands them to the UI page as a route).
 export function isRouteLink(link) {
-  return Boolean(link) && ['waiting', 'handover', 'chat', 'settings', 'home'].includes(link.kind);
+  return Boolean(link) && ROUTE_KINDS.includes(link.kind);
+}
+
+// The first 16 hex characters of sha256(endpoint), the form in which the computer says which endpoint it holds (POST /api/phones/push answers
+// endpoint). Null when there is no endpoint or no WebCrypto.
+export async function endpointHash(url, subtle = globalThis.crypto?.subtle) {
+  if (typeof url !== 'string' || !url || typeof subtle?.digest !== 'function') return null;
+  try {
+    const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(url)));
+    return Array.from(digest.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
 }
 
 // Asks for the permission (after a tap), subscribes and sends the subscription to the computer. `request` is channel.request.
@@ -144,12 +183,13 @@ function bytesFromB64u(text) {
 
 // ----- Android: UnifiedPush -----
 
-export const ANDROID_CHANNELS = Object.freeze([
-  Object.freeze({ id: 'plenum-approvals', name: 'Approvals and your turn', importance: 4 }),
-  Object.freeze({ id: 'plenum-finished', name: 'Finished and failed runs', importance: 3 }),
-  Object.freeze({ id: 'plenum-limits', name: 'Spend and plan limits', importance: 3 }),
-]);
+// The channels, by the same ids, names and importance the plugin's Kotlin side uses (core.js NOTIFICATION_CHANNEL_LIST, which mirrors
+// PlenumNotifier.kt and its strings.xml). Wave 4 adds 'Problems' (a failed run): Android cannot raise an existing channel's importance,
+// hence a channel of its own. The plugin creates the four when it loads; creating them here again changes nothing.
+export const ANDROID_CHANNELS = Object.freeze(NOTIFICATION_CHANNEL_LIST.map(c => Object.freeze({ id: c.id, name: c.name, importance: c.importance, description: c.description })));
+export const APPROVALS_CHANNEL = NOTIFICATION_CHANNELS.approvals;
 const ENDPOINT_WAIT_MS = 15000;
+const DEFAULT_REGISTRATION = Object.freeze({ instance: 'default', messageForDistributor: 'Plenum' });
 
 // The body of POST /api/phones/push for a UnifiedPush endpoint event (the plugin's `endpoint` event): the push app's https address and the
 // key set it was given once. Null when the event has no key set (the computer could not encrypt for it).
@@ -161,6 +201,7 @@ export function unifiedPushSubscription(event) {
 
 // The notification a message shows: channel by kind, the actions the desktop sent (Deny, Stop all, an opt-in Approve) and the routes they open.
 // Every action (Deny and Stop all too) asks for the device's own authentication first, as PlenumNotifier.kt does for the system notification.
+// extra.tag is the notification's tag: an action's link carries it (&nt=<tag>), so the shell takes the notification down once it acted.
 export function notificationFor(payload) {
   const names = payload.actions.map(a => a.action);
   const routes = {};
@@ -177,8 +218,18 @@ export function notificationFor(payload) {
       destructive: a.action !== 'approve',
       foreground: false,
     })),
-    extra: { tap: payload.tap, routes, line: payload.firstLine ?? '', computer: payload.ids?.computer ?? '' },
+    extra: { tap: payload.tap, routes, line: payload.firstLine ?? '', computer: payload.ids?.computer ?? '', tag: payload.tag },
   };
+}
+
+// What a message says as the shell's own notice while Plenum is in front: { text, tone, kind }. The computer's title names the project or the
+// business; a title that is only "Plenum" adds nothing.
+export function noticeFor(payload) {
+  const title = String(payload?.title ?? '');
+  const body = String(payload?.body ?? '');
+  const text = title && title !== 'Plenum' ? `${title}: ${body}` : body;
+  const tone = payload?.kind === 'failed' || payload?.kind === 'limit' ? 'warn' : payload?.kind === 'finished' ? 'ok' : 'info';
+  return { text, tone, kind: String(payload?.kind ?? '') };
 }
 
 function notificationId(tag) {
@@ -187,10 +238,32 @@ function notificationId(tag) {
   return Math.abs(h) % 2147483000 + 1;
 }
 
+// The decrypted text of a message as a JSON object, or null. Read for the fields the plugin's own parser leaves out (silent, and kind 'clear').
+function rawObject(text) {
+  if (typeof text !== 'string' || text.trimStart()[0] !== '{') return null;
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 // native: the registry from native.js (UnifiedPush, LocalNotifications). request: channel.request (a getter, because the channel changes).
 // isVisible(): true while Plenum is in front. onLink(hash, computer): runs a notification fragment (app.js handleHash). setTimer/clearTimer: for the wait.
 // pendingStore (B-129, optional): { load(), save(body), clear() }, where an endpoint the computer has not accepted yet waits, so a restart of the app
 // does not lose the key set the push app gave once. The body is never logged.
+// Wave 4 (m2), all optional:
+//   computerOf()      the id of the computer the channel goes to ('' when none): which computer a post reached, and whether an endpoint that
+//                     came by itself may go there (left out: one computer, and every endpoint goes to it as before wave 4)
+//   postedStore       { load(), save(record) }: which computers hold this phone's endpoint ({ v: 1, computers: { <id>: { hash, at } } }), so
+//                     state().registered survives a restart. No key is in it, only the first 16 hex of the endpoint's sha256.
+//   onNotice(notice)  a message while Plenum is in front that is not an approval or a handover: { text, tone, kind } for the shell's toast
+//   isShowing(payload) true when the page already shows that approval card (no system notification then)
+//   onReceived(at)    a message arrived (its time, for "Last notification 14:02")
+//   onState()         an endpoint from the push app was handled (posted or not): the status row may have changed
+//   seenStore         { load(), save(record) }: the approval, handover and needs notifications this phone heard of ({ v: 1, tags: { <tag>:
+//                     { kind, computer, approval } } }), so clearApprovals takes down only approval ones of the computer that says none waits
 export function createAndroidPush({
   native,
   requestOf,
@@ -198,6 +271,14 @@ export function createAndroidPush({
   isVisible = () => true,
   onLink = () => {},
   pendingStore = null,
+  postedStore = null,
+  computerOf = null,
+  onNotice = () => {},
+  isShowing = () => false,
+  onReceived = () => {},
+  onState = () => {},
+  seenStore = null,
+  now = () => Date.now(),
   log = () => {},
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = id => clearTimeout(id),
@@ -205,12 +286,60 @@ export function createAndroidPush({
   const up = native?.UnifiedPush ?? null;
   const local = native?.LocalNotifications ?? null;
   let started = false;
-  let waiting = null;          // { resolve, timer } while enable() waits for the push app's endpoint
+  const waiters = new Set();   // each resolves once with the next endpoint's outcome (enable and repair wait on one)
   let lastEndpoint = null;
+  let lastBody = null;         // the last endpoint body of this run (memory only): repair() posts it again without asking the push app
   let failure = null;
-  let posted = false;          // the computer has this phone's subscription
+  let postedFor = {};          // computer id -> { hash, at }: the computers that accepted this phone's endpoint
+  let postedKnown = false;     // a posted record was read or written (an app from before wave 4 had none)
   let pending = null;          // B-129: the body of an endpoint the computer has not accepted yet; resend() sends it again
+  // Whether `pending` was asked for by a turn-on or a repair (it may go to the computer the channel goes to), or came by itself (a renewal at
+  // start or HELLO, or the push app moving the address): then it goes only to a computer that already holds this phone's endpoint.
+  let pendingOpen = true;
+  let renewing = false;
   const types = new Set();
+  const shownLocal = new Map();  // tag -> { id, channelId }: the notifications this code showed while Plenum was in front
+  const seen = new Map();        // tag -> { kind, computer, approval }: the approval, handover and needs notifications heard of
+  const SEEN_MAX = 100;
+  const SEEN_KINDS = Object.freeze(['approval', 'handover', 'needs']);
+
+  const here = () => String(computerOf?.() ?? '');
+  // The computer the channel goes to holds this phone's endpoint. With no computer named, any computer counts.
+  function isPosted() {
+    const key = here();
+    return key ? Boolean(postedFor[key]) : Object.keys(postedFor).length > 0;
+  }
+  // An endpoint that came by itself may go to the computer the channel goes to: that computer holds this phone's endpoint, or (an app from
+  // before the record, which never wrote one) the push app registration is kept. A computer this phone never turned notifications on for
+  // is never subscribed by a renewal. A caller that does not say which computer the channel goes to (no computerOf: one computer, as before
+  // wave 4) sends it as before.
+  async function mayRenewHere() {
+    if (typeof computerOf !== 'function') return true;
+    const key = here();
+    if (!key) return false;
+    if (postedFor[key]) return true;
+    if (postedKnown) return false;
+    const kept = await savedState();
+    return Boolean(kept.distributor) && kept.saved;
+  }
+  async function saveSeen() {
+    try { await seenStore?.save({ v: 1, tags: Object.fromEntries(seen) }); } catch { /* kept in memory for this run */ }
+  }
+  async function noteSeen(payload) {
+    if (!SEEN_KINDS.includes(payload?.kind) || typeof payload.tag !== 'string' || !TAG.test(payload.tag) || payload.tag === 'plenum') return;
+    seen.delete(payload.tag);
+    seen.set(payload.tag, { kind: payload.kind, computer: String(payload.ids?.computer ?? ''), approval: String(payload.ids?.approval ?? '') });
+    while (seen.size > SEEN_MAX) seen.delete(seen.keys().next().value);
+    await saveSeen();
+  }
+  async function savePosted() {
+    postedKnown = true;
+    try { await postedStore?.save({ v: 1, computers: { ...postedFor } }); } catch { /* kept in memory for this run */ }
+  }
+  async function markPosted(url) {
+    postedFor = { ...postedFor, [here()]: { hash: await endpointHash(url), at: now() } };
+    await savePosted();
+  }
 
   async function post(body) {
     const request = requestOf?.();
@@ -224,6 +353,32 @@ export function createAndroidPush({
     }
   }
 
+  // The next endpoint's outcome: { ok, reason }. cancel() drops the wait (a register that threw).
+  function waitEndpoint() {
+    let done = null;
+    const promise = new Promise(resolve => {
+      const timer = setTimer(() => done({ ok: false, reason: 'timeout' }), ENDPOINT_WAIT_MS);
+      done = value => {
+        clearTimer(timer);
+        waiters.delete(done);
+        resolve(value);
+      };
+      waiters.add(done);
+    });
+    return { promise, cancel: () => done?.({ ok: false, reason: 'failed' }) };
+  }
+  function settle(value) {
+    for (const w of Array.from(waiters)) w(value);
+  }
+
+  async function accepted(body) {
+    failure = null;
+    pending = null;
+    pendingOpen = true;
+    try { await pendingStore?.clear(); } catch { /* a note that stays is sent once more and replaced */ }
+    await markPosted(body.subscription.endpoint);
+  }
+
   async function onEndpoint(event) {
     let body = null;
     try {
@@ -233,20 +388,37 @@ export function createAndroidPush({
     }
     if (!body) {
       failure = 'endpoint';
-      waiting?.resolve({ ok: false, reason: 'endpoint' });
+      settle({ ok: false, reason: 'endpoint' });
       return;
     }
+    // A turn-on or a repair waits for this endpoint (it was asked for here); otherwise it came by itself (a renewal, a moved address).
+    const asked = waiters.size > 0;
     lastEndpoint = body.subscription.endpoint;
+    lastBody = body;
+    // One asked for replaces whatever waited; one that came by itself keeps an asked-for one's right to go to the open computer.
+    pendingOpen = asked || (pending !== null && pendingOpen);
     pending = body;
-    try { await pendingStore?.save(body); } catch { /* the endpoint is still held in memory */ }
-    const out = await post(body);
-    posted = out.ok;
-    if (out.ok) {
-      failure = null;
-      pending = null;
-      try { await pendingStore?.clear(); } catch { /* a note that stays is sent once more and replaced */ }
+    try { await pendingStore?.save(pendingOpen ? body : { ...body, from: 'renew' }); } catch { /* the endpoint is still held in memory */ }
+    if (!pendingOpen && !(await mayRenewHere())) {
+      // Kept for a computer that holds this phone's endpoint (resend at its HELLO); this one never turned notifications on here.
+      try { onState(); } catch { /* the status is read again at the next HELLO */ }
+      return;
     }
-    waiting?.resolve(out.ok ? { ok: true, reason: null } : { ok: false, reason: 'failed' });
+    const out = await post(body);
+    if (out.ok) {
+      await accepted(body);
+    } else {
+      // A new address the computer did not get: the one it holds (if any) is the old one.
+      const key = here();
+      const hash = await endpointHash(lastEndpoint);
+      if (postedFor[key] && postedFor[key].hash !== hash) {
+        const { [key]: _gone, ...rest } = postedFor;
+        postedFor = rest;
+        await savePosted();
+      }
+    }
+    settle(out.ok ? { ok: true, reason: null } : { ok: false, reason: 'failed' });
+    try { onState(); } catch { /* the status is read again at the next HELLO */ }
   }
 
   async function showLocal(payload) {
@@ -256,9 +428,10 @@ export function createAndroidPush({
       types.add(note.actionTypeId);
       await local.registerActionTypes?.({ types: [{ id: note.actionTypeId, actions: note.actions }] });
     }
+    const id = notificationId(payload.tag);
     await local.schedule({
       notifications: [{
-        id: notificationId(payload.tag),
+        id,
         title: note.title,
         body: note.body,
         channelId: note.channelId,
@@ -266,6 +439,61 @@ export function createAndroidPush({
         extra: note.extra,
       }],
     });
+    shownLocal.set(payload.tag, { id, channelId: note.channelId });
+  }
+
+  // Takes notifications down: the one with this tag, or every one on a channel (every one when neither is given). The plugin's cancel and
+  // cancelAll are used where the app has them (an older app does not: nothing happens then), and the ones this code showed go too.
+  async function clear({ tag = null, channel = null } = {}) {
+    const safeTag = typeof tag === 'string' && TAG.test(tag) ? tag : null;
+    let done = false;
+    try {
+      if (safeTag && typeof up?.cancel === 'function') {
+        await up.cancel({ tag: safeTag });
+        done = true;
+      } else if (!safeTag && typeof up?.cancelAll === 'function') {
+        await up.cancelAll(channel ? { channel } : {});
+        done = true;
+      }
+    } catch {
+      done = false;
+    }
+    const ids = [];
+    for (const [t, shown] of Array.from(shownLocal)) {
+      if (safeTag ? t === safeTag : (!channel || shown.channelId === channel)) {
+        ids.push({ id: shown.id });
+        shownLocal.delete(t);
+      }
+    }
+    if (ids.length && typeof local?.cancel === 'function') {
+      try {
+        await local.cancel({ notifications: ids });
+        done = true;
+      } catch { /* already gone */ }
+    }
+    let forgot = false;
+    for (const [t, entry] of Array.from(seen)) {
+      if (safeTag ? t === safeTag : (!channel || channelForKind(entry.kind) === channel)) {
+        seen.delete(t);
+        forgot = true;
+      }
+    }
+    if (forgot) await saveSeen();
+    return done;
+  }
+
+  // Takes down the approval notifications this phone heard of from one computer (of one card when `approval` is given), and nothing else:
+  // a handover or a needs notification on the same channel stays, and so does another computer's. Resolves how many were asked to go.
+  async function clearApprovals({ computer = '', approval = null } = {}) {
+    const from = String(computer ?? '');
+    const tags = [];
+    for (const [t, entry] of seen) {
+      if (entry.kind !== 'approval' || entry.computer !== from) continue;
+      if (approval && entry.approval !== String(approval)) continue;
+      tags.push(t);
+    }
+    for (const t of tags) await clear({ tag: t }).catch(() => false);
+    return tags.length;
   }
 
   async function onMessage(event) {
@@ -275,11 +503,34 @@ export function createAndroidPush({
     } catch {
       return;
     }
-    if (!parsed.payload) return;
-    // The plugin's own service shows the notification while Plenum is behind; showing it here too would make two.
-    if (!isVisible()) return;
+    const raw = rawObject(parsed.text);
+    // A clear (wave 4): the computer took a card or a notice back. Nothing is shown; the notification with that tag goes (the plugin's
+    // service took its own down already; a local one shown here goes too).
+    if (parsed.clear === true || parsed.payload?.kind === 'clear' || (raw?.v === 1 && raw.kind === 'clear')) {
+      const tag = parsed.payload?.kind === 'clear' ? parsed.payload.tag : raw?.tag;
+      if (typeof tag === 'string' && TAG.test(tag) && tag !== 'plenum') await clear({ tag }).catch(() => false);
+      return;
+    }
+    const payload = parsed.payload;
+    if (!payload) return;
+    try { onReceived(now()); } catch { /* the time is a nicety */ }
+    // Shown or not, an approval, handover or needs notification is noted, so a HELLO that says none waits takes down only the right ones.
+    await noteSeen(payload).catch(() => {});
+    // The plugin's own service shows the notification while Plenum is behind (and says so: shown); showing it here too would make two.
+    if (!isVisible() || parsed.shown === true) return;
+    // In front: only an approval or a handover is a system notification, and only when the page is not showing that card. A test is one
+    // too: it is the proof, after Turn on or Send a test notification, that Android shows Plenum's notifications (and the plugin's service
+    // does not show it while Plenum is in front). The rest, and a silent one, is the shell's own notice.
+    const urgent = payload.kind === 'approval' || payload.kind === 'handover' || payload.kind === 'test';
+    if (!urgent || payload.silent === true || raw?.silent === true) {
+      try { onNotice(noticeFor(payload)); } catch { /* the toast is a nicety */ }
+      return;
+    }
+    let showing = false;
+    try { showing = isShowing(payload) === true; } catch { showing = false; }
+    if (showing) return;
     try {
-      await showLocal(parsed.payload);
+      await showLocal(payload);
     } catch (err) {
       log(`push: local notification ${err?.code ?? 'failed'}`);
     }
@@ -290,33 +541,76 @@ export function createAndroidPush({
     const id = String(event?.actionId ?? 'tap');
     const route = id === 'tap' ? extra.tap : extra.routes?.[id];
     if (typeof route !== 'string') return;
-    const link = routeForAction({ action: id === 'tap' ? 'tap' : id, route }, extra.line ? String(extra.line) : '');
+    // An action's link names the notification it came from (&nt=<tag>, core.js routeForAction), so the shell takes it down once it acted.
+    const where = id !== 'tap' && typeof extra.tag === 'string' && !/&nt=/.test(route) ? { tag: extra.tag } : undefined;
+    const link = String(routeForAction({ action: id === 'tap' ? 'tap' : id, route }, extra.line ? String(extra.line) : '', where)).replace(/^\//, '');
     // B-117: the computer that sent the notification goes with the link (only the three actions act on a computer; a tap is a place).
     const computer = id !== 'tap' && typeof extra.computer === 'string' ? extra.computer.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 80) : '';
-    onLink(String(link).replace(/^\//, ''), computer);
+    onLink(link, computer);
   }
 
-  return {
+  async function savedState() {
+    try {
+      const s = await up.getState();
+      return { distributor: s?.distributor ?? null, saved: Array.isArray(s?.registrations) && s.registrations.includes(DEFAULT_REGISTRATION.instance), endpoint: s?.endpoints?.[DEFAULT_REGISTRATION.instance]?.url ?? null };
+    } catch {
+      return { distributor: null, saved: false, endpoint: null };
+    }
+  }
+
+  async function register() {
+    const vapid = vapidOf();
+    await up.register({ ...DEFAULT_REGISTRATION, ...(vapid ? { vapid } : {}) });
+  }
+
+  const api = {
     // Channels, action types and listeners. Safe to call again; a plugin that is missing does nothing.
     async start() {
       if (started || !up) return false;
       started = true;
       try {
-        for (const c of ANDROID_CHANNELS) await local?.createChannel?.({ id: c.id, name: c.name, importance: c.importance, visibility: 0 });
+        for (const c of ANDROID_CHANNELS) await local?.createChannel?.({ id: c.id, name: c.name, description: c.description, importance: c.importance, visibility: 0 });
         await up.addListener('endpoint', onEndpoint);
         await up.addListener('message', onMessage);
-        await up.addListener('registrationFailed', event => { failure = String(event?.reason ?? 'INTERNAL_ERROR'); waiting?.resolve({ ok: false, reason: 'registration' }); });
+        await up.addListener('registrationFailed', event => { failure = String(event?.reason ?? 'INTERNAL_ERROR'); settle({ ok: false, reason: 'registration' }); });
         await up.addListener('unregistered', () => {
-          posted = false;
+          postedFor = {};
           lastEndpoint = null;
+          lastBody = null;
           pending = null;
+          pendingOpen = true;
+          savePosted().catch(() => {});
           Promise.resolve(pendingStore?.clear?.()).catch(() => {});
         });
         await local?.addListener?.('localNotificationActionPerformed', onAction);
         // An endpoint the last run could not hand to the computer is still waiting (resend sends it at the next HELLO).
         if (!pending && pendingStore) {
           const kept = await pendingStore.load().catch(() => null);
-          if (kept?.subscription?.kind === 'unifiedpush' && typeof kept.subscription.endpoint === 'string') pending = kept;
+          if (kept?.subscription?.kind === 'unifiedpush' && typeof kept.subscription.endpoint === 'string') {
+            // A note from a renewal says so (from: 'renew'); one without the mark came from a turn-on (as before wave 4).
+            const { from, ...body } = kept;
+            pending = body;
+            pendingOpen = from !== 'renew';
+          }
+        }
+        // The approval, handover and needs notifications heard of in an earlier run.
+        if (seenStore) {
+          const record = await Promise.resolve(seenStore.load()).catch(() => null);
+          if (record && typeof record === 'object' && record.tags && typeof record.tags === 'object') {
+            for (const [tag, entry] of Object.entries(record.tags).slice(-SEEN_MAX)) {
+              if (TAG.test(tag) && entry && SEEN_KINDS.includes(entry.kind)) seen.set(tag, { kind: entry.kind, computer: String(entry.computer ?? ''), approval: String(entry.approval ?? '') });
+            }
+          }
+        }
+        // Which computers hold this phone's endpoint, from the last run.
+        if (postedStore) {
+          const record = await Promise.resolve(postedStore.load()).catch(() => null);
+          if (record && typeof record === 'object' && record.computers && typeof record.computers === 'object') {
+            postedKnown = true;
+            for (const [id, entry] of Object.entries(record.computers)) {
+              if (entry && typeof entry === 'object') postedFor[id] = { hash: typeof entry.hash === 'string' ? entry.hash : null, at: Number(entry.at) || 0 };
+            }
+          }
         }
       } catch (err) {
         log(`push: start ${err?.code ?? 'failed'}`);
@@ -330,10 +624,27 @@ export function createAndroidPush({
       if (!up) return { supported: false, distributor: null, registered: false, failure };
       try {
         const s = await up.getState();
-        return { supported: s?.supported !== false, distributor: s?.distributor ?? null, registered: posted, endpoint: Boolean(lastEndpoint) || Object.keys(s?.endpoints ?? {}).length > 0, failure };
+        return { supported: s?.supported !== false, distributor: s?.distributor ?? null, registered: isPosted(), endpoint: Boolean(lastEndpoint) || Object.keys(s?.endpoints ?? {}).length > 0, failure };
       } catch {
         return { supported: false, distributor: null, registered: false, failure };
       }
+    },
+
+    // state() plus what the status row needs (wave 4): permission (Android's own switch for Plenum: true, false, or null when the app cannot
+    // say) and saved (the push app registration is kept).
+    async status() {
+      const base = await api.state();
+      if (!up) return { ...base, permission: null, saved: false };
+      let permission = null;
+      try {
+        if (typeof up.getNotificationPermission === 'function') permission = (await up.getNotificationPermission())?.granted === true;
+      } catch {
+        permission = null;
+      }
+      const { saved } = await savedState();
+      // installed: a push app is on the phone (chosen or not), so the row says Off (one tap turns them on) rather than Needs the ntfy app.
+      const installed = base.distributor ? true : await api.hasDistributor();
+      return { ...base, permission, saved, installed };
     },
 
     // The system chooser for the push app (when more than one is installed, or none is chosen).
@@ -350,7 +661,8 @@ export function createAndroidPush({
     // Turn on: the permissions (after a tap), a push app, then register. Resolves once the computer has the subscription.
     async enable() {
       if (!up) return { ok: false, reason: 'unavailable' };
-      await this.start();
+      await api.start();
+      let wait = null;
       try {
         const granted = await up.requestNotificationPermission();
         if (granted?.granted === false) return { ok: false, reason: 'denied' };
@@ -371,32 +683,121 @@ export function createAndroidPush({
             if (picked?.ok === false) return { ok: false, reason: 'no-distributor' };
           }
         }
-        const answer = new Promise(resolve => {
-          const timer = setTimer(() => resolve({ ok: false, reason: 'timeout' }), ENDPOINT_WAIT_MS);
-          waiting = { resolve: value => { clearTimer(timer); waiting = null; resolve(value); } };
-        });
-        const vapid = vapidOf();
-        await up.register({ instance: 'default', messageForDistributor: 'Plenum', ...(vapid ? { vapid } : {}) });
-        return await answer;
+        wait = waitEndpoint();
+        await register();
+        return await wait.promise;
       } catch (err) {
-        waiting = null;
+        wait?.cancel();
         return { ok: false, reason: err?.code === 'VAPID_REQUIRED' ? 'vapid' : 'failed' };
       }
     },
 
     // B-129: an endpoint the computer did not get (no channel when the push app gave it, or the computer refused) is sent again. app.js calls this at
     // every HELLO. The computer replaces the phone's subscription with each body, so a second send is harmless. Nothing is sent after a turn off.
+    // Wave 4 (m2): an endpoint that came by itself (a renewal) goes only to a computer that already holds this phone's endpoint.
     async resend() {
-      if (posted || !pending) return { ok: posted, reason: null };
-      const out = await post(pending);
-      posted = out.ok;
-      if (out.ok) {
-        pending = null;
-        failure = null;
-        try { await pendingStore?.clear(); } catch { /* sent again once and replaced */ }
-      }
+      if (!pending) return { ok: isPosted(), reason: null };
+      if (!pendingOpen && !(await mayRenewHere())) return { ok: isPosted(), reason: null };
+      const body = pending;
+      const out = await post(body);
+      if (out.ok) await accepted(body);
       return { ok: out.ok, reason: out.ok ? null : 'failed' };
     },
+
+    // Wave 4 (m2), at every start and HELLO: when a push app and the 'default' registration are kept, register again, so the push app hands
+    // the endpoint and its key set to this listener once more and it goes to the computer (onEndpoint). Resolves true when it asked.
+    async renew() {
+      if (!up || renewing) return false;
+      renewing = true;
+      try {
+        const kept = await savedState();
+        if (!kept.distributor || !kept.saved) return false;
+        await register();
+        return true;
+      } catch (err) {
+        log(`push: renew ${err?.code ?? 'failed'}`);
+        return false;
+      } finally {
+        renewing = false;
+      }
+    },
+
+    // Wave 4 (m2): the computer says it does not hold this phone's endpoint (or holds another). The push app is asked again (never the copy
+    // this run kept: a computer that dropped an address the push service called gone would only drop it again), and the endpoint it hands
+    // goes to this computer. Resolves { ok, reason, hash }: hash is the first 16 hex of the endpoint that went (app.js tells a repair that
+    // sent the same address again apart from one that sent a new one).
+    async repair() {
+      if (!up) return { ok: false, reason: 'unavailable' };
+      const key = here();
+      if (postedFor[key]) {
+        const { [key]: _gone, ...rest } = postedFor;
+        postedFor = rest;
+        await savePosted();
+      }
+      const kept = await savedState();
+      if (!kept.distributor) return { ok: false, reason: 'no-distributor' };
+      const wait = waitEndpoint();
+      try {
+        await register();
+      } catch {
+        wait.cancel();
+        return { ok: false, reason: 'failed' };
+      }
+      const out = await wait.promise;
+      return out.ok ? { ...out, hash: postedFor[key]?.hash ?? (await endpointHash(lastEndpoint)) } : out;
+    },
+
+    // Wave 4 (m2): whether this phone takes notifications to be on for the computer the channel goes to: that computer accepted its endpoint.
+    // An app from before the record (none was ever written) counts the kept push app registration instead.
+    async believedOn() {
+      if (!up) return false;
+      if (isPosted()) return true;
+      if (postedKnown) return false;
+      const kept = await savedState();
+      return Boolean(kept.distributor) && kept.saved;
+    },
+
+    // The computer says it holds this phone's endpoint (hash matches): the record notes it, so the next check knows.
+    async adopt(hash) {
+      if (typeof hash !== 'string' || !hash || isPosted()) return false;
+      const mine = await api.endpointHash();
+      if (!mine || mine !== hash) return false;
+      postedFor = { ...postedFor, [here()]: { hash, at: now() } };
+      await savePosted();
+      return true;
+    },
+
+    // The first 16 hex of sha256 of this phone's endpoint (the one of this run, else the one the plugin kept), or null.
+    async endpointHash() {
+      if (lastEndpoint) return endpointHash(lastEndpoint);
+      if (!up) return null;
+      return endpointHash((await savedState()).endpoint);
+    },
+
+    // Whether a push app is installed (or chosen) now, and whether Android allows Plenum's notifications now: the re-checks when Plenum comes
+    // back to the front after "Get ntfy" or "Open notification settings".
+    async hasDistributor() {
+      if (!up) return false;
+      try {
+        const s = await up.getState();
+        if (s?.distributor) return true;
+        const list = await up.getDistributors();
+        return Boolean(list?.saved) || (Array.isArray(list?.distributors) && list.distributors.length > 0);
+      } catch {
+        return false;
+      }
+    },
+    async permitted() {
+      if (!up || typeof up.getNotificationPermission !== 'function') return false;
+      try {
+        return (await up.getNotificationPermission())?.granted === true;
+      } catch {
+        return false;
+      }
+    },
+
+    clear,
+    clearApprovals,
 
     // Turn off: the computer forgets the subscription and the push app registration ends.
     async disable() {
@@ -407,9 +808,12 @@ export function createAndroidPush({
       } catch {
         // The registration is already gone.
       }
-      posted = false;
+      postedFor = {};
       lastEndpoint = null;
+      lastBody = null;
       pending = null;
+      pendingOpen = true;
+      await savePosted();
       try { await pendingStore?.clear(); } catch { /* nothing kept */ }
       return { ok: out.ok, reason: out.ok ? null : 'failed' };
     },
@@ -417,4 +821,5 @@ export function createAndroidPush({
     // Test hooks: the handlers the listeners call.
     handlers: { onEndpoint, onMessage, onAction },
   };
+  return api;
 }

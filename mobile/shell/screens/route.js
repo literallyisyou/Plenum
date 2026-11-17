@@ -14,9 +14,10 @@
 //   consentGiven    the iOS consent (6.2) was allowed on this run
 //   lastDriving     the driving value seen before the lock dropped the hello (kept so the lock screens can show it)
 //   local           what a screen keeps while it is open: phoneName, link, linkMessage, onboardMessage
+//   pairForm        'browser' when the last pairing the core showed was an Add a browser offer (kept after the core drops it), else null
 
 import { ASLEEP_STRIP, CARRIER_LABEL, FAILED_LINES, FAILURE_LINES, FORWARDER_BUILD, fill } from './copy.js';
-import { isLanPage } from '../device.js';
+import { browserName, isLanPage, surfaceFor } from '../device.js';
 
 export const COUNTDOWN_S = 120;
 
@@ -56,6 +57,8 @@ function terminalScreen(s) {
 export function screenFor(s, nav = {}) {
   if (!s) return null;
   if (s.locked) return s.lock?.mode === 'pin' ? 'lock-pin' : 'lock-bio';
+  // Wave 5 (brb): the code page at /pair/ shows only its own screen (the code, or "already paired" with Open Plenum).
+  if (s.claim) return 'claim';
   const p = s.pairing ?? null;
   // A pairing link waiting for the person's Pair (D5). Checked before the code and the starting screen.
   if (p?.state === 'review') return 'pair-review';
@@ -71,6 +74,8 @@ export function screenFor(s, nav = {}) {
     if (shown) return shown;
   }
   if (nav.onboarding?.length) return nav.onboarding[0];
+  // Wave 5 (brb): another tab of this browser holds this computer: the card with Use it here, until the person picks something else.
+  if ((s.tab?.state === 'elsewhere' || s.tab?.state === 'moved') && !nav.screen) return 'other-tab';
   if (nav.uiState) return nav.uiState;
   // The UI hand-over (app.js showUi): pulling the computer's screens, the page leaving for them, or a pull that failed.
   if (s.ui?.state === 'loading' || s.ui?.state === 'navigating') return 'loading';
@@ -126,6 +131,19 @@ export function defaultPhoneName(platform) {
   return 'Phone';
 }
 
+// Wave 5 (brb): a web page in the computer layout (device.js surfaceFor: a window at least 1000 px wide with a mouse or trackpad, or the
+// layout chosen in the settings). Its Welcome asks for "This browser's name" and the name it suggests is the browser's ("Edge on Windows").
+export function widePage(env = {}) {
+  return platformOf(env) === 'web' && surfaceFor(env) === 'wide';
+}
+
+// The name a screen suggests for this device: the browser's on a wide page or for a browser offer, else the phone's.
+export function defaultDeviceName(env = {}, { browser = false } = {}) {
+  const platform = platformOf(env);
+  if (platform === 'web' && (browser || widePage(env))) return browserName(env);
+  return defaultPhoneName(platform);
+}
+
 // A passkey can be offered only in a secure context where the browser has the WebAuthn constructor (MOBILE-UI 6.9).
 export function passkeyAvailable(env = {}) {
   return env.isSecureContext === true && typeof env.PublicKeyCredential === 'function';
@@ -171,12 +189,23 @@ export function ctxFor(s, nav = {}, env = {}) {
   const pairing = s?.pairing ?? null;
   const tried = pairing?.tried ?? conn.failure?.tried ?? [];
   const driving = hello?.pending?.driving ?? nav.lastDriving ?? null;
+  const wide = widePage(env);
+  // The offer's form: the review keeps it, the pairing states after Pair carry it (app.js pair), and nav.pairForm keeps it once the core has
+  // dropped the pairing (the mismatch screen, after cancelPairing).
+  const browserOffer = (pairing ? (pairing.form ?? pairing.review?.form) : nav.pairForm) === 'browser';
   return {
     platform,
     lan,
     computer,
     session: Boolean(s?.activeId) || Boolean(s?.locked && s?.computers?.length),
-    phoneName: nav.local?.phoneName ?? defaultPhoneName(platform),
+    phoneName: nav.local?.phoneName ?? defaultDeviceName(env, { browser: browserOffer }),
+    // Wave 5 (brb): the computer layout, a browser offer on the review screen, the code page, and another tab that holds this computer.
+    wide,
+    browserOffer,
+    // A browser, not a phone: the shell's settings say "this browser" (a web page in the computer layout, or one pairing through Add a browser).
+    browser: platform === 'web' && (wide || browserOffer),
+    claim: s?.claim ? { paired: (s.claim.paired ?? []).map(c => ({ name: String(c.name ?? ''), path: String(c.path ?? '') })) } : null,
+    tab: s?.tab ? { state: s.tab.state, computer: s.tab.computer } : null,
     code: pairing?.code ?? null,
     carrier: conn.carrier ?? pairing?.carrier ?? null,
     failReason: pairing?.state === 'failed' ? (pairing.reason ?? null) : null,

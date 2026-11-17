@@ -8,12 +8,17 @@ import org.json.JSONObject
  * What the plugin keeps between launches: the registration names, the last endpoint of each and the last failure.
  * Endpoints are push addresses. The key set (P-256 public key and auth secret) is never stored here: it reaches the
  * shell once, in the endpoint event, and the shell keeps it in its own store. Nothing in this file logs.
+ *
+ * endpointChanged (wave 4) is one true/false flag: the push app gave a new endpoint while no shell was there to hear it. The
+ * shell reads it with getState() and registers again, so the new endpoint and its keys reach the computer; it is cleared when an
+ * endpoint event is handed to the shell. It holds no address and no key.
  */
 internal object UnifiedPushStore {
     private const val PREFS = "plenum-unifiedpush"
     private const val KEY_REGISTRATIONS = "registrations"
     private const val KEY_ENDPOINTS = "endpoints"
     private const val KEY_FAILURES = "failures"
+    private const val KEY_ENDPOINT_CHANGED = "endpointChanged"
 
     /** True while an activity of Plenum is started. The closed-app path shows notifications only when this is false. */
     @Volatile
@@ -53,6 +58,12 @@ internal object UnifiedPushStore {
         val map = endpoints(context)
         map.remove(instance)
         writeMap(context, KEY_ENDPOINTS, map)
+    }
+
+    fun endpointChanged(context: Context): Boolean = prefs(context).getBoolean(KEY_ENDPOINT_CHANGED, false)
+
+    fun setEndpointChanged(context: Context, changed: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ENDPOINT_CHANGED, changed).apply()
     }
 
     fun saveFailure(context: Context, instance: String, reason: String) {

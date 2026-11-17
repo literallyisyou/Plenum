@@ -18,18 +18,21 @@ import { clock, LINK_UNAVAILABLE, LOCK_FAILED, SCREEN_IDS, SETTINGS_MANUAL, STOP
 import * as C from './copy.js';
 import * as C2 from './copy2.js';
 import * as S from './settings.js';
-import { codeSecondsLeft, ctxFor, defaultPhoneName, drivingText, lanPage, passkeyAvailable, platformOf, screenFor, stateKey, clockTime } from './route.js';
+import { codeSecondsLeft, ctxFor, defaultDeviceName, drivingText, lanPage, passkeyAvailable, platformOf, screenFor, stateKey, clockTime } from './route.js';
+import { LAYOUT_KEY, savedLayout } from '../device.js';
 import { fixtureCtx } from './fixtures.js';
 import { STOP_FAILURE_TEXT } from '../stop.js';
 import { renderScreen } from './views.js';
 import { PART2_SCREEN_BUILDERS, renderPart2 } from './views2.js';
 import {
   call,
+  claimFlow,
   cleanPhoneName,
   enableLockFlow,
   enableNotificationsFlow,
   forgetFlow,
   LEGAL_LINKS,
+  NTFY_LINKS,
   openLinkFlow,
   openSettingsFlow,
   STORE_LINKS,
@@ -147,6 +150,16 @@ function seenText(ms) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${clockTime(ms)}`;
 }
 
+// "Last notification 14:02" (today) or "Last notification 12 Nov, 14:02" (an earlier day), or null when none was heard of.
+export function lastNotificationLine(ms, nowMs = Date.now()) {
+  const at = Number(ms);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const d = new Date(at);
+  const today = new Date(nowMs);
+  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  return C2.NOTIFY_LAST(sameDay ? clockTime(at) : `${d.getDate()} ${MONTHS[d.getMonth()]}, ${clockTime(at)}`);
+}
+
 // Where the "Add to Home Screen" and "Install" guides apply: a web page on https, not yet installed (MOBILE-UI 6.12).
 export function installHint(env = globalThis) {
   if (platformOf(env) !== 'web' || lanPage(env)) return null;
@@ -211,15 +224,21 @@ export function buildVm(s, nav, env, core = null) {
       screensLoaded: null,
       newerUi: false,
     },
-    notify: { label: C2.NOTIFY_PERMISSION[perm] ?? C2.NOTIFY_PERMISSION.unknown, hint: perm === 'denied' ? C2.NOTIFY_DENIED_HINT : null },
+    // Wave 4 (m2): on Android the row is what the phone knows (the push app, the computer holding the endpoint, Android's own switch); the
+    // web Notification API is not in the Android WebView, so it would say "Not asked" while notifications work.
+    notify: platform === 'android'
+      ? { label: S.androidNotifyLabel(s?.androidPush ?? null), hint: null, last: lastNotificationLine(s?.androidPush?.lastAt) }
+      : { label: C2.NOTIFY_PERMISSION[perm] ?? C2.NOTIFY_PERMISSION.unknown, hint: perm === 'denied' ? C2.NOTIFY_DENIED_HINT : null, last: null },
     lock: { mode: lockMode, label: lockLabel, failures: Number(s?.lock?.failures) || 0, waitSec: Number(s?.lock?.waitSec) || 0, prefs: null },
     prefs,
     push,
     approve,
     haptics: { visible: !iosWeb },
-    unifiedPush: platform === 'android' ? { supported: s?.androidPush?.supported === true, distributor: s?.androidPush?.distributor ?? null, registered: s?.androidPush?.registered === true, failure: s?.androidPush?.failure ?? null } : null,
+    unifiedPush: platform === 'android' ? { supported: s?.androidPush?.supported === true, distributor: s?.androidPush?.distributor ?? null, registered: s?.androidPush?.registered === true, installed: s?.androidPush?.installed === true, failure: s?.androidPush?.failure ?? null } : null,
     dictation: native ? { available: s?.dictation?.available === true, onDevice: s?.dictation?.onDevice === true, permission: s?.dictation?.permission ?? 'prompt', known: Boolean(s?.dictation) } : null,
     debug: { lines: debugLines.slice(-500).map(l => ({ level: l.level ?? 'info', time: hhmmss(l.at), text: String(l.text ?? '') })) },
+    // Wave 5 (brb): the layout this device uses (web only): 'auto', 'phone' or 'wide'.
+    layout: native ? null : (savedLayout(env) ?? 'auto'),
     demo,
     replay: Boolean(s?.demo),
   };
@@ -418,6 +437,8 @@ export function mountScreens(env = globalThis) {
       if (snapshot.hello && snapshot.activeId) nav.wasConnected = snapshot.activeId;
       if (!snapshot.activeId) nav.lastDriving = null;
       if (nav.pairingCancelled && snapshot.pairing?.state !== 'confirm') nav.pairingCancelled = false;
+      // The form of the pairing the core shows (Add a browser or Add phone), kept for the mismatch screen after cancelPairing drops it.
+      if (snapshot.pairing) nav.pairForm = (snapshot.pairing.form ?? snapshot.pairing.review?.form) === 'browser' ? 'browser' : null;
       // The shell's #settings or #computers link asks for a screen once per request (its seq). A request that comes while locked waits for the unlock.
       const request = snapshot.screenRequest ?? null;
       if (!snapshot.locked && request?.seq > (nav.screenSeq ?? 0)) {
@@ -427,6 +448,7 @@ export function mountScreens(env = globalThis) {
         nav.dismissedKey = null;
       }
       applyPrefs(snapshot);
+      noteNotifySetup(snapshot.notifySetup ?? null);
     }
     const showingCode = fixtureMode ? demoId === 'code' : snapshot?.pairing?.state === 'confirm' && !nav.pairingCancelled;
     if (showingCode) {
@@ -462,6 +484,14 @@ export function mountScreens(env = globalThis) {
     ctx.linkMessage = nav.local.linkMessage ?? null;
     ctx.onboardMessage = nav.local.onboardMessage ?? null;
     ctx.notifyNote = nav.local.notifyNote ?? null;
+    ctx.notifyReason = nav.local.notifyReason ?? null;
+    ctx.notifyWhere = nav.local.notifyWhere === true;
+    // Wave 5 (brb): the code page's answer, its form after Pair again, the request on its way, and the layout setting's note.
+    ctx.claimError = nav.local.claimError ?? null;
+    ctx.claimForm = nav.local.claimForm === true;
+    ctx.claimBusy = nav.local.claimBusy === true;
+    ctx.layoutNote = nav.local.layoutNote ?? null;
+    ctx.repairLine = fixtureMode ? null : repairLineFor(id);
     ctx.install = fixtureMode ? null : installHint(env);
     ctx.vm = fixtureMode ? null : buildVm(snapshot, nav, env, core);
 
@@ -489,6 +519,43 @@ export function mountScreens(env = globalThis) {
     lastId = id;
     lastSig = sig;
     doc.body.setAttribute('data-screen', id);
+  }
+
+  // Wave 4 (m2): a turn-on the core ran by itself (Plenum came back to the front after Get ntfy or the notification settings) says how it went
+  // on the screen the person is on, and moves the onboarding on when it worked. The first outcome seen at mount is the past: it is only noted.
+  function noteNotifySetup(setup) {
+    if (nav.notifySetupSeq === undefined) {
+      nav.notifySetupSeq = setup?.seq ?? 0;
+      return;
+    }
+    if (!setup || !(setup.seq > nav.notifySetupSeq)) return;
+    nav.notifySetupSeq = setup.seq;
+    if (!setup.auto) return;
+    nav.local.notifyReason = setup.ok ? null : (setup.reason ?? 'failed');
+    nav.local.notifyNote = setup.ok && setup.testSent ? C2.NOTIFY_TEST_ON_WAY : null;
+    if (setup.ok && nav.onboarding?.[0] === 'paired-notify') {
+      nav.onboarding.shift();
+      if (!nav.onboarding.length) {
+        nav.onboarding = null;
+        core?.releaseUi?.();
+      }
+    }
+  }
+
+  // Wave 4 (m2): the "turned them back on" line shows in Phone settings once. It is taken from the core when one of the two settings screens
+  // draws, stays while the person is on them, and goes when they leave.
+  const REPAIR_SCREENS = Object.freeze(['settings', 'settings-notify']);
+  function repairLineFor(id) {
+    if (!REPAIR_SCREENS.includes(id)) {
+      nav.local.repairLine = null;
+      return null;
+    }
+    if (!nav.local.repairLine && snapshot?.pushRepaired === true) {
+      nav.local.repairLine = C2.NOTIFY_REPAIRED;
+      // After this paint: the core's answer paints again.
+      Promise.resolve().then(() => core?.ackPushRepaired?.()).catch(() => {});
+    }
+    return nav.local.repairLine ?? null;
   }
 
   // The Stop control, the strips and the screen's own strip padding (MOBILE-UI 9.1, 9, 6.12 and 6.18).
@@ -581,7 +648,7 @@ export function mountScreens(env = globalThis) {
       nav.screen = null;
       nav.pairingCancelled = false;
       nav.dismissedKey = null;
-      const name = cleanPhoneName(nav.local.phoneName, defaultPhoneName(platformOf(env)));
+      const name = cleanPhoneName(nav.local.phoneName, defaultDeviceName(env));
       const final = await core?.pair?.(String(text ?? ''), { name });
       if (final?.state === 'allowed') {
         nav.onboarding = lanPage(env) ? ['paired-lock'] : ['paired-lock', 'paired-notify'];
@@ -639,11 +706,31 @@ export function mountScreens(env = globalThis) {
       paint();
     },
     enableLock: async mode => (fixtureMode ? { ok: true, reason: null } : enableLockFlow(core, mode)),
+    // Wave 4 (m2): every reason a turn-on stopped is shown with what to do (views.js notifyFix: Get ntfy, Open notification settings, or the
+    // sentence alone); B-128's other-computer is one of them. On success the core sent the test notification, and the line says it is coming.
     enableNotifications: async () => {
       if (fixtureMode) return { ok: true, reason: null };
+      nav.local.notifyWhere = false;
       const out = await enableNotificationsFlow(core);
-      // B-128: another computer behind this address already holds the browser's one push subscription; the settings line says so.
-      nav.local.notifyNote = out?.reason === 'other-computer' ? C.PUSH_OTHER_COMPUTER : null;
+      nav.local.notifyReason = out?.ok === true ? null : (out?.reason ?? 'failed');
+      const sent = out?.ok === true && core?.state?.()?.notifySetup?.testSent === true;
+      nav.local.notifyNote = sent ? C2.NOTIFY_TEST_ON_WAY : null;
+      paint();
+      return out;
+    },
+    // "Get ntfy": its store page in the system browser. The core checks for it again when Plenum comes back to the front.
+    getNtfy: () => {
+      if (fixtureMode) return { ok: true, reason: null };
+      const out = openLinkFlow(env, NTFY_LINKS.play);
+      if (out.ok) call(core, 'awaitPushApp');
+      paint();
+      return out;
+    },
+    // "Open notification settings": Android's page for Plenum. An app that cannot open it gets the line that says where it is.
+    openNotificationSettings: async () => {
+      if (fixtureMode) return { ok: true, reason: null };
+      const out = await coreCall('openNotificationSettings');
+      nav.local.notifyWhere = out.ok !== true;
       paint();
       return out;
     },
@@ -664,7 +751,12 @@ export function mountScreens(env = globalThis) {
       paint();
     },
     // The pairing link that waits for review (D5): Pair starts it, Cancel drops it (C6c).
-    confirmPair: async () => { await call(core, 'confirmPair'); paint(); },
+    // Wave 5 (brb): a browser offer has a name field on the review screen; the name goes with Pair.
+    confirmPair: async () => {
+      const browser = snapshot?.pairing?.review?.form === 'browser';
+      await call(core, 'confirmPair', browser ? { name: cleanPhoneName(nav.local.phoneName, defaultDeviceName(env, { browser: true })) } : {});
+      paint();
+    },
     cancelPair: async () => { await call(core, 'cancelPairing'); paint(); },
     // Stop from a lock screen: sent without unlocking when this phone holds the computer's Stop key (C6c, C6f).
     stopLocked: async () => { await call(core, 'stop'); paint(); },
@@ -737,11 +829,20 @@ export function mountScreens(env = globalThis) {
       return coreCall('setPush', patch);
     },
     setApprove: async value => coreCall('setApprove', value === true),
-    testPush: async () => coreCall('testPush'),
-    // Android: the system chooser for the push app UnifiedPush goes through (the settings line shows which one is chosen).
+    // The test notification says whether it went (it used to say nothing).
+    testPush: async () => {
+      const out = await coreCall('testPush');
+      if (!fixtureMode) {
+        const computer = snapshot?.hello?.desktopName || snapshot?.computers?.find(c => c.id === snapshot?.activeId)?.name || 'your computer';
+        nav.local.notifyNote = out.ok ? C2.NOTIFY_TEST_SENT : C2.fillName(C2.NOTIFY_TEST_FAILED, computer);
+        paint();
+      }
+      return out;
+    },
+    // Android: the system chooser for the push app notifications come through (the settings line shows which one is chosen).
     chooseDistributor: async () => {
       const out = await coreCall('chooseDistributor');
-      nav.local.notifyNote = out.ok ? null : S.unifiedPushLine(null);
+      nav.local.notifyNote = out.ok ? null : S.unifiedPushLine(null, { installed: snapshot?.androidPush?.installed === true });
       paint();
       return out;
     },
@@ -803,6 +904,60 @@ export function mountScreens(env = globalThis) {
       return result;
     },
     debugClear: () => { if (!fixtureMode) coreCall('debugClear'); },
+    // ---- wave 5 (brb): the code page, another tab, the layout ----
+    // Continue on the code page: the computer checks the code and answers with the pairing link, which this page goes to at once (the review
+    // screen there, as for any link). The link is kept nowhere.
+    claim: async text => {
+      if (fixtureMode || replayMode || nav.local.claimBusy) return { ok: false, error: 'busy' };
+      nav.local.claimBusy = true;
+      nav.local.claimError = null;
+      paint();
+      const out = await claimFlow(env, text);
+      nav.local.claimBusy = false;
+      if (out.ok) {
+        nav.local.claimCode = '';
+        env.location?.replace?.(out.link);
+        return out;
+      }
+      nav.local.claimError = out.error;
+      paint();
+      return out;
+    },
+    openPaired: path => {
+      if (typeof path === 'string' && /^\/p\/[0-9a-f]{32}\/$/.test(path)) env.location?.assign?.(path);
+    },
+    claimAgain: () => {
+      nav.local.claimForm = true;
+      nav.local.claimError = null;
+      paint();
+    },
+    // "Type the new code" after an Add a browser pairing that stopped (mismatch, denied, expired): the code page at /pair/ on this same
+    // address, which the computer that made the offer serves. The apps have no code page, so they go to the phone's How screen instead.
+    newCode: () => {
+      if (fixtureMode || replayMode) return;
+      if (platformOf(env) !== 'web' || !env.location?.assign) {
+        io.go('how');
+        return;
+      }
+      env.location.assign('/pair/');
+    },
+    useHere: async () => {
+      const id = snapshot?.tab?.computer;
+      if (!id) return { ok: false, reason: 'none' };
+      const out = await coreCall('connect', id);
+      paint();
+      return out;
+    },
+    setLayout: id => {
+      try {
+        if (id === 'phone' || id === 'wide') env.localStorage?.setItem(LAYOUT_KEY, id);
+        else env.localStorage?.removeItem(LAYOUT_KEY);
+        nav.local.layoutNote = null;
+      } catch {
+        nav.local.layoutNote = C2.LAYOUT_NOT_KEPT;
+      }
+      paint();
+    },
     demoDecide: async (id, decision) => (replayMode ? coreCall('demoDecide', id, decision) : { ok: false, reason: 'demo' }),
     demoReset: () => { if (replayMode) coreCall('demoReset'); },
   };
@@ -825,6 +980,8 @@ export function mountScreens(env = globalThis) {
         nav.dismissedKey = stateKeyNow();
         nav.local.linkMessage = null;
         nav.local.onboardMessage = null;
+        nav.local.notifyReason = null;
+        nav.local.notifyWhere = false;
       }
       paint();
     },

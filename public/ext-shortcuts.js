@@ -176,6 +176,10 @@
     }
     table.append(thead, tbody);
     body.append(table, note('The Ask first and Auto-approve setting has no shortcut. Change it with the mouse.'), note(`${MOD}+Shift letters also work from the message box, but not from other text fields.`));
+    // Wave 5 (brb): in a browser on another computer (the computer layout, data-surface="wide") the browser may take these keys first.
+    if (document.documentElement?.dataset?.surface === 'wide') {
+      body.append(note(`Your browser may keep ${MOD}+Shift+P, ${MOD}+Shift+C and ${MOD}+Shift+A for itself. The Plan, Council and Accounts buttons do the same.`));
+    }
   }
 
   // ---------- the entry in the Commands drawer ----------

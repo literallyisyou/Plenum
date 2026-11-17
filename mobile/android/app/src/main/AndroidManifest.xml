@@ -54,6 +54,13 @@
                 <data android:scheme="plenum" android:host="app" />
             </intent-filter>
 
+            <!-- Launcher shortcuts: Today, Waiting for you, Stop (res/xml/shortcuts.xml), explicit plenum://app/ intents to this activity.
+                 No showWhenLocked, here or in code: every route, Stop included, opens only after the phone's own unlock. -->
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
         </activity>
 
         <provider

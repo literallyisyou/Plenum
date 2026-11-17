@@ -15,6 +15,7 @@
 //   3. Closing a thread that has a ready copy (its "..." menu) opens a choice of Keep branch or Discard instead of closing.
 // Every piece of text from the server or the user is set with textContent. Nothing here sets an inline style or a style attribute.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MU = window.MuseUI;
   // app.js defines MuseUI, and ext-threads.js adds the thread header row. Without them there is nothing to attach to.
   if (!MU || !MU.threads || !MU.threads.header || !MU.threads.onRender || typeof MU.api !== 'function' || typeof MU.request !== 'function') return;
@@ -101,7 +102,7 @@
 
   async function refusalOf(res) {
     const data = await res.json().catch(() => ({}));
-    return data.error || `Request failed (${res.status})`;
+    return data.error || 'Plenum could not do that. Try again.';
   }
 
   // ---------- the copy settings (the New thread drawer and Settings > This project) ----------
@@ -167,7 +168,7 @@
         files.value = (data.copy ?? []).join('\n');
         status.textContent = 'Saved';
       } catch (err) {
-        status.textContent = err.message;
+        status.textContent = plain(err, 'The copy settings were not saved. Try again.');
         status.classList.add('bad');
       } finally {
         save.disabled = false;
@@ -526,7 +527,7 @@
           MU.toast(`Kept branch ${wt.branch}. The isolated copy was removed.`);
           if (data.kept?.note) MU.toast(data.kept.note, 'ok', 6000);
         } catch (err) {
-          problem.textContent = err.message;
+          problem.textContent = plain(err, 'The branch could not be kept. Try again.');
           problem.hidden = false;
           go.disabled = false;
         }

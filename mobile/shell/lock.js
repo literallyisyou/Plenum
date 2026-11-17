@@ -6,6 +6,9 @@
 //           records; v1 records from before are migrated at the next right PIN). Both are off by default on the PWA.
 // Re-lock after five minutes in the background, or on demand. A stolen unlocked phone has full power; the desktop's Remove is the
 // real revoke. That warning is a notice in the screens, not a restriction here.
+// Wave 4 (m3): on the Android app a biometric unlock is remembered in the app's memory (createUnlockMemory), so the next page of the same
+// app (the shell page and the UI page are separate documents) starts unlocked when it loads within the lock time. A lock by the person, Lock
+// now and a real background timeout forget it. The PIN mode does not use it: its keys need the PIN.
 //
 // The PIN check: a verifier (a known string under the PIN key, AES-GCM) decides the PIN; a wrong PIN counts up. From the fifth
 // wrong try the wait is 30 s and doubles on each further wrong try, up to 15 minutes (pinWaitSeconds). The count and the wait end
@@ -137,9 +140,49 @@ export function createBiometricGate({ plugin = null } = {}) {
   };
 }
 
+// Wave 4 (m3): how long launch waits for the app's answer on a recent unlock before it asks for the fingerprint as before.
+export const UNLOCK_FRESH_WAIT_MS = 1500;
+
+// Wave 4 (m3): the app's memory of a recent biometric unlock. On Android the shell page and the UI page are separate documents, and each
+// one starts locked; without this the fingerprint was asked again on every page switch. `plugin` is the PlenumPrivacy plugin of the app:
+// markUnlocked() keeps the time in the app's memory (a static field, never on disk), unlockFresh({ maxAgeMs }) -> { fresh } is true only when
+// that time is younger than maxAgeMs and the app was neither in the background longer than that nor had its screen turned off since, and
+// clearUnlocked() forgets it. An older app has none of the three (Capacitor's plugin object then rejects the call): every answer is then
+// "not fresh", so launch asks as before. Nothing here is written to localStorage, sessionStorage, the store or any other storage.
+export function createUnlockMemory({ plugin = null, waitMs = UNLOCK_FRESH_WAIT_MS, setTimer = globalThis.setTimeout, clearTimer = globalThis.clearTimeout } = {}) {
+  const call = (name, arg) => {
+    try {
+      const fn = plugin?.[name];
+      if (typeof fn !== 'function') return null;
+      return Promise.resolve(fn.call(plugin, arg)).catch(() => null);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    // true only on the app's own { fresh: true } within waitMs; anything else (no method, a refusal, no answer in time) is false.
+    async fresh(maxAgeMs) {
+      if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return false;
+      const asked = call('unlockFresh', { maxAgeMs: Math.round(maxAgeMs) });
+      if (!asked) return false;
+      let timer = null;
+      const gaveUp = new Promise(resolve => { timer = setTimer?.(() => resolve(null), waitMs); timer?.unref?.(); });
+      try {
+        const answer = await Promise.race([asked, gaveUp]);
+        return answer?.fresh === true;
+      } finally {
+        if (timer !== null) clearTimer?.(timer);
+      }
+    },
+    mark() { call('markUnlocked', {}); },
+    clear() { call('clearUnlocked', {}); },
+  };
+}
+
 // The lock. `store` is createStore(); `now` is wall time in ms (tests inject a clock). `subtle` is the WebCrypto SubtleCrypto (the device
 // key). `mono` is a monotonic clock in ms: a PIN wait also ends only on it, so moving the wall clock forward does not end the wait.
-export function createLock({ store, now = () => Date.now(), biometric = null, passkey = null, iterations = PIN_ITERATIONS, subtle = globalThis.crypto?.subtle ?? null, mono = () => globalThis.performance?.now?.() ?? Date.now() } = {}) {
+// `memory` (wave 4, m3) is createUnlockMemory(...) on the Android app, else null: only the biometric mode reads it (a PIN must unwrap the keys).
+export function createLock({ store, now = () => Date.now(), biometric = null, passkey = null, iterations = PIN_ITERATIONS, subtle = globalThis.crypto?.subtle ?? null, mono = () => globalThis.performance?.now?.() ?? Date.now(), memory = null } = {}) {
   if (!store) throw new TypeError('createLock needs the store');
   let backgroundAt = null;
   let locked = false;
@@ -191,10 +234,15 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
       };
     },
 
-    // Called once at launch: a lock that is on starts locked.
-    async lockOnLaunch() {
+    // Called once at launch: a lock that is on starts locked. Wave 4 (m3): in biometric mode, a page of the same app that was unlocked a
+    // moment ago (freshMs, the app answers through `memory`) starts unlocked, so a page switch does not ask for the fingerprint again.
+    async lockOnLaunch({ freshMs = 0 } = {}) {
       const s = await readSettings();
       locked = s.mode !== 'off';
+      if (locked && s.mode === 'biometric' && memory && freshMs > 0 && (await memory.fresh(freshMs))) {
+        locked = false;
+        memory.mark();
+      }
       return locked;
     },
 
@@ -202,6 +250,15 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
     lock() {
       locked = true;
       pinKeyHeld = null;
+      memory?.clear();
+      return true;
+    },
+
+    // Wave 4 (m3): the page is being left (a page switch) while unlocked in biometric mode: the app keeps the time, so the next page starts
+    // unlocked if it loads within the time.
+    keepUnlocked() {
+      if (locked || !memory || settings?.mode !== 'biometric') return false;
+      memory.mark();
       return true;
     },
 
@@ -214,6 +271,7 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
       if (s.mode !== 'off' && backgroundAt !== null && now() - backgroundAt >= BACKGROUND_LOCK_MS) {
         locked = true;
         pinKeyHeld = null;
+        memory?.clear();
       }
       backgroundAt = null;
       return locked;
@@ -265,6 +323,7 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
     if (!biometric || !(await biometric.available())) return { ok: false, reason: 'unavailable' };
     if (!(await biometric.verify('Turn on app lock for Plenum'))) return { ok: false, reason: 'cancelled' };
     await writeSettings({ mode: 'biometric', failures: 0, lockedUntil: 0 });
+    memory?.mark();
     return { ok: true };
   }
 
@@ -274,6 +333,7 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
     if (s.mode !== 'biometric') return { ok: false, reason: 'mode' };
     if (!(await biometric.verify())) return { ok: false, reason: 'cancelled' };
     locked = false;
+    memory?.mark();
     return { ok: true, keys: await plainKeys(null) };
   }
 
@@ -405,6 +465,7 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
     await writeSettings({ mode: 'off', failures: 0, lockedUntil: 0 });
     locked = false;
     pinKeyHeld = null;
+    memory?.clear();
     return { ok: true };
   }
 

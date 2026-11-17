@@ -111,12 +111,36 @@ export function pushPatch(key, value, approveStored) {
   return patch;
 }
 
-// The Android UnifiedPush line (6.17) is shown on Android only. It names the push app the phone has chosen (its Android package name),
-// and gives the install hint when none is chosen.
-export function unifiedPushLine(distributor) {
-  if (!distributor) return 'Install a UnifiedPush app such as ntfy to get notifications while Plenum is closed.';
-  if (distributor === 'io.heckel.ntfy') return 'Notifications from closed app: through ntfy (UnifiedPush).';
-  return 'Notifications from closed app: through your UnifiedPush app.';
+// The Android push app line (6.17) is shown on Android only. It names the push app the phone has chosen (its Android package name),
+// and gives the install hint when none is chosen. Wave 4: the owner never reads the word UnifiedPush; the app is ntfy (or "your push app").
+export const NTFY_PACKAGE = 'io.heckel.ntfy';
+// installed (wave 4, m2): a push app is on the phone though none is chosen yet; then one tap on On this phone turns them on.
+export function unifiedPushLine(distributor, { installed = false } = {}) {
+  if (!distributor && installed === true) return 'Notifications while Plenum is closed come through your push app once they are on. Tap On this phone.';
+  if (!distributor) return 'Notifications while Plenum is closed need the free ntfy app. Install it, then tap On this phone.';
+  if (distributor === NTFY_PACKAGE) return 'Notifications while Plenum is closed come through ntfy.';
+  return 'Notifications while Plenum is closed come through your push app.';
+}
+
+// The Android status row (wave 4, m2), from what the phone knows itself (push.js status(): the push app, whether the computer holds the
+// endpoint, Android's own permission) instead of the web Notification API, which the Android WebView does not have.
+export const ANDROID_NOTIFY_LABEL = Object.freeze({
+  on: 'On, through ntfy',
+  onOther: 'On, through your push app',
+  needsApp: 'Needs the ntfy app',
+  blocked: 'Blocked in Android settings',
+  off: 'Off',
+});
+
+// up: { distributor, registered, permission: true | false | null, lastReason, installed }. distributor is the push app chosen; installed
+// says a push app is on the phone at all (push.js status()): with one there and none chosen yet, one tap turns them on, so the row says Off.
+export function androidNotifyLabel(up) {
+  if (!up || up.supported === false) return ANDROID_NOTIFY_LABEL.off;
+  const on = up.registered === true;
+  if (up.permission === false && (on || up.lastReason === 'denied')) return ANDROID_NOTIFY_LABEL.blocked;
+  if (!up.distributor) return up.installed === true ? ANDROID_NOTIFY_LABEL.off : ANDROID_NOTIFY_LABEL.needsApp;
+  if (on) return up.distributor === NTFY_PACKAGE ? ANDROID_NOTIFY_LABEL.on : ANDROID_NOTIFY_LABEL.onOther;
+  return ANDROID_NOTIFY_LABEL.off;
 }
 
 // The stored preferences the phone keeps itself (store meta "prefs"), with safe defaults for a missing or damaged record.

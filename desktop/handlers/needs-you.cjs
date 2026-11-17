@@ -2,8 +2,9 @@
 // "<Business>: 2 things need you" (14 Nov 2026). The server's state carries the last notice that a business left new items on the
 // owner's list (needsYou: { seq, business, name, count, at } or null; lib/needs-you.mjs, set by lib/setup.mjs after a setup step). A new
 // one becomes a desktop notification when the window is not focused. The notification names the business and a count only: never a
-// title, a prompt, a reply or a path. A click shows the window. It follows the setting of the approval alerts (the same kind of alert:
-// something waits for the person), and the first state after a start only sets what "new" means.
+// title, a prompt, a reply or a path. A click shows the window at Today, with that business when the notice names it. It follows the
+// setting of the approval alerts (the same kind of alert: something waits for the person), and the first state after a start only sets
+// what "new" means.
 let lastSeq = null;
 // Kept in a variable so the notification is not collected before a click on it can be handled.
 let note = null;
@@ -35,7 +36,8 @@ function onState(shell, st) {
   if (approvalAlerts === false || (win && win.isFocused())) return;
   if (!shell.Notification.isSupported()) return;
   note = new shell.Notification({ title: 'Plenum', body });
-  note.on('click', () => shell.showWindow());
+  const business = typeof n.business === 'string' && n.business ? n.business : '';
+  note.on('click', () => shell.showWindow(business ? { kind: 'today', id: business } : { kind: 'today' }));
   note.show();
 }
 

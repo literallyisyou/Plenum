@@ -16,6 +16,7 @@
 //                            (the active thread). Ctrl-click a tab, Open beside, or Ctrl+Shift+\ opens it. Built on the first opening only.
 // Every piece of text from the server or the user is set with textContent. Nothing here sets an inline style attribute in markup.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MU = window.MuseUI;
   // app.js defines MuseUI (and MuseUI.threads) before the extra panels load. Without it there is nothing to attach to.
   if (!MU || !MU.threads) return;
@@ -750,7 +751,7 @@
         try {
           Object.assign(request, extra.fields() ?? {});
         } catch (err) {
-          problem.textContent = err.message;
+          problem.textContent = plain(err, 'The thread could not be created. Check the settings and try again.');
           problem.hidden = false;
           create.disabled = false;
           return;
@@ -764,7 +765,7 @@
         MU.toast(`Created ${made?.name ?? 'the thread'}.`);
         MU.el.input.focus({ preventScroll: true });
       } catch (err) {
-        problem.textContent = err.message;
+        problem.textContent = plain(err, 'The thread could not be created. Try again.');
         problem.hidden = false;
         create.disabled = false;
       }
@@ -837,7 +838,7 @@
         status.hidden = false;
       } catch (err) {
         input.checked = !input.checked;
-        status.textContent = err.message;
+        status.textContent = plain(err, 'That setting was not saved. Try again.');
         status.classList.add('bad');
         status.hidden = false;
       }
@@ -971,7 +972,7 @@
         try {
           data = JSON.parse(await chosen.text());
         } catch {
-          throw new Error('That file is not valid JSON.');
+          throw new Error('That file is not one Plenum exported. Choose a file saved from Export.');
         }
         const answer = await MU.api('/api/project/import', { project: p.id, data });
         T.adopt(answer);

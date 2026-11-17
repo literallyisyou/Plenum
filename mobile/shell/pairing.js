@@ -74,6 +74,9 @@ export function validatePayload(p) {
     ttl,
     carriers,
     sas: '6',
+    // Wave 5 (brb): what the computer offered this for: 'browser' (Add a browser, the code page at /pair/) or 'phone' (Add phone, and every
+    // older link). It names the review screen's name field only; it is not part of the handshake (the prologue does not take it).
+    form: p.form === 'browser' ? 'browser' : 'phone',
   };
 }
 

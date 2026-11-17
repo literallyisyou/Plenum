@@ -5,6 +5,7 @@
 // internet, a limit, a busy provider), the server does not save the key and says so; the key stays in the box and Save anyway sends it
 // again with force, which saves it as "not checked yet" until a Test passes.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
@@ -29,6 +30,12 @@
   function scrub(text, key) {
     const msg = String(text ?? '');
     return key ? msg.split(key).join('') : msg;
+  }
+
+  function make2(tag, cls) {
+    const node = document.createElement(tag);
+    node.className = cls;
+    return node;
   }
 
   function statusLine(text) {
@@ -58,6 +65,7 @@
     MuseUI.notice?.('api-keys-spend', { before: list });
     const panel = { list, routes, cards: new Map(), ui: null, routeSeq: 0 };
     list.append(statusLine(LOADING));
+    livePanels.add(panel);
     loadKeys(panel);
     return section;
   }
@@ -67,7 +75,7 @@
     try {
       data = await MuseUI.api('/api/keys');
     } catch (err) {
-      return showError(panel, err.message);
+      return showError(panel, plain(err, 'The provider keys could not be read. Try again.'));
     }
     if (!Array.isArray(data?.providers)) return showError(panel, 'The provider list did not come back. Try again.');
     if (data.routes) paintRoutes(panel, data.routes);
@@ -102,10 +110,57 @@
       const data = await MuseUI.api('/api/keys');
       for (const p of data?.providers ?? []) panel.cards.get(p.id)?.apply(p);
       if (data?.routes) paintRoutes(panel, data.routes);
+      panel.misses = 0;
+      if (panel.retry && typeof clearTimeout === 'function') clearTimeout(panel.retry);
     } catch {
-      // The cards keep their last status. Opening Settings again reads the saved state.
+      // The cards keep their last status, which says how old it is. While the panel is open and the page is seen, Plenum asks again by itself,
+      // a little later each time.
+      retryLater(panel);
     }
   }
+
+  // After a read that failed: again in 5 s, 15 s, 45 s, then every 2 minutes. Only while this panel is on the page and the page is visible;
+  // coming back to the page reads at once (see below).
+  const RETRY_MS = [5000, 15000, 45000, 120000];
+  function retryLater(panel) {
+    if (typeof setTimeout !== 'function') return;
+    clearTimeout(panel.retry);
+    panel.misses = (panel.misses ?? 0) + 1;
+    const wait = RETRY_MS[Math.min(panel.misses, RETRY_MS.length) - 1];
+    panel.retry = setTimeout(() => {
+      if (!panel.list.isConnected) return;
+      if (document.visibilityState === 'hidden') return;
+      refreshStatus(panel);
+    }, wait);
+  }
+
+  // 'Checked 12 min ago': shown only when a card's reading is older than 5 minutes.
+  const STALE_MS = 5 * 60 * 1000;
+  function ageText(at, now) {
+    const gone = now - at;
+    if (gone < STALE_MS) return '';
+    const min = Math.round(gone / 60000);
+    return min < 60 ? `Checked ${min} min ago` : `Checked ${Math.floor(min / 60)} h ago`;
+  }
+  const livePanels = new Set();
+  function tickAges() {
+    for (const panel of [...livePanels]) {
+      if (!panel.list.isConnected) {
+        livePanels.delete(panel);
+        continue;
+      }
+      for (const card of panel.cards.values()) card.age?.();
+    }
+  }
+  if (typeof setInterval === 'function') setInterval(tickAges, 30000);
+  document.addEventListener?.('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    for (const panel of [...livePanels]) {
+      if (!panel.list.isConnected) continue;
+      const old = [...panel.cards.values()].some(c => c.checkedAt && Date.now() - c.checkedAt() >= STALE_MS);
+      if (old || panel.misses) refreshStatus(panel);
+    }
+  });
 
   // A plain link to the provider's key page. It has target _blank because desktop/main.cjs cancels any
   // navigation away from the app, so a link without it would do nothing in the desktop window. The
@@ -376,7 +431,17 @@
       test.disabled = busy || !configured;
       remove.disabled = busy || !configured;
     };
+    // When the server last told this card its state. The line shows only when that is more than 5 minutes ago.
+    let checkedAt = Date.now();
+    const age = make2('p', 'ext-apikeys-age');
+    age.hidden = true;
+    const paintAge = () => {
+      age.textContent = ageText(checkedAt, Date.now());
+      age.hidden = !age.textContent;
+    };
     const apply = status => {
+      checkedAt = Date.now();
+      paintAge();
       configured = Boolean(status.configured);
       // A key kept without the provider's check says so until a Test passes (the server sends checked: false for it).
       notChecked = configured && status.checked === false;
@@ -478,10 +543,10 @@
     actions.append(save, anyway, test, remove);
     const link = keyPageLink(p);
     if (link) actions.append(link);
-    card.append(input, actions, result);
+    card.append(input, actions, result, age);
 
     apply(p);
-    return { root: card, apply };
+    return { root: card, apply, age: paintAge, checkedAt: () => checkedAt };
   }
 
   // Attach. Settings draws every section each time the page opens, so this one is drawn fresh from the server's saved state and

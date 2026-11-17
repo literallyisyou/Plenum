@@ -6,6 +6,7 @@
 // Using a model goes through the existing model setting (MuseUI.update). The panel never handles a key, and every piece of
 // text is set with textContent.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
@@ -38,7 +39,7 @@
   async function call(path, body) {
     const res = await MuseUI.request(path, body === undefined ? {} : { method: 'POST', body });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(plain({ message: data.error }, 'OpenRouter did not answer. Try again.'));
     return data;
   }
 

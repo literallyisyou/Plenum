@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Plenum mark (mobile/shell/icons/app.svg, without its tile) as the adaptive icon's foreground: three voices converging into
+     one verdict. The mark is drawn in the SVG's 64-unit space; the group scales it by 1.2 and centres it on the 108dp canvas
+     (32 * 1.2 + 15.6 = 54), so its outer edge, stroke included, stays 28.8dp from the centre: inside the 33dp safe circle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="1.2"
+        android:scaleY="1.2"
+        android:translateX="15.6"
+        android:translateY="15.6">
+        <path
+            android:pathData="M50.19,42.5 C49.62,42.79 47.95,43.71 46.79,44.23 C45.64,44.74 44.45,45.2 43.24,45.59 C42.03,45.98 40.8,46.31 39.56,46.58 C38.32,46.84 37.06,47.04 35.8,47.17 C34.54,47.31 33.27,47.37 32,47.37 C30.73,47.37 29.46,47.31 28.2,47.17 C26.94,47.04 25.68,46.84 24.44,46.58 C23.2,46.31 21.97,45.98 20.76,45.59 C19.55,45.2 18.36,44.74 17.21,44.23 C16.05,43.71 14.38,42.79 13.81,42.5"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="50.19"
+                    android:startY="42.5"
+                    android:endX="13.81"
+                    android:endY="42.5">
+                    <item android:offset="0" android:color="#FFE8915F" />
+                    <item android:offset="0.5" android:color="#FFE8915F" />
+                    <item android:offset="1" android:color="#FFF1ECFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path
+            android:pathData="M13.81,42.5 C13.85,41.87 13.88,39.96 14.01,38.7 C14.15,37.44 14.34,36.18 14.61,34.94 C14.87,33.7 15.2,32.47 15.59,31.26 C15.99,30.05 16.44,28.86 16.96,27.71 C17.47,26.55 18.05,25.41 18.69,24.31 C19.32,23.22 20.02,22.15 20.76,21.12 C21.51,20.1 22.31,19.1 23.16,18.16 C24,17.22 24.91,16.32 25.85,15.47 C26.79,14.62 27.78,13.82 28.81,13.07 C29.83,12.33 31.47,11.35 32,11"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="13.81"
+                    android:startY="42.5"
+                    android:endX="32"
+                    android:endY="11">
+                    <item android:offset="0" android:color="#FF8AB4FF" />
+                    <item android:offset="0.5" android:color="#FF8AB4FF" />
+                    <item android:offset="1" android:color="#FFF1ECFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path
+            android:pathData="M32,11 C32.53,11.35 34.17,12.33 35.19,13.07 C36.22,13.82 37.21,14.62 38.15,15.47 C39.09,16.32 40,17.22 40.84,18.16 C41.69,19.1 42.49,20.1 43.24,21.12 C43.98,22.15 44.68,23.22 45.31,24.31 C45.95,25.41 46.53,26.55 47.04,27.71 C47.56,28.86 48.01,30.05 48.41,31.26 C48.8,32.47 49.13,33.7 49.39,34.94 C49.66,36.18 49.85,37.44 49.99,38.7 C50.12,39.96 50.15,41.87 50.19,42.5"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="32"
+                    android:startY="11"
+                    android:endX="50.19"
+                    android:endY="42.5">
+                    <item android:offset="0" android:color="#FF7FD39A" />
+                    <item android:offset="0.5" android:color="#FF7FD39A" />
+                    <item android:offset="1" android:color="#FFF1ECFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path
+            android:fillColor="#FFB9A9FF"
+            android:fillAlpha="0.27"
+            android:pathData="M22,32 A10,10 0 1,0 42,32 A10,10 0 1,0 22,32 Z" />
+        <path android:pathData="M26,32 A6,6 0 1,0 38,32 A6,6 0 1,0 26,32 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="radial"
+                    android:centerX="32"
+                    android:centerY="32"
+                    android:gradientRadius="6">
+                    <item android:offset="0" android:color="#FFFFFFFF" />
+                    <item android:offset="1" android:color="#FFD9CFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

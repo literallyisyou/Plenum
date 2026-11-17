@@ -289,5 +289,10 @@
   decorateAll();
   paint();
   load();
-  setInterval(load, EVERY_MS);
+  setInterval(() => {
+    if (document.visibilityState !== 'hidden') load();
+  }, EVERY_MS);
+  document.addEventListener?.('visibilitychange', () => {
+    if (document.visibilityState === 'visible') load();
+  });
 })();

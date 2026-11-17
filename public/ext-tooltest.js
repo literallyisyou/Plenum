@@ -6,6 +6,7 @@
 // own that is On because its provider's tool-call check passed says so instead of a test status, with no notice. Every piece of text is set
 // with textContent, and no style attribute or inline style is used. No key is handled here: the server reads the saved one.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without the settings registry there is nothing to attach to.
   if (!MuseUI || !MuseUI.settings || typeof MuseUI.settings.register !== 'function') return;
@@ -73,7 +74,7 @@
     if (body !== undefined) return MuseUI.api(path, body);
     const res = await MuseUI.request(path, signal ? { signal } : {});
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(data.error || 'The tool test could not be read. Try again.');
     return data;
   }
 
@@ -180,7 +181,7 @@
         input.value = '';
         state.addStatus.textContent = '';
       } catch (err) {
-        state.addStatus.textContent = err.message;
+        state.addStatus.textContent = plain(err, 'That tool could not be added. Try again.');
         state.addStatus.className = 'tt-status bad';
       } finally {
         add.disabled = false;
@@ -321,7 +322,7 @@
       const res = await MuseUI.request('/api/tool-test', { method: 'POST', body: { ref: row.ref }, signal: row.ctrl.signal });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Request failed (${res.status})`);
+        throw new Error(data.error || 'The test could not start. Try again.');
       }
       await readEvents(res.body, ev => {
         if (ev.type === 'call') {
@@ -351,7 +352,7 @@
         row.result.textContent = 'Stopped. Nothing was saved.';
         row.result.className = 'tt-status tt-result';
       } else {
-        row.result.textContent = err.message;
+        row.result.textContent = plain(err, 'The test did not finish. Try again.');
         row.result.className = 'tt-status tt-result bad';
       }
     } finally {
@@ -380,7 +381,7 @@
       row.data.grantFrom = data.grantFrom ?? null;
     } catch (err) {
       row.data.allowed = !on;
-      row.result.textContent = err.message;
+      row.result.textContent = plain(err, 'That change was not saved. Try again.');
       row.result.className = 'tt-status tt-result bad';
     } finally {
       for (const r of row.state.rows.values()) paint(r);

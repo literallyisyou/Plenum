@@ -108,6 +108,19 @@ A CLI you install while Plenum is open is found when you press **Refresh**; you 
 
 Plenum asks each CLI whether it is signed in when you open Accounts or the setup guide, and waits about 3 seconds for the answer. A CLI that is slower keeps the answer Plenum last had, and the new one shows on the next Refresh. If Claude Code or Codex does not answer at all, its card says **Sign-in unknown** and that Plenum could not check it just now, and it is not shown as signed out. Press **Refresh** to check again. Accounts draws the cards of Claude Code, Codex, Gemini CLI and Muse Code when the first answer arrives; the Cursor, Grok Build and Antigravity cards say Checking… until theirs does, so a slow CLI holds up only its own cards.
 
+### Sign-ins repair themselves
+
+Plenum no longer waits for you to press Retry after most sign-in trouble.
+
+- **Before a turn.** A chat turn, like a council, first asks the program whether it is signed in. If the program itself says nobody is signed in, Plenum opens that program's sign-in window for you and waits (up to five minutes), then sends the turn. If the program gives no answer, the turn runs anyway: no answer is never taken for "signed out". The check can add up to 5 seconds when the last answer is old.
+- **After a failure that passes.** A turn that failed before it wrote anything, because the connection dropped, the service was busy, the program stopped, or another Claude Code process was renewing the sign-in at that moment, is sent again by itself after a short wait (2, 5, 10 or 20 seconds by cause, and once more after 60 seconds for a renewal collision), up to five tries in all. The chat says so while it waits. This covers chat turns, council seats, team tasks, Quick compare columns, pipeline steps and relay hops. Never sent again this way: a usage limit, a model that is not offered, a refused option, an unknown error, a turn that wrote text or started a tool, an agent or a file change, a turn you stopped, and a model on an API key (its own request code already tries again).
+- **One start at a time per program.** Two processes of the same signed-in program start at least 2 seconds apart wherever they come from (a council, a routine, a chat, a team task). Runs one after another are not slowed.
+- **Signed in again.** When a program is seen signed in again, a "still signed out" notice is taken down and routines that were waiting for it run. Muse Code, Gemini CLI and Grok Build have no sign-in check of their own; for them a turn that answered, or sign-in files that appear, is the sign.
+- **Routines.** A routine that could not run because of a sign-in waits and runs when you sign in, or looks again every 2 minutes, for its catch-up window (Settings on the routine: "Run late up to N hours", default 6; "Try again after N minutes", default 30). A failure that passes does not count toward the day's runs or the three-failures rule.
+- **You are told once.** "<Program> needs you to sign in" when a window is opened (at most once per program in 6 hours), "signed in again" when it is done, and "still signed out" when a wait ended without one. Notices follow Settings > General > Notifications (see Notifications below).
+
+What Plenum never does: sign in for you, change a model, or send a turn again after it has written something.
+
 Keys are never written to the state file. Where they are kept is described in [Where keys are kept](#where-keys-are-kept).
 
 ## Where keys are kept
@@ -600,7 +613,8 @@ A phone can show the same Plenum as this window: chat, models, approvals, agents
 - **What a phone can do.** At the **Full** tier a phone can do what this window can. Actions a phone starts, approves or stops are your actions, as the License Agreement says. **Approve and watch** lets a phone watch, approve and stop, and **Read only** lets it watch and stop. Tiers are set here, at the computer. The **Businesses** pane and the Programs section can be opened on a phone: below Full they can be read and only stopping routines works, and the pane says that answering needs Full access; at Full a phone can answer what waits, as this window can.
 - **Indicator.** While a phone is connected, the title bar shows **Phone connected** and the tray shows how many. No setting hides it. Every action a phone takes is labelled with that phone's name in the activity list, the approvals and the history.
 - **Stop.** Stop works from a phone in every tier, and from a notification. It ends every run on this computer.
-- **Notifications.** Off until you turn them on, and each kind has its own switch. They show the project name and a short status. **Include the first line** adds the first line of a card, which can name files and commands. A phone browser gets them from its own push service (Google, Apple or Mozilla); an Android phone can use UnifiedPush through the app you choose, such as ntfy. An alert of the plan watch comes under the **limits** switch, with the computer's own sentence, and a tap opens Plan use (see [Plan use and the plan watch](#plan-use-and-the-plan-watch)).
+- **Notifications.** Off until you turn them on, and each kind has its own switch: **Needs you** (approvals, hand-overs, and problems Plenum could not fix), **Finished runs**, **Limits**. They show the business or project name and a short status; a finished council says "Council is done: <project>", and a failed run says why in a fixed sentence ("<Program> is signed out", "The plan is used up", "No internet"). **Include the first line** adds the first line of a card, which can name files and commands. A phone browser gets them from its own push service (Google, Apple or Mozilla); an Android phone gets them through the push app you choose, such as ntfy. A push that fails is tried again after 5 and then 30 seconds. An approval is held for 20 seconds and sent only if you have been away from the computer (idle for 2 minutes or more). A notification is taken down when you answer its card on any device, and after Approve, Deny or Stop on the phone. While the Plenum app is open on the phone, finished, failed and limit alerts show as a toast in the app, not as a system notification. Quiet hours apply (see Notifications). An alert of the plan watch comes under the **limits** switch, with the computer's own sentence, and a tap opens Plan use (see [Plan use and the plan watch](#plan-use-and-the-plan-watch)).
+- **Notifications that repair themselves.** If turning them on fails, Settings says why and offers the fix: **Get ntfy** when no push app is installed, **Open notification settings** when Android blocks them, **Open ntfy once** when ntfy does not answer. The phone looks again when you come back to the app, and sends a test notification when turning on worked. At every start the phone registers again with each computer, and when a computer no longer holds its address it sends it again quietly; Settings then says once, "Notifications had stopped reaching this phone. Plenum turned them back on." The phone keeps only a short hash of each address it gave out, never a key.
 - **Keys and removal.** The phone link's keys are in `phones.json` in the desktop app's user-data folder, encrypted by the operating system. Under plain `node` they are plain files in the state folder, and Settings › Phones says so. Remove a phone under Settings › Phones: its connection closes at once and its key is deleted here. Keep phones locked, and remove a lost one.
 - **Stop from a locked phone.** The lock screen's Stop everything and a notification's Stop all reach the computer without unlocking the phone. They use a Stop key that can only stop runs on that computer, and Remove revokes it with the phone.
 - **When the phones file cannot be saved or read.** Stop from a phone and connecting do not wait for the file: they work while a save fails, and Plenum saves again by itself. Settings › Phones shows a red line while the last save failed, and the line goes when the save has worked. If the file cannot be read when Plenum starts, phones come back by themselves when it can, if it is only locked or not ready (Plenum reads again after 2, 5, 15, then every 60 seconds), and turning "Let phones connect" on reads it at once. A phones file that Plenum cannot read at all (it cannot be decrypted, or is not a phones file) is never replaced by itself: Settings › Phones says so and offers **Start fresh**, which asks first, keeps the old file beside the new one as `phones.json.damaged` and starts again, so every phone must pair again.
@@ -608,8 +622,42 @@ A phone can show the same Plenum as this window: chat, models, approvals, agents
 - **Reconnecting.** The phone dials all its ways together, a quarter of a second apart, and uses the first one that opens, starting with the address that worked last time. Away from the home Wi-Fi, reconnecting and Stop take a second or two.
 - **Changing how phones connect.** Only the computer can turn phones on or off, change the ways phones reach it or use Remove all. A phone with Full control can still remove a single phone.
 - **Relay room.** If your relay turns this computer away, Settings › Phones offers New room. Phones paired before then use the relay again after you pair them again.
-- **Phone apps.** The phone code is in `mobile/`. The phone web app loads from this computer, or from your relay. The iPhone and Android apps update through their stores or the release page, not through this computer.
+- **Phone apps.** The phone code is in `mobile/`. The phone web app loads from this computer, or from your relay. The iPhone and Android apps update through their stores or the release page, not through this computer. A reinstalled Android app always shows its new screens. With the phone's app lock (fingerprint) on, the app asks once when you open it, not at every switch between its pages; Lock now, a longer time in the background or turning the lock off asks again. The phone's first screen is **Today**: what waits for you, what runs now (with Stop), what did not run today and why, one Plan use line, and each business's next routine with **Run now** and **Pause**. Below Full control those buttons are disabled and say why. When the network changes or you come back to the app, the phone reconnects at once; away from the network it tries every 10 seconds, then every 30, then every 60.
 - **Steering this computer from a phone.** A phone at **Full** control can tap, drag and type on the Browser pane's picture, and on a computer run's live picture after **Take over from phone**. The input is yours, not the model's: it goes straight to the browser or the screen, and no model run sees it or what you typed. Take over from phone pauses the model, waits for any step already on its way, and **Resume** hands the run back. Stop works throughout. Pictures are sent only while a phone is looking, at most five a second. A notice explains this the first time the controls appear. The iPhone app can steer only over the same network.
+
+### Building the Android app
+
+The Android app is built on this PC, not on a server:
+
+```bash
+npm ci --prefix mobile
+node scripts/build-android.mjs          # builds the debug APK
+node scripts/build-android.mjs --check  # only reports what it would use
+```
+
+The script needs JDK 21 and the Android SDK (API 36) already installed on D:. A Java runtime (JRE) or Java 25 is refused. It never downloads a JDK or SDK and never starts adb or an emulator. It keeps Gradle's cache in `D:\Gradle` and the debug signing key in `D:\Android\user`, so nothing large lands on C:. It builds the phone bundle, runs `cap sync` and Gradle, and copies the APK to `dist-android/` (on D:, not in git) with its path, size and sha256. The newest three `plenum-debug-*.apk` are kept; older ones are removed. Each build has a higher version than the last (the versionCode is the number of minutes since a fixed date, and the versionName ends in `-dev.<date>.<time>`), so installing it over the old one always loads the new screens.
+
+To install, copy the APK to the phone and open it (sideload): Android asks once to allow installs from that app, and the install replaces the earlier build with its data kept. This is a debug-signed APK for your own phone, not a store build. The app has the Plenum icon, a splash in the page's colours, and launcher shortcuts for **Today**, **Waiting for you** and **Stop** (the Stop shortcut stops the computer the phone has open). Its notifications use their own channels, set up at install, including a separate Problems channel, group by business, and take themselves down when the card is answered. Only **Approve** asks for the phone's unlock; **Stop all** and **Deny** do not ask for it themselves, but Android may still ask for the unlock before it opens Plenum from the lock screen. That has not been tried on a phone.
+
+### Using Plenum from a browser
+
+A browser on another computer can show the same Plenum as a phone. It needs no app and no camera.
+
+1. At this computer, open **Settings › Phones**, turn the phone link on, and press **Add a browser** (beside Add phone). The window shows a short address and a 12-character code. The code is drawn as a picture so that screen capture does not show it, and lives for 5 minutes.
+2. On the other computer, open the address in a browser. Prefer the first one, the `https://<your-computer>.ts.net/pair/` address, which needs Tailscale on both computers (see Ways to reach this computer). Type the code.
+3. The browser shows its pairing review. Check the six digits against the window on this computer, give the browser a name (it suggests "<Browser> on <System>"), and press **Allow** at this computer. Only a person at this computer can press Allow; no model or tool can.
+
+**Why the Tailscale https address is best.** The Tailscale address is encrypted from the browser to your computer and carries a certificate, so the page itself cannot be changed on the way and the browser can keep its sign-in (it asks the browser to keep its storage). The Same network addresses are plain http: the connection is still encrypted end to end once paired, but an active attacker on that network could alter the page before it loads, and some browsers refuse to keep data on a plain page. Use them only at home or on a network you trust. The code carries no key: it only lets the browser fetch the pairing link while the offer is live. After 5 wrong codes the offer ends, and you press **New code**.
+
+What a browser gets:
+
+- **The computer layout.** A browser window at least 1000 px wide with a mouse or trackpad shows the desktop's own layout (sidebar beside the chat). Narrower windows and touch-only devices show the phone layout. **Settings › Appearance › Layout on this device** is Automatic, Phone or Computer; resizing across the line offers a **Switch** strip and never switches by itself.
+- **Stop** is at the top right of the title bar with the word Stop, above everything else on the page. It works from every tier. If two tabs of the same browser are open, the second shows "Plenum is open in another tab of this browser." with **Use it here**; Stop from the tab that let go takes the computer back and stops.
+- **Notifications** come through the browser's own push service. A hidden tab that keeps polling still gets them; a visible one does not get a duplicate. Browsers keep some keys for themselves (Ctrl+Shift+P, C and A), so the keyboard list notes that.
+- **Names.** The browser is named as a browser in the title-bar chip ("Browser", "2 browsers", "N devices"), the tray, the "Browser connected: <name>" notification and Settings › Phones, with its own **This browser** row for notifications and lock. Remove it there like a phone.
+- **The Browser pane** on a browser shows a picture of the browser on your computer, every 2.5 seconds; click and type in it there.
+
+Not seen yet: any real browser other than Chromium inside Electron, real Tailscale between two computers, and a real second computer.
 
 ## Side panes
 
@@ -695,7 +743,32 @@ Before the panel overwrites a project file it keeps a checkpoint, so **Checkpoin
 
 ## Finished alerts and keep-awake
 
-In the desktop app, Plenum shows a "Plenum finished" notification when a run in the active project ends while the window is not focused. Clicking it brings the window back. While a run is in progress, Plenum keeps the PC from suspending. When an approval card is waiting and the window is not focused, Plenum shows "Plenum needs your approval" with the project's name; clicking it brings the window back. The tray icon's tooltip and menu show how many approvals are waiting. The four switches are under **Settings** in the sidebar, in the **Desktop** section: **Finished alerts**, **Approval alerts**, **Keep awake** and **Keep in tray on close**. They are also kept in the state file as `finishedAlerts`, `approvalAlerts`, `keepAwake` and `trayOnClose`, and a change made in the window applies at once, with no restart. Finished alerts, approval alerts and keep awake are on by default. Keep in tray on close is off by default. None of them runs under `npm start`.
+In the desktop app, Plenum shows a notification when a run in any project ends while the window is not the one in front. It says "Done: <project>", "Council is done: <project>" with "The verdict is ready.", or "Stopped: <project>" with a plain reason (signed out, plan used up, no internet), never the model's own words. Runs under 20 seconds, stopped runs, housekeeping runs and runs of a routine are not told here. When an approval card is waiting and the window is not in front, Plenum shows "<project> needs a yes", or "N approvals are waiting", as one notification that the newer one replaces and that is closed when the last card is answered. Clicking a notification brings the window back and opens the place: the chat, the waiting card, Today, Plan use, Accounts or Background services. While any project has a run in progress, Plenum keeps the PC from suspending. The tray icon's tooltip and menu show how many approvals are waiting. The four switches are under **Settings** in the sidebar, in the **Desktop** section: **Finished alerts**, **Approval alerts**, **Keep awake** and **Keep in tray on close**. They are also kept in the state file as `finishedAlerts`, `approvalAlerts`, `keepAwake` and `trayOnClose`, and a change made in the window applies at once, with no restart. Finished alerts, approval alerts and keep awake are on by default. Keep in tray on close is off by default. None of them runs under `npm start`. During quiet hours (see Notifications) finished alerts are not shown and approval alerts come without sound.
+
+## Notifications
+
+Everything Plenum tells you outside a chat goes through one place, so the desktop, the page and your phone follow the same rules. A notice has a level:
+
+- **Needs you** (an approval, a routine that is switched off, a sign-in you must do, Plenum Hub that could not be started). It rings, stays on the bell until done, and goes to a phone with sound.
+- **Problem** (something went wrong that Plenum could not fix). It is shown, stays on the bell, and goes to a phone.
+- **News** ("Codex is signed in again", "Plenum Hub had stopped. Plenum started it again."). It is shown quietly and never goes to a phone.
+
+Where you see them:
+
+- **The bell** in the title bar counts what is open and opens **Notifications**: **Needs you**, with one button to the place, and **Recent** (the last 20). The bell keeps its place when nothing is open.
+- **A toast** in the page for a live notice. The same notice twice within a minute is shown once. At most 3 toasts show at a time.
+- **Windows notifications** in the desktop app, only while the Plenum window is not in front. When it is in front, the toast and the bell are the only places.
+- **Your phone**, when push is on for it (see Phones).
+- **"While you were away"**, one strip above the chat when you open the page or come back after more than 30 minutes, with what happened since you last looked.
+
+Settings > General > Notifications has:
+
+- **Quiet hours**, on by default, 23:00 to 07:00 local time. In quiet hours approvals and hand-overs reach your phone without sound, and finished and failed runs and limits are held back; they are not lost. They are written to Recent and to the morning summary, and are not shown on the bell.
+- **Morning summary**, on by default at 08:00 (or when quiet hours end, if that time falls inside them): one "While you were away" notice made from counts, never from a model's words.
+- **Mute a business** for an hour or to the end of the day. A muted business sends nothing until then; what needs you still shows on the bell.
+- **Send a test notification.** On the desktop it shows as a toast in the page while the window is in front.
+
+Notices are kept in `notify.json` in Plenum's state folder (the last 50, and the open ones). If that file cannot be read, Plenum does not write over it, runs from memory and says so.
 
 ## Project settings and tools
 
@@ -827,6 +900,9 @@ If two projects share a folder name, `/project` and `/remove` refuse that name a
 - Plenum writes a list of the programs it starts (`children.json` in its data folder; no prompt, key or environment is in it) and takes each line out when the program ends. Stop waits, for 2.5 seconds at most, until the program's whole process tree has ended. The clean-up at the next start, which would end programs that a crashed Plenum left running and clear their temp folders, is built and switched off: it runs only with the environment variable `PLENUM_SWEEP=1`, because ending a process by a recorded process id can hit another program when Windows reuses the id. So after a crash, or after Plenum is ended in Task Manager, a CLI that Plenum had started can keep running until you end it yourself.
 - A failed relay hop cannot be retried alone; a failed council seat, a failed Quick compare column and a failed pipeline step can.
 - Unsent text is kept in the browser's own storage on this computer; the queued follow-ups and the split view's own message box are not kept.
+- Notifications, the Today card, Add a browser, the Android build and the sign-in repairs were tried with stand-ins and hidden windows only. Nothing was run on a real phone, a second computer or a real expired sign-in.
+- Stop from a notification on a locked phone still waits for the phone's own unlock.
+- Five wrong codes at the browser page end an Add a browser offer, including one a browser is already using. Press **New code**.
 
 ## Tests
 

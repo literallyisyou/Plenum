@@ -98,6 +98,7 @@ const COOKIE = new Uint8Array(16).fill(0x5c);
 export function createFakeDesktop({
   net, url = 'ws://fake-pc.local/b/key', carrier = 'lan', name = 'Test PC', tier = 'full', protocolMajor = 1, clock = systemClock(), ignoreStops = false,
   cookieReply = false, vapidPublicKey = null, carriers = null, approveStatus = 200, uiManifestHash = '', refuseStopOnly = false, silentStopOnly = false, stopCounts = null,
+  pushAnswer = null, testPushStatus = 0, pendingApprovals = null,
 } = {}) {
   if (!net) throw new TypeError('createFakeDesktop needs the fake net');
   const keys = generateKeyPair();
@@ -127,7 +128,7 @@ export function createFakeDesktop({
     ...(carriers ? { carriers } : {}),
     caps: ['events', 'chat', 'approvals', 'stop-all', 'ui-manifest'],
     minShell: '1.0.0',
-    pending: { approvals: approvalStreams.size, running: running.size },
+    pending: { approvals: pendingApprovals ?? approvalStreams.size, running: running.size },
   });
 
   function sessionFrames(s, phoneId, cs) {
@@ -288,8 +289,21 @@ export function createFakeDesktop({
       try { parsed = JSON.parse(body); } catch { parsed = {}; }
       stats.pushes.push(parsed);
       frames.respond(stream, { status: 200, headers: { 'content-type': 'application/json' } });
-      frames.data(stream, utf8.encode(JSON.stringify({ ok: true, push: { approvals: true, finished: true, limits: true, onlyWhenAway: true, firstLine: false } })), { fin: true });
+      // w4-m2: pushAnswer (settable) adds fields to the answer, such as { subscribed, endpoint }; a function gets the phone's body.
+      const extra = typeof pushAnswer === 'function' ? pushAnswer(parsed) : pushAnswer;
+      frames.data(stream, utf8.encode(JSON.stringify({ ok: true, push: { approvals: true, finished: true, limits: true, onlyWhenAway: true, firstLine: false }, ...(extra ?? {}) })), { fin: true });
       return;
+    }
+    // w4-m2: the test notification. Counted always; answered 200 only when the desktop was made with testPushStatus (else the 404 below,
+    // as before).
+    if (method === 'POST' && path === '/api/phones/test-push') {
+      s.bodies.delete(stream);
+      stats.testPushes = (stats.testPushes ?? 0) + 1;
+      if (testPushStatus) {
+        frames.respond(stream, { status: testPushStatus, headers: { 'content-type': 'application/json' } });
+        frames.data(stream, utf8.encode('{"ok":true,"results":[]}'), { fin: true });
+        return;
+      }
     }
     if (method === 'POST' && path === '/api/chat') {
       const body = utf8Decode.decode(Uint8Array.from(s.bodies.get(stream) ?? []));
@@ -492,6 +506,13 @@ export function createFakeDesktop({
     },
     // Live session counts for the Node suites.
     get sessionCount() { return sessions.size; },
+    // w4-m1: the protocol major the next HELLO says (the computer was updated while the phone waited on update-desktop).
+    get protocolMajor() { return protocolMajor; },
+    set protocolMajor(value) { protocolMajor = value; },
+    // w4-m2: what the next POST /api/phones/push answer adds ({ subscribed, endpoint }), and the approvals the next HELLO counts.
+    get pushAnswer() { return pushAnswer; },
+    set pushAnswer(value) { pushAnswer = value; },
+    set pendingApprovals(value) { pendingApprovals = value; },
     phoneIdOf: pub => deviceIdOf(pub),
   };
 }

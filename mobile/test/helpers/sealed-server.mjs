@@ -654,6 +654,8 @@ export async function makeBridge(o = {}) {
     stopDeps: o.stopDeps,
     allowLocalPushEndpoints: true,
     createPusher: o.createPusher,
+    // Quiet hours (lib/notify.mjs, 23:00 to 07:00 by default) would hold finished and failed pushes back at night: pinned off here.
+    push: { quiet: () => ({ quiet: false, silent: false }) },
     ...(o.remoteOptions ?? {}),
   });
   await remote.start();

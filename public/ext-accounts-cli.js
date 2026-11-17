@@ -10,6 +10,7 @@
 // real cards in place when GET /api/accounts/cli answers.
 (function () {
   const MuseUI = window.MuseUI;
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   // app.js defines MuseUI, and its codingAgents group, before the extra panels load. Without them there is nothing to attach to.
   if (!MuseUI || !MuseUI.codingAgents) return;
 
@@ -135,6 +136,9 @@
   const WATCH_SLOW_MS = 4000;
   const WATCH_SLOW_AFTER_MS = 60000;
   const WATCH_MAX_MS = 180000;
+  // Reads that failed one after the other before the person is told Plenum cannot check yet.
+  const TROUBLE_AFTER = 4;
+  const CANNOT_CHECK = 'Plenum cannot check the sign-in yet. It keeps trying.';
   const watchers = new Map();
   let listening = false;
 
@@ -158,11 +162,11 @@
   }
 
   function watchSignIn(opts) {
-    const { id, read, done, alive, since, onWait, onProgress, onDone, onGiveUp, onClosed } = opts ?? {};
+    const { id, read, done, alive, since, onWait, onProgress, onDone, onGiveUp, onClosed, onTrouble } = opts ?? {};
     // Without timers (a bare test page) there is nothing to watch with; the person presses Refresh as before.
     if (typeof id !== 'string' || typeof read !== 'function' || typeof done !== 'function' || typeof setTimeout !== 'function') return null;
     watchers.get(id)?.stop();
-    const w = { startedAt: typeof since === 'number' ? since : Date.now(), timer: null, busy: false, over: false };
+    const w = { startedAt: typeof since === 'number' ? since : Date.now(), timer: null, busy: false, over: false, misses: 0 };
     const stop = () => {
       if (w.over) return;
       w.over = true;
@@ -196,12 +200,22 @@
       try {
         result = await read();
         seen = true;
+        w.misses = 0;
       } catch {
-        // A failed read is a read that saw nothing: keep waiting.
+        // A failed read is a read that saw nothing: keep waiting. After 4 in a row the person is told, once; it keeps trying.
+        w.misses += 1;
+        if (w.misses === TROUBLE_AFTER) {
+          w.sawTrouble = true;
+          try { onTrouble?.(true); } catch { /* the note is only a convenience */ }
+        }
       }
       w.busy = false;
       if (w.over) return;
       if (seen) {
+        if (w.misses === 0 && w.sawTrouble) {
+          w.sawTrouble = false;
+          try { onTrouble?.(false); } catch { /* as above */ }
+        }
         try { onProgress?.(result); } catch { /* the notice is only a convenience */ }
         if (w.over) return;
         if (done(result)) return finish(onDone, result);
@@ -251,6 +265,14 @@
       done: cli => cli?.[id]?.signedIn === true,
       alive: () => shown(card),
       onWait: () => { if (pill) pill.textContent = 'Waiting for sign-in'; },
+      onTrouble: on => {
+        const old = card.querySelector?.('.cli-trouble');
+        if (!on) return old?.remove();
+        if (old) return;
+        const note = make('p', 'cli-trouble', CANNOT_CHECK);
+        note.setAttribute('role', 'status');
+        card.append(note);
+      },
       onDone: cli => {
         cardWatch.delete(id);
         MuseUI.toast(`Signed in to ${name}.`);
@@ -277,9 +299,9 @@
 
   // Builds one card again in its place from a fresh status, so the rest of the page (a key being typed, the scroll position) stays as
   // it is. Focus that was in the old card moves to the new one. If the card cannot be swapped, the page is drawn again as before.
-  function redrawCard(id, card, cli) {
+  function redrawCard(id, card, cli, ctx) {
     try {
-      const fresh = CARDS[id]({ cli });
+      const fresh = CARDS[id](ctx ?? { cli });
       if (card.dataset?.card) fresh.dataset.card = card.dataset.card;
       const focused = typeof card.contains === 'function' && card.contains(document.activeElement);
       card.replaceWith(fresh);
@@ -287,6 +309,11 @@
     } catch {
       MuseUI.refreshDrawer();
     }
+  }
+
+  // A sign-in asked for from a phone opens on the computer, and the answer says so: { where: 'computer', text }. That text is shown as sent.
+  function computerText(answer) {
+    return answer && answer.where === 'computer' && typeof answer.text === 'string' ? answer.text.trim() : '';
   }
 
   // Cursor's card text for the state. Every line says what happens, then the way back.
@@ -332,11 +359,11 @@
     if (!c?.installed) signIn.title = 'Cursor is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
-        await MuseUI.api('/api/accounts/cursor/login', {});
-        MuseUI.toast('Sign-in window opened. Finish in your browser, then press Refresh.');
+        const started = await MuseUI.api('/api/accounts/cursor/login', {});
+        MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('cursor', 'Cursor', card, c);
       } catch (err) {
-        MuseUI.toast(err.message, 'bad');
+        MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');
@@ -389,11 +416,11 @@
     if (!g?.installed) signIn.title = 'Grok Build is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
-        await MuseUI.api('/api/accounts/grok/login', {});
-        MuseUI.toast('Sign-in window opened. Finish in your browser, then press Refresh.');
+        const started = await MuseUI.api('/api/accounts/grok/login', {});
+        MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('grok', 'Grok Build', card, g);
       } catch (err) {
-        MuseUI.toast(err.message, 'bad');
+        MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');
@@ -436,11 +463,11 @@
     if (!a?.installed) signIn.title = 'Antigravity is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
       try {
-        await MuseUI.api('/api/accounts/antigravity/login', {});
-        MuseUI.toast('Sign-in window opened. Finish in your browser, then press Refresh.');
+        const started = await MuseUI.api('/api/accounts/antigravity/login', {});
+        MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('antigravity', 'Antigravity', card, a);
       } catch (err) {
-        MuseUI.toast(err.message, 'bad');
+        MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');
@@ -456,10 +483,87 @@
   // Puts the real card in place of each pending one when GET /api/accounts/cli answers (cli is null when that read failed, and the cards say
   // so). A card that is no longer on the page is skipped. Called by app.js renderAccounts.
   MuseUI.redrawAgentCards = cli => {
+    // The server answers 200 with pending: true while it is still checking (the fields are unknown): that is the same as no answer yet.
+    if (cli && cli.pending !== true) reading += 1;
+    if (!cli || cli.pending === true) {
+      // The read did not give an answer (often: the server was still checking). The cards stay on Checking and Plenum asks again itself.
+      each(null, (id, card) => redrawCard(id, card, null, { cli: null, cliPending: true }));
+      reread();
+      return;
+    }
+    stuck = false;
+    each(null, (id, card) => redrawCard(id, card, cli));
+  };
+
+  // ---------- Accounts keeps itself fresh ----------
+
+  const STILL_CHECKING = 'Plenum is still checking your sign-ins.';
+  const stillChecking = err => /still checking your sign-ins/i.test(err?.message ?? '');
+  // After 1.5 s, 3 s and 6 s the sentence is shown with Check again. A later read goes on every 30 s while the cards are on the page.
+  const REREAD_AFTER_MS = [1500, 3000, 6000];
+  const REREAD_SLOW_MS = 30000;
+  let reading = 0;
+  let stuck = false;
+  let slow = null;
+
+  function each(_, fn) {
     for (const id of Object.keys(CARDS)) {
       const card = document.querySelector(`[data-card="${id}"]`);
-      if (card) redrawCard(id, card, cli ?? null);
+      if (card) fn(id, card);
     }
-  };
+  }
+  const cardsShown = () => Object.keys(CARDS).some(id => document.querySelector(`[data-card="${id}"]`));
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  // The cards say what is known when the reads give up: the still-checking sentence, or that Plenum cannot check yet, and a button to ask now.
+  function showStuck(text) {
+    stuck = true;
+    each(null, (id, card) => {
+      redrawCard(id, card, null);
+      const fresh = document.querySelector(`[data-card="${id}"]`);
+      if (!fresh) return;
+      const row = make('div', 'cli-recheck');
+      const line = make('p', 'cli-trouble', text);
+      line.setAttribute('role', 'status');
+      const again = MuseUI.button('ghost small', 'Check again');
+      again.addEventListener('click', () => {
+        each(null, (i, c) => redrawCard(i, c, null, { cli: null, cliPending: true }));
+        reread();
+      });
+      row.append(line, again);
+      fresh.append(row);
+    });
+  }
+
+  // Reads GET /api/accounts/cli again on its own. A newer call replaces an older one, so two never paint over each other.
+  async function reread() {
+    clearTimeout(slow);
+    const mine = ++reading;
+    let last = null;
+    for (let at = 0; at <= REREAD_AFTER_MS.length; at += 1) {
+      if (at > 0) await wait(REREAD_AFTER_MS[at - 1]);
+      if (mine !== reading || !cardsShown()) return;
+      try {
+        const cli = await MuseUI.api('/api/accounts/cli');
+        if (mine !== reading) return;
+        if (cli?.pending === true) { last = new Error(STILL_CHECKING); continue; }
+        stuck = false;
+        each(null, (id, card) => redrawCard(id, card, cli));
+        return;
+      } catch (err) {
+        last = err;
+      }
+    }
+    if (mine !== reading) return;
+    showStuck(stillChecking(last) ? STILL_CHECKING : CANNOT_CHECK);
+    slow = setTimeout(() => { if (cardsShown() && document.visibilityState !== 'hidden') reread(); else if (cardsShown()) stuck = true; }, REREAD_SLOW_MS);
+  }
+  // A sign-in or a model list changed on the server: a card that is stuck asks again at once.
+  MuseUI.events?.on?.('providers', () => {
+    if (stuck && cardsShown()) reread();
+  });
+  document.addEventListener?.('visibilitychange', () => {
+    if (stuck && cardsShown() && document.visibilityState === 'visible') reread();
+  });
   MuseUI.codingAgents.add({ id: 'antigravity', order: AGY_ORDER, card: antigravityCard });
 })();

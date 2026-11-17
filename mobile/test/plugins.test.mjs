@@ -100,9 +100,13 @@ function stripXmlComments(text) {
   return text.replace(/<!--[\s\S]*?-->/g, '');
 }
 
+// The source tree only. Wave 4 (k2): Gradle's outputs (a module's build/ folder next to its build.gradle, and .gradle/) are left out:
+// since the Android toolchain is on this PC they hold merged resources and generated files that are not Plenum's sources (git ignores
+// them). mobile/test/fixtures/build is a tracked fixture folder and is still walked.
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === 'www') continue;
+    if (entry.isDirectory() && (entry.name === '.gradle' || (entry.name === 'build' && fs.existsSync(path.join(dir, 'build.gradle'))))) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
     else out.push(full);
@@ -203,7 +207,9 @@ describe('UnifiedPush: the desktop payload contract (lib/remote/push.mjs builds 
       { kind: 'needs', projectId: '', businessName: 'Garden Planner', count: 2 },
       { kind: 'test' },
     ];
-    assert.deepEqual([...new Set(cases.map(c => c.kind))].sort(), [...EVENT_KINDS].sort(), 'a case for every kind the desktop sends');
+    // 'clear' (wave 4) has no title, body or tap: its own test is in the wave 4 section below.
+    const shown = EVENT_KINDS.filter(k => k !== 'clear');
+    assert.deepEqual([...new Set(cases.map(c => c.kind))].sort(), [...shown].sort(), 'a case for every kind the desktop sends');
     for (const event of cases) {
       const built = buildPushText(event, { prefs: { firstLine: true }, device, computer });
       const parsed = UP.parsePushPayload(built.payload);
@@ -294,12 +300,13 @@ describe('UnifiedPush: routes, intents, channels and endpoints', () => {
     assert.throws(() => UP.intentUrlForRoute('javascript:alert(1)'), { code: 'bad-route' });
   });
 
-  test('closed-app notifications use the three channels the shell and the Kotlin side share', () => {
+  test('closed-app notifications use the four channels the shell and the Kotlin side share', () => {
     assert.equal(UP.channelForKind('approval'), 'plenum-approvals');
     assert.equal(UP.channelForKind('handover'), 'plenum-approvals');
     assert.equal(UP.channelForKind('limit'), 'plenum-limits');
     assert.equal(UP.channelForKind('needs'), 'plenum-approvals', 'the computer sends it under the approvals switch');
     assert.equal(UP.channelForKind('finished'), 'plenum-finished');
+    assert.equal(UP.channelForKind('failed'), 'plenum-problems', 'wave 4: problems have their own channel');
     assert.equal(UP.channelForKind('test'), 'plenum-finished');
   });
 
@@ -313,6 +320,18 @@ describe('UnifiedPush: routes, intents, channels and endpoints', () => {
     assert.equal(noKeys.temporary, false);
   });
 
+  test('cancel and cancelAll take a Plenum tag and one of the four channels, nothing else', () => {
+    assert.equal(UP.normaliseNotificationTag('plenum-' + 'a'.repeat(32)), 'plenum-' + 'a'.repeat(32));
+    assert.equal(UP.normaliseNotificationTag('plenum'), 'plenum', 'the tag a payload without a valid one is shown under');
+    for (const bad of ['', 'plenum-', 'plenum-' + 'A'.repeat(32), 'plenum-' + 'a'.repeat(31), 'other', null, 7]) {
+      assert.throws(() => UP.normaliseNotificationTag(bad), { code: 'bad-tag' }, String(bad));
+    }
+    assert.equal(UP.normaliseChannel(undefined), undefined);
+    assert.equal(UP.normaliseChannel(''), undefined);
+    for (const id of Object.values(UP.NOTIFICATION_CHANNELS)) assert.equal(UP.normaliseChannel(id), id);
+    assert.throws(() => UP.normaliseChannel('miscellaneous'), { code: 'bad-channel' });
+  });
+
   test('every registration failure has a sentence and a retry rule; an unknown reason becomes INTERNAL_ERROR', () => {
     assert.equal(UP.describeRegistrationFailure('NETWORK').retry, 'when-online');
     assert.equal(UP.describeRegistrationFailure('ACTION_REQUIRED').retry, 'after-person');
@@ -324,6 +343,333 @@ describe('UnifiedPush: routes, intents, channels and endpoints', () => {
 });
 
 // ---------------------------------------------------------------- dictation core
+
+// ---------------------------------------------------------------- wave 4 (k2): group, silent, clear, routes, channels, parity
+
+describe('UnifiedPush wave 4: the payload fields, the clear kind and the routes (core.js and PlenumNotifier.kt)', () => {
+  const TAG = 'plenum-' + '0123456789abcdef'.repeat(2);
+  const COMPUTER = 'ab'.repeat(32);
+  const notifier = () => fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'PlenumNotifier.kt'), 'utf8');
+  const coreText = () => read('plugins/unifiedpush/src/core.js');
+  // The two route expressions as written: core.js ROUTE_RE (a JS literal) and PlenumNotifier.kt ROUTE_PATTERN (a Kotlin string).
+  const jsRoute = () => /const ROUTE_RE = \/(.*)\/;\n/.exec(coreText())[1].replace(/\\\//g, '/');
+  const ktRoute = () => /private val ROUTE_PATTERN = Regex\(\s*"([^"]*)",?\s*\)/.exec(notifier())[1];
+
+  test('a payload from before wave 4 parses exactly as it did: no group, no silent, the same fields', () => {
+    const old = {
+      v: 1,
+      kind: 'approval',
+      title: 'Home PC · my-app',
+      body: 'Waiting: npm test',
+      tag: TAG,
+      tap: '/#waiting=ap1',
+      actions: [
+        { action: 'deny', title: 'Deny', route: '/#deny=ap1' },
+        { action: 'stop', title: 'Stop all', route: '/#stop' },
+        { action: 'approve', title: 'Approve', route: '/#approve=ap1' },
+      ],
+      ids: { computer: 'c1', project: 'p1', approval: 'ap1' },
+      firstLine: 'npm test',
+    };
+    assert.deepEqual(UP.parsePushPayload(old), {
+      v: 1,
+      kind: 'approval',
+      title: 'Home PC · my-app',
+      body: 'Waiting: npm test',
+      tag: TAG,
+      tap: '/#waiting=ap1',
+      actions: old.actions,
+      firstLine: 'npm test',
+      ids: { computer: 'c1', project: 'p1', approval: 'ap1' },
+    });
+    for (const [kind, tap] of [['finished', '/#chat=p1'], ['failed', '/#chat'], ['limit', '/#settings=limit'], ['needs', '/#home'], ['test', '/#home'], ['handover', '/#handover=ho1']]) {
+      const parsed = UP.parsePushPayload({ v: 1, kind, title: 'T', body: 'B', tag: TAG, tap, actions: [] });
+      assert.equal(parsed.tap, tap, kind);
+      assert.equal('group' in parsed, false, kind);
+      assert.equal('silent' in parsed, false, kind);
+    }
+  });
+
+  test('group is text of at most 64 characters and silent is true or absent', () => {
+    const base = { v: 1, kind: 'finished', title: 'T', body: 'B', tag: TAG, tap: '/#home', actions: [] };
+    assert.equal(UP.parsePushPayload({ ...base, group: 'garden-planner' }).group, 'garden-planner');
+    assert.equal(UP.parsePushPayload({ ...base, group: 'g'.repeat(64) }).group, 'g'.repeat(64));
+    assert.equal(UP.parsePushPayload({ ...base, group: 'g'.repeat(65) }).group, undefined, 'longer is no group, not a cut one');
+    assert.equal(UP.parsePushPayload({ ...base, group: 42 }).group, undefined);
+    assert.equal(UP.parsePushPayload({ ...base, group: '  ' }).group, undefined);
+    assert.equal(UP.parsePushPayload({ ...base, group: 'a\u0007b' }).group, 'a b', 'control characters are cleaned');
+    assert.equal(UP.parsePushPayload({ ...base, silent: true }).silent, true);
+    assert.equal(UP.parsePushPayload({ ...base, silent: 'true' }).silent, undefined);
+    assert.equal(UP.parsePushPayload({ ...base, silent: 1 }).silent, undefined);
+  });
+
+  test('a clear carries only its tag; a clear with a bad or missing tag is refused', () => {
+    const clear = UP.parsePushPayload({ v: 1, kind: 'clear', tag: TAG, ids: { computer: COMPUTER } });
+    assert.equal(clear.kind, 'clear');
+    assert.equal(clear.tag, TAG);
+    assert.equal(clear.title, '');
+    assert.equal(clear.body, '');
+    assert.deepEqual(clear.actions, []);
+    assert.equal(clear.silent, true);
+    for (const tag of [undefined, '', 'plenum', 'plenum-' + 'A'.repeat(32), TAG + '0', 'other']) {
+      assert.equal(UP.parsePushPayload({ v: 1, kind: 'clear', tag }), null, String(tag));
+    }
+    // The message event says it is a clear, and passes the service's shown flag on.
+    const content = Buffer.from(JSON.stringify({ v: 1, kind: 'clear', tag: TAG })).toString('base64');
+    const event = UP.parseMessageEvent({ instance: 'default', content, decrypted: true, clear: true, shown: false });
+    assert.equal(event.clear, true);
+    assert.equal(event.shown, false);
+    const shownOne = UP.parseMessageEvent({ instance: 'default', content: Buffer.from(JSON.stringify({ v: 1, kind: 'test', tag: TAG })).toString('base64'), decrypted: true, shown: true });
+    assert.equal(shownOne.shown, true);
+    assert.equal(shownOne.clear, false);
+    // An older plugin build sends no shown flag: the event says false.
+    assert.equal(UP.parseMessageEvent({ instance: 'default', content: 'AAAA', decrypted: false }).shown, false);
+  });
+
+  test('the computer\x27s clear payload, when this tree builds one, parses to its tag', () => {
+    if (!EVENT_KINDS.includes('clear')) return;
+    const built = buildPushText({ kind: 'clear', target: { kind: 'approval', projectId: 'p1' } }, { prefs: {}, device: {}, computer: { id: COMPUTER, name: 'Home PC' } });
+    const parsed = UP.parsePushPayload(built.payload);
+    assert.ok(parsed, 'the clear parses');
+    assert.equal(parsed.kind, 'clear');
+    assert.equal(parsed.tag, built.tag);
+  });
+
+  test('the route pattern takes the computer\x27s routes, the new ones and the two suffixes, and refuses anything else', () => {
+    const good = [
+      '/#home', '/#stop', '/#waiting', '/#chat', '/#today', '/#accounts', '/#services', '/#settings=limit',
+      '/#waiting=ap1', '/#handover=ho-1', '/#chat=p1', '/#deny=0f7c-AA_1.2', '/#approve=ap1', '/#today=garden_planner',
+      `/#deny=ap1&nt=${TAG}`, `/#stop&nt=${TAG}&computer=${COMPUTER}`, `/#today&computer=${COMPUTER}`, `/#waiting=ap1&computer=${COMPUTER}`,
+      '/#deny=' + 'x'.repeat(80),
+    ];
+    const bad = [
+      '', '/#', '#home', '/home', 'javascript:alert(1)', '/#evil', '/#settings=other', '/#today=', '/#deny=',
+      '/#deny=' + 'x'.repeat(81), '/#deny=a b', '/#deny=a%20b', '/#chat=a/b', '/#stop=1', '/#home=1',
+      `/#stop&computer=${COMPUTER}&nt=${TAG}`, `/#stop&nt=plenum`, `/#stop&computer=${'AB'.repeat(32)}`, `/#stop&computer=${COMPUTER}0`,
+      '/#approve=ap1&line=npm', '/#stop&x=1', '/#home\n',
+    ];
+    const kotlin = new RegExp(ktRoute());
+    for (const route of good) {
+      assert.equal(UP.isRoute(route), true, `core.js takes ${route}`);
+      assert.equal(kotlin.test(route), true, `PlenumNotifier.kt takes ${route}`);
+    }
+    for (const route of bad) {
+      assert.equal(UP.isRoute(route), false, `core.js refuses ${JSON.stringify(route)}`);
+      assert.equal(kotlin.test(route), false, `PlenumNotifier.kt refuses ${JSON.stringify(route)}`);
+    }
+    assert.equal(ktRoute(), jsRoute(), 'the Kotlin ROUTE_PATTERN is core.js ROUTE_RE, character for character');
+  });
+
+  test('every route the computer builds passes the stricter pattern (no tap falls back to home, no action is dropped)', () => {
+    const computer = { id: COMPUTER, name: 'Home PC' };
+    const device = { tier: 'approve', approveFromNotifications: true };
+    const events = [
+      { kind: 'approval', projectName: 'my-app', projectId: 'p1', approvalId: '6f1c2d4e-1a2b-4c3d-9e8f-0123456789ab', count: 1, firstLine: 'npm test' },
+      { kind: 'approval', projectId: 'p1', count: 3 },
+      { kind: 'handover', projectId: 'p1', approvalId: 'ho1', firstLine: 'Enter the code' },
+      { kind: 'finished', projectId: 'p1' },
+      { kind: 'failed', projectId: '' },
+      { kind: 'limit', limitKind: 'plan', text: 'Used up.', alertId: 'a1' },
+      { kind: 'limit', limitKind: 'spend' },
+      { kind: 'needs', businessName: 'Garden Planner', businessId: 'garden-planner', count: 2 },
+      { kind: 'test' },
+    ];
+    for (const event of events) {
+      const built = buildPushText(event, { prefs: { firstLine: true }, device, computer });
+      assert.equal(UP.isRoute(built.payload.tap), true, `${event.kind} tap ${built.payload.tap}`);
+      for (const a of built.payload.actions) assert.equal(UP.isRoute(a.route), true, `${event.kind} ${a.action} ${a.route}`);
+      assert.deepEqual(UP.parsePushPayload(built.payload).actions.length, built.payload.actions.length, `${event.kind}: every action kept`);
+    }
+  });
+
+  test('action routes end in &nt=<tag> and &computer=<64 hex>; the tap gets the computer; without them the routes are as before', () => {
+    const payload = UP.parsePushPayload({
+      v: 1, kind: 'approval', title: 'T', body: 'B', tag: TAG, tap: '/#waiting=ap1', firstLine: 'npm test',
+      actions: [{ action: 'deny', title: 'Deny', route: '/#deny=ap1' }, { action: 'stop', title: 'Stop all', route: '/#stop' }, { action: 'approve', title: 'Approve', route: '/#approve=ap1' }],
+      ids: { computer: COMPUTER, project: 'p1', approval: 'ap1' },
+    });
+    const where = { tag: payload.tag, computer: UP.computerOf(payload) };
+    assert.equal(where.computer, COMPUTER);
+    assert.deepEqual(payload.actions.map(a => UP.routeForAction(a, payload.firstLine, where)), [
+      `/#deny=ap1&nt=${TAG}&computer=${COMPUTER}`,
+      `/#stop&nt=${TAG}&computer=${COMPUTER}`,
+      `/#approve=ap1&line=npm%20test&nt=${TAG}&computer=${COMPUTER}`,
+    ]);
+    assert.equal(UP.tapRouteFor(payload), `/#waiting=ap1&computer=${COMPUTER}`);
+    // Before wave 4 (and in the shell's own calls): no suffix.
+    assert.equal(UP.routeForAction(payload.actions[0], payload.firstLine), '/#deny=ap1');
+    // A short computer id or the fallback tag adds nothing.
+    const plain = UP.parsePushPayload({ v: 1, kind: 'approval', tag: 'bad', tap: '/#waiting', actions: [{ action: 'stop', route: '/#stop' }], ids: { computer: 'c1' } });
+    assert.equal(plain.tag, 'plenum');
+    assert.equal(UP.computerOf(plain), '');
+    assert.equal(UP.routeForAction(plain.actions[0], undefined, { tag: plain.tag, computer: UP.computerOf(plain) }), '/#stop');
+    assert.equal(UP.tapRouteFor(plain), '/#waiting');
+    // The suffixed routes still pass the pattern (an approve route carries &line, which only the shell reads).
+    assert.equal(UP.isRoute(`/#deny=ap1&nt=${TAG}&computer=${COMPUTER}`), true);
+    // The Kotlin side builds the same: &line first, then &nt, then &computer; the tap with the computer.
+    const kt = notifier();
+    assert.match(kt, /if \(TAG_PATTERN\.matches\(tag\)\) route \+= "&nt=" \+ tag\n\s+if \(computer != null\) route \+= "&computer=" \+ computer/);
+    assert.match(kt, /if \(payload\.computer != null\) payload\.tap \+ "&computer=" \+ payload\.computer else payload\.tap/);
+    assert.match(kt, /val computer = \(ids\?\.opt\("computer"\) as\? String\)\?\.takeIf \{ COMPUTER_PATTERN\.matches\(it\) \}/);
+    assert.match(kt, /COMPUTER_PATTERN = Regex\("\^\[0-9a-f\]\{64\}\$"\)/);
+    assert.match(coreText(), /const COMPUTER_RE = \/\^\[0-9a-f\]\{64\}\$\/;/);
+  });
+
+  test('the Kotlin parser reads group, silent and clear the way core.js does', () => {
+    const kt = notifier();
+    assert.match(kt, /val group = \(json\.opt\("group"\) as\? String\)\?\.takeIf \{ it\.length <= GROUP_MAX \}\?\.let \{ clean\(it, GROUP_MAX\) \}\?\.ifEmpty \{ null \}/);
+    assert.match(kt, /private const val GROUP_MAX = 64\b/);
+    assert.equal(UP.GROUP_MAX, 64);
+    assert.match(kt, /silent = \(json\.opt\("silent"\) as\? Boolean\) == true/);
+    assert.match(kt, /if \(kind == KIND_CLEAR\) \{\s*\/\/[^\n]*\n\s*if \(!TAG_PATTERN\.matches\(tag\)\) return null/);
+    assert.match(kt, /const val KIND_CLEAR = "clear"/);
+    assert.match(kt, /TAG_PATTERN = Regex\("\^plenum-\[0-9a-f\]\{32\}\$"\)/);
+    assert.match(coreText(), /const TAG_RE = \/\^plenum-\[0-9a-f\]\{32\}\$\/;/);
+    assert.match(kt, /CANCEL_TAG_PATTERN = Regex\("\^plenum\(-\[0-9a-f\]\{32\}\)\?\$"\)/);
+    assert.match(coreText(), /const CANCEL_TAG_RE = \/\^plenum\(\?:-\[0-9a-f\]\{32\}\)\?\$\/;/);
+  });
+});
+
+describe('UnifiedPush wave 4: channels at install, grouping, clearing, shown messages and the endpoint flag (Kotlin text)', () => {
+  const kotlin = name => fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, name), 'utf8');
+  const strings = () => read('plugins/unifiedpush/android/src/main/res/values/strings.xml');
+  const stringOf = name => {
+    const m = new RegExp(`<string name="${name}">([^<]*)</string>`).exec(strings());
+    assert.ok(m, `strings.xml has ${name}`);
+    return m[1];
+  };
+
+  test('the four channels: the same ids, names and descriptions in core.js and strings.xml, with the importance of each', () => {
+    const kt = kotlin('PlenumNotifier.kt');
+    const constName = { 'plenum-approvals': 'APPROVALS', 'plenum-finished': 'FINISHED', 'plenum-problems': 'PROBLEMS', 'plenum-limits': 'LIMITS' };
+    assert.deepEqual(UP.NOTIFICATION_CHANNEL_LIST.map(c => c.id), Object.values(UP.NOTIFICATION_CHANNELS));
+    assert.deepEqual(UP.NOTIFICATION_CHANNEL_LIST.map(c => c.name), ['Approvals and your turn', 'Finished runs', 'Problems', 'Limits']);
+    for (const c of UP.NOTIFICATION_CHANNEL_LIST) {
+      const key = constName[c.id];
+      assert.match(kt, new RegExp(`const val CHANNEL_${key} = "${c.id}"`), c.id);
+      const res = `plenum_channel_${key.toLowerCase()}`;
+      assert.equal(stringOf(res), c.name, `${c.id} name`);
+      assert.equal(stringOf(`${res}_desc`), c.description, `${c.id} description`);
+      const importance = c.importance === 4 ? 'IMPORTANCE_HIGH' : 'IMPORTANCE_DEFAULT';
+      assert.match(kt, new RegExp(`channel\\(context, CHANNEL_${key}, R\\.string\\.${res}, R\\.string\\.${res}_desc, NotificationManager\\.${importance}\\)`), `${c.id} importance`);
+    }
+    assert.match(kt, /made\.lockscreenVisibility = Notification\.VISIBILITY_PRIVATE/);
+    assert.match(kt, /made\.description = context\.getString\(description\)/);
+    assert.match(kt, /val CHANNELS = setOf\(CHANNEL_APPROVALS, CHANNEL_FINISHED, CHANNEL_PROBLEMS, CHANNEL_LIMITS\)/);
+  });
+
+  test('the plugin creates the channels when it loads, so a fresh install has them before the first push', () => {
+    const plugin = kotlin('UnifiedPushPlugin.kt');
+    const load = /override fun load\(\) \{([\s\S]*?)\n    \}/.exec(plugin);
+    assert.ok(load, 'load()');
+    assert.match(load[1], /PlenumNotifier\.ensureChannels\(context\)/);
+  });
+
+  test('show(): grouped with a summary from two on, alert once on an update, silent, a time, and approvals time out with the push', () => {
+    const kt = kotlin('PlenumNotifier.kt');
+    const show = /fun show\(context: Context, payload: Payload\): Boolean \{([\s\S]*?)\n    \}\n/.exec(kt)[1];
+    assert.match(show, /val group = payload\.group \?: payload\.tag/);
+    assert.match(show, /\.setGroup\(group\)/);
+    assert.match(show, /val updating = active\.any \{ it\.id == NOTIFICATION_ID && it\.tag == payload\.tag \}/);
+    assert.match(show, /if \(updating\) builder\.setOnlyAlertOnce\(true\)/);
+    assert.match(show, /if \(payload\.silent\) builder\.setSilent\(true\)/);
+    assert.match(show, /\.setWhen\(System\.currentTimeMillis\(\)\)/);
+    assert.match(show, /\.setShowWhen\(true\)/);
+    assert.match(show, /if \(payload\.kind == "approval"\) builder\.setTimeoutAfter\(APPROVAL_TIMEOUT_MS\)/);
+    assert.match(show, /refreshSummary\(context, group, channelId, payload\.title, others \+ 1\)/);
+    assert.match(show, /if \(payload\.kind == KIND_CLEAR\) return false/);
+    assert.match(kt, /private const val APPROVAL_TIMEOUT_MS = 3600L \* 1000L/);
+    assert.equal(UP.APPROVAL_TIMEOUT_MS, 3600 * 1000);
+    assert.match(read('../lib/remote/push.mjs'), /export const PUSH_TTL_S = 3600;/, 'the timeout is the push lifetime');
+    const summary = /private fun refreshSummary\([\s\S]*?\n    \}\n/.exec(kt)[0];
+    assert.match(summary, /if \(count < 2\) \{\s*manager\.cancel\(tag, SUMMARY_ID\)/);
+    assert.match(summary, /\.setGroupSummary\(true\)/);
+    assert.match(summary, /\.setGroupAlertBehavior\(NotificationCompat\.GROUP_ALERT_CHILDREN\)/);
+    assert.match(stringOf('plenum_group_summary'), /^%1\$d updates$/);
+  });
+
+  test('a clear is handled in the service before any check of what is in front, takes the tag down, and is never shown', () => {
+    const service = kotlin('UnifiedPushService.kt');
+    const onMessage = /override fun onMessage\(message: PushMessage, instance: String\) \{([\s\S]*?)\n    \}\n/.exec(service)[1];
+    const clearAt = onMessage.indexOf('payload.kind == PlenumNotifier.KIND_CLEAR');
+    const visibleAt = onMessage.indexOf('UnifiedPushStore.visible');
+    assert.ok(clearAt >= 0 && visibleAt > clearAt, 'the clear comes first');
+    const clearBranch = onMessage.slice(clearAt, onMessage.indexOf('return', clearAt));
+    assert.match(clearBranch, /PlenumNotifier\.cancelTag\(this, payload\.tag\)/);
+    assert.match(clearBranch, /data\.put\("clear", true\)/);
+    assert.match(clearBranch, /data\.put\("shown", false\)/);
+    assert.match(clearBranch, /deliver\("message", data, retain = false\)/, 'not kept for a later listener');
+    assert.ok(!/show\(/.test(clearBranch), 'nothing is shown for it');
+    assert.match(kotlin('PlenumNotifier.kt'), /NotificationManagerCompat\.from\(context\)\.cancel\(tag, NOTIFICATION_ID\)/);
+  });
+
+  test('no double notification: a message the service showed tells the shell shown: true, and a repeat is always shown again', () => {
+    const service = kotlin('UnifiedPushService.kt');
+    const onMessage = /override fun onMessage\(message: PushMessage, instance: String\) \{([\s\S]*?)\n    \}\n/.exec(service)[1];
+    // shown is exactly what show() did, and only when Plenum is not in front; the shell then shows nothing for it.
+    assert.match(onMessage, /val shown = payload != null && !UnifiedPushStore\.visible && PlenumNotifier\.show\(this, payload\)/);
+    assert.match(onMessage, /data\.put\("shown", shown\)\s*UnifiedPushPlugin\.deliver\("message", data, retain = true\)/);
+    // The computer's tags (computer|project|kind) and words ("The run finished.", the test text) repeat. A second test, or a second
+    // finished run of one project, sent after the first notification was swiped away must still be shown: nothing skips show()
+    // because an earlier message had the same tag or words.
+    assert.ok(!/ShownMessages|stampOf|seen\(/.test(service), 'no guard that skips a repeat');
+    assert.ok(!/stampOf|MessageDigest/.test(kotlin('PlenumNotifier.kt')));
+    assert.ok(!/ShownMessages/.test(kotlin('UnifiedPushPlugin.kt')));
+    // A true re-delivery while the first is still showing replaces it quietly (same tag, alert once).
+    assert.match(kotlin('PlenumNotifier.kt'), /\.setOnlyAlertOnce\(/);
+    assert.match(kotlin('PlenumNotifier.kt'), /manager\.notify\(payload\.tag, NOTIFICATION_ID/);
+    // The shell side: a shown event gives no local notification (core.js), a missing or other value does.
+    const content = Buffer.from(JSON.stringify({ v: 1, kind: 'test', title: 'Plenum', body: 'Test notification: Plenum can reach this phone.', tag: 'plenum-' + 'ab'.repeat(16), tap: '/#home' })).toString('base64');
+    assert.equal(UP.parseMessageEvent({ instance: 'default', content, decrypted: true, shown: true }).shown, true);
+    assert.equal(UP.parseMessageEvent({ instance: 'default', content, decrypted: true, shown: 'yes' }).shown, false);
+    assert.equal(UP.parseMessageEvent({ instance: 'default', content, decrypted: true }).shown, false);
+  });
+
+  test('cancel({ tag }) and cancelAll({ channel? }) check their arguments and match the active notifications by channel', () => {
+    const plugin = kotlin('UnifiedPushPlugin.kt');
+    assert.match(plugin, /@PluginMethod\s+fun cancel\(call: PluginCall\)/);
+    assert.match(plugin, /@PluginMethod\s+fun cancelAll\(call: PluginCall\)/);
+    assert.match(plugin, /!PlenumNotifier\.isCancelTag\(tag\)\) \{\s*call\.reject\("That is not a Plenum notification tag\.", "bad-tag"\)/);
+    assert.match(plugin, /channel !in PlenumNotifier\.CHANNELS\) \{\s*call\.reject\([^)]*"bad-channel"\)/);
+    const kt = kotlin('PlenumNotifier.kt');
+    const all = /fun cancelAll\(context: Context, channel: String\?\): List<String> \{([\s\S]*?)\n    \}\n/.exec(kt)[1];
+    assert.match(all, /activeNotifications\(context\)/);
+    assert.match(all, /if \(channel != null && on != channel\) continue/);
+    assert.match(all, /if \(on !in CHANNELS\) continue/, 'only Plenum\x27s push channels');
+    assert.match(kt, /manager\.activeNotifications/);
+    const web = read('plugins/unifiedpush/src/web.js');
+    assert.match(web, /async cancel\(\) \{\s*return \{ cancelled: 0 \};/);
+    assert.match(web, /async cancelAll\(\) \{\s*return \{ cancelled: 0 \};/);
+    const types = read('plugins/unifiedpush/src/index.d.ts');
+    assert.match(types, /cancel\(options: \{ tag: string \}\): Promise<\{ cancelled: number \}>;/);
+    assert.match(types, /cancelAll\(options\?: \{ channel\?: NotificationChannelId \}\): Promise<\{ cancelled: number \}>;/);
+    assert.match(types, /endpointChanged\?: boolean;/);
+  });
+
+  test('an endpoint that arrives while Plenum is closed sets the endpointChanged flag; handing it to the shell clears it; no key is stored', () => {
+    const service = kotlin('UnifiedPushService.kt');
+    assert.match(service, /val delivered = UnifiedPushPlugin\.deliver\("endpoint", data, retain = true\)\s*UnifiedPushStore\.setEndpointChanged\(this, !delivered\)/);
+    const plugin = kotlin('UnifiedPushPlugin.kt');
+    assert.match(plugin, /internal fun deliver\(event: String, data: JSObject, retain: Boolean\): Boolean \{\s*val plugin = live\?\.get\(\) \?: return false\s*val screen = plugin\.activity \?: return false/);
+    assert.match(plugin, /out\.put\("endpointChanged", UnifiedPushStore\.endpointChanged\(ctx\)\)/);
+    const store = kotlin('UnifiedPushStore.kt');
+    assert.match(store, /putBoolean\(KEY_ENDPOINT_CHANGED, changed\)/);
+    assert.ok(!/pubKey|auth/.test(codeOnly(store)), 'the store never holds the key set');
+    assert.match(read('plugins/unifiedpush/src/web.js'), /endpointChanged: false/);
+  });
+
+  test('no foreground service, no new permission and no socket: the plugin manifest declares only the service and the query', () => {
+    const manifest = stripXmlComments(read('plugins/unifiedpush/android/src/main/AndroidManifest.xml'));
+    assert.ok(!/FOREGROUND_SERVICE|uses-permission|foregroundServiceType/.test(manifest));
+    for (const file of walk(path.join(MOBILE, 'plugins/unifiedpush'))) {
+      if (!/\.(kt|xml|gradle)$/.test(file)) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      assert.ok(!/FOREGROUND_SERVICE|startForeground|java\.net\.Socket|WebSocket/.test(text), path.basename(file));
+    }
+    // The only permission the plugin asks for is the existing notifications one.
+    assert.match(kotlin('UnifiedPushPlugin.kt'), /permissions = \[Permission\(strings = \["android\.permission\.POST_NOTIFICATIONS"\], alias = "notifications"\)\]/);
+  });
+});
 
 describe('Dictation: start options and the copy for each error', () => {
   test('the defaults are on-device only, a 2 s silence, and the device language', () => {
@@ -541,11 +887,16 @@ describe('mobile/package.json, the lock file and the plugin packages', () => {
     }
   });
 
-  test('the connector is pinned to 3.3.5 and the Kotlin plugin version to 2.2.10', () => {
+  test('the connector is pinned to 3.3.5; Kotlin is the app\x27s one version, with 2.2.10 only when the module is built alone', () => {
     const gradle = read('plugins/unifiedpush/android/build.gradle');
     assert.match(gradle, /unifiedpushConnectorVersion = '3\.3\.5'/);
     assert.match(gradle, /implementation "org\.unifiedpush\.android:connector:\$unifiedpushConnectorVersion"/);
-    assert.match(gradle, /kotlin_version = '2\.2\.10'/);
+    // Wave 4 (k1): the app's variables.gradle names kotlin_version and every Plenum plugin uses it, so the Kotlin Gradle plugin is
+    // loaded in one version; the module's own pin is the fallback.
+    assert.match(gradle, /def own_kotlin_version = '2\.2\.10'/);
+    assert.match(gradle, /ext\.kotlin_version = rootProject\.ext\.has\('kotlin_version'\) \? rootProject\.ext\.kotlin_version : own_kotlin_version/);
+    assert.match(gradle, /classpath "org\.jetbrains\.kotlin:kotlin-gradle-plugin:\$kotlin_version"/);
+    assert.match(read('android/variables.gradle'), /kotlin_version = '\d+\.\d+\.\d+'/, 'the app names the one version');
   });
 });
 
@@ -701,17 +1052,23 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
 
   test('the phone knows every kind the computer sends: the plugin core and the Kotlin notifier list the same kinds as lib/remote/push.mjs', () => {
     // A kind that is missing on the phone is shown as "Plenum has an update." with its own words lost ('needs' was, until item 153).
-    assert.deepEqual([...UP.PUSH_KINDS].sort(), [...EVENT_KINDS].sort());
+    // Wave 4: the phone knows 'clear' whether or not the computer of this tree sends it yet (package n2 adds it to EVENT_KINDS); every
+    // other kind is the computer's list exactly.
+    const withClear = list => [...new Set([...list, 'clear'])].sort();
+    assert.deepEqual([...UP.PUSH_KINDS].sort(), withClear(EVENT_KINDS));
     const notifier = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'PlenumNotifier.kt'), 'utf8');
     const kinds = /private val KINDS = setOf\(([^)]*)\)/.exec(notifier);
     assert.ok(kinds, 'the Kotlin list of kinds');
-    assert.deepEqual(kinds[1].split(',').map(s => s.trim().replace(/^"|"$/g, '')).sort(), [...EVENT_KINDS].sort());
-    assert.match(notifier, /"approval", "handover", "needs" -> CHANNEL_APPROVALS\n\s+"limit" -> CHANNEL_LIMITS\n\s+else -> CHANNEL_FINISHED/);
+    assert.deepEqual(kinds[1].split(',').map(s => s.trim().replace(/^"|"$/g, '')).sort(), withClear(EVENT_KINDS));
+    assert.match(notifier, /"approval", "handover", "needs" -> CHANNEL_APPROVALS\n\s+"failed" -> CHANNEL_PROBLEMS\n\s+"limit" -> CHANNEL_LIMITS\n\s+else -> CHANNEL_FINISHED/);
   });
 
-  test('the closed-app notifications use the approval-only Approve rule and device authentication on every action', () => {
+  test('the closed-app notifications use the approval-only Approve rule; only Approve asks for the device unlock (wave 4)', () => {
     const notifier = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'PlenumNotifier.kt'), 'utf8');
-    assert.match(notifier, /setAuthenticationRequired\(true\)/);
+    const code = codeOnly(notifier);
+    // Stop all must work from the lock screen and Deny passes the shell's own lock rules: one call, true only for approve.
+    assert.deepEqual([...code.matchAll(/setAuthenticationRequired\(([^)]*)\)/g)].map(m => m[1]), ['action.action == ""']);
+    assert.match(notifier, /\.setAuthenticationRequired\(action\.action == "approve"\)/);
     assert.match(notifier, /"Plenum has an update\."/);
     assert.match(notifier, /plenum:\/\/app\$route/);
     assert.match(notifier, /"&line=" \+ URLEncoder\.encode/);
@@ -970,13 +1327,19 @@ describe('Android push through UnifiedPush and local notifications (M15)', () =>
     for (let i = 0; i < 100 && !f.log.some(l => l[0] === 'register'); i++) await new Promise(r => setTimeout(r, 5));
   };
 
-  test('start creates the three channels the Kotlin service uses and listens for the push app events', async () => {
+  test('start creates the channels the Kotlin service uses and listens for the push app events', async () => {
     const { createAndroidPush, ANDROID_CHANNELS } = await import('../shell/push.js');
     const f = fakePlugins();
     const push = createAndroidPush({ native: { UnifiedPush: f.up, LocalNotifications: f.localNotifications }, requestOf: () => null });
     assert.equal(await push.start(), true);
-    assert.deepEqual(f.local.channels.map(c => c.id), ['plenum-approvals', 'plenum-finished', 'plenum-limits']);
-    assert.deepEqual(ANDROID_CHANNELS.map(c => c.id), Object.values(UP.NOTIFICATION_CHANNELS), 'the same ids as the plugin core.js and the Kotlin side');
+    // Wave 4: the plugin creates all four channels itself when it loads (k2); the shell's own list may name plenum-problems or not
+    // yet (m2 adds it). Whatever the shell creates is one of the plugin's channels, and the three it always had are there.
+    const ids = Object.values(UP.NOTIFICATION_CHANNELS);
+    const created = f.local.channels.map(c => c.id);
+    for (const id of ['plenum-approvals', 'plenum-finished', 'plenum-limits']) assert.ok(created.includes(id), id);
+    for (const id of created) assert.ok(ids.includes(id), `${id} is a plugin channel`);
+    assert.deepEqual(ANDROID_CHANNELS.map(c => c.id), created, 'start creates the shell\x27s list');
+    assert.deepEqual(ids, UP.NOTIFICATION_CHANNEL_LIST.map(c => c.id), 'the same ids as the plugin core.js and the Kotlin side');
     assert.deepEqual([...f.handlers.keys()].sort(), ['endpoint', 'message', 'registrationFailed', 'unregistered']);
     assert.ok(f.local.listeners.has('localNotificationActionPerformed'));
     assert.equal(await push.start(), false, 'a second start does nothing');
@@ -1118,19 +1481,27 @@ describe('Android push through UnifiedPush and local notifications (M15)', () =>
     assert.equal(note.title, built.payload.title);
     assert.equal(note.actionTypeId, 'plenum-deny-stop-approve');
     const type = f.local.types.find(t => t.id === note.actionTypeId);
-    assert.deepEqual(type.actions.map(a => [a.id, a.requiresAuthentication]), [['deny', true], ['stop', true], ['approve', true]], 'every action asks for the device own authentication, as PlenumNotifier.kt does (M15)');
+    // While Plenum is in front the phone is unlocked. Approve always asks for the device's own authentication (M15); whether the
+    // shell's local Deny and Stop all ask too is the shell's choice (the closed-app ones do not, since wave 4).
+    const auth = Object.fromEntries(type.actions.map(a => [a.id, a.requiresAuthentication]));
+    assert.deepEqual(type.actions.map(a => a.id), ['deny', 'stop', 'approve']);
+    assert.equal(auth.approve, true, 'Approve asks for the device authentication');
+    assert.equal(typeof auth.deny, 'boolean');
+    assert.equal(typeof auth.stop, 'boolean');
     assert.deepEqual(note.extra.routes, { deny: '/#deny=ap1', stop: '/#stop', approve: '/#approve=ap1' });
     // Behind the lock screen or in the background, the plugin service showed it already: not a second one here.
     visible = false;
     await f.handlers.get('message')({ instance: 'default', content, decrypted: true });
     assert.equal(f.local.scheduled.length, 1);
-    // A limit goes to its own channel; an undecryptable message shows nothing.
+    // A limit goes to its own channel when it is a system notification at all (wave 4, m2: in front it may be the shell's own
+    // notice instead); an undecryptable message shows nothing.
     visible = true;
     const limit = buildPushText({ kind: 'limit', limitKind: 'spend' }, { prefs: {}, device: {}, computer: { id: 'c1', name: 'Home PC' } });
     await f.handlers.get('message')({ instance: 'default', content: Buffer.from(JSON.stringify(limit.payload)).toString('base64'), decrypted: true });
-    assert.equal(f.local.scheduled.at(-1).channelId, 'plenum-limits');
+    if (f.local.scheduled.length > 1) assert.equal(f.local.scheduled.at(-1).channelId, 'plenum-limits');
+    const shownSoFar = f.local.scheduled.length;
     await f.handlers.get('message')({ instance: 'default', content: 'AAAA', decrypted: false });
-    assert.equal(f.local.scheduled.length, 2);
+    assert.equal(f.local.scheduled.length, shownSoFar);
   });
 
   test('a tap and each action run the route the desktop named; Approve carries the first line the notification showed', async () => {

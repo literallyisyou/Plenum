@@ -11,7 +11,11 @@
 //   POST /api/phones/settings, lan, tailscale, relay, pair/start, pair/cancel, remove, remove-all, tier, push, test-push
 //   POST /api/stop-all                      Stop everything, the same as Stop on a phone
 // and sends { type: 'phone', kind: 'presence' | 'pairing' | 'activity' | 'revoked' | 'tier' } on the events channel, which this panel
-// reads through 'plenum:event'. Pairing is human-only: Add phone is hidden on a phone (data-surface="phone"), and the server refuses
+// reads through 'plenum:event'. Add a browser (wave 5) pairs a browser on another computer: the window on this computer shows a short
+// address and a 12-character code (never this page), the row "Open Plenum in a browser" shows the first address, and paired browsers are
+// named Browser in the rows and the chip ('Browser connected: <name>', 'N browsers connected', 'N devices connected' when mixed).
+// Pairing is human-only: Add phone and Add a browser are hidden on a paired device's page (data-surface "phone" or "wide", or a
+// plenumShell with desktop: false), and the server refuses
 // pairing and tier changes that come from a phone. Text reaches the page through textContent only. No key, token or secret is read,
 // kept or shown here, except the pairing link that a plain-node server returns to this same page, which only the Copy link button uses.
 (function () {
@@ -99,10 +103,22 @@
     return b;
   };
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-  // True on the phone's own copy of this page (the shell marks the document, data-surface="phone").
-  const onPhone = () => document.documentElement.dataset.surface === 'phone';
+  // True on a paired device's copy of this page, not at the computer: the shell marks the document data-surface="phone" on a phone and
+  // "wide" in a browser at desktop width (wave 5), and its plenumShell says desktop: false. Pairing and the ways in are the computer's.
+  const remotePage = () => {
+    const surface = document.documentElement.dataset.surface;
+    return surface === 'phone' || surface === 'wide' || window.plenumShell?.desktop === false;
+  };
   // The id of the phone this page runs on, when it is one (the shell's device), else ''.
   const ownId = () => textOf(window.plenumShell?.device?.id);
+  // What a paired device is: 'browser' (Add a browser) or 'phone' (Add phone, and every record from before wave 5).
+  const formOf = d => (isObj(d) && d.form === 'browser' ? 'browser' : 'phone');
+  // The form of the device this page runs on: its record's, else 'browser' on a wide page.
+  const ownForm = () => {
+    const me = (view?.devices ?? []).find(d => isObj(d) && d.id === ownId());
+    if (me) return formOf(me);
+    return document.documentElement.dataset.surface === 'wide' ? 'browser' : 'phone';
+  };
 
   // '14 Oct 2026, 10:12 AM' for a time in milliseconds, or '' when there is no such time.
   function when(ms) {
@@ -150,7 +166,7 @@
   function connectedOf(data) {
     return (Array.isArray(data.devices) ? data.devices : [])
       .filter(d => isObj(d) && d.connected === true && textOf(d.id))
-      .map(d => ({ id: textOf(d.id), name: textOf(d.name, 'Phone'), carrier: textOf(d.lastCarrier) }));
+      .map(d => ({ id: textOf(d.id), name: textOf(d.name, 'Phone'), carrier: textOf(d.lastCarrier), form: formOf(d) }));
   }
 
   // The phone's name from the offer. Under plain node the server sends the phone as { name, ... } (a string is taken as the name too).
@@ -158,13 +174,20 @@
 
   // Sets the pairing offer from the server's offer fields. A link a plain-node Add phone gave is kept while the offer is open.
   // flags holds the server's tried and left (true once a device failed the code; true when the phone waiting went away).
+  // flags.form is 'browser' for Add a browser (the server's offer.form); a plain-node Add a browser also keeps its claim code and addresses.
   function setOffer(state, expiresInS, code, device, flags = {}) {
     const s = textOf(state, 'idle');
+    const form = flags?.form === 'browser' ? 'browser' : flags?.form === 'phone' ? 'phone' : (offer?.form ?? 'phone');
     if (s === 'offer' || s === 'confirm') {
-      const keep = offer?.link ?? '';
-      offer = { state: s, expiresAt: Date.now() + Math.max(0, Number(expiresInS) || 0) * 1000, code: textOf(code), link: keep, device: phoneNameOf(device), tried: flags?.tried === true, left: flags?.left === true };
+      const same = offer && offer.form === form;
+      const keep = same ? (offer?.link ?? '') : '';
+      offer = {
+        state: s, expiresAt: Date.now() + Math.max(0, Number(expiresInS) || 0) * 1000, code: textOf(code), link: keep, device: phoneNameOf(device),
+        tried: flags?.tried === true, left: flags?.left === true, form, claimed: flags?.claimed === true,
+        claim: same ? (offer?.claim ?? '') : '', addresses: same ? (offer?.addresses ?? []) : [],
+      };
     } else if (TERMINAL.includes(s)) {
-      offer = { state: s, expiresAt: 0, code: '', link: '', device: phoneNameOf(device) };
+      offer = { state: s, expiresAt: 0, code: '', link: '', device: phoneNameOf(device), form };
     } else {
       offer = null;
     }
@@ -195,26 +218,46 @@
       } else {
         const data = await res.json().catch(() => ({}));
         if (res.ok) applyState(data);
-        else loadError = textOf(data.error, `Phones could not be read (${res.status}).`);
+        else loadError = textOf(data.error, 'Phones could not be read. Press Refresh to try again.');
       }
     } catch (err) {
-      loadError = textOf(err?.message, 'Phones could not be read.');
+      loadError = 'Phones could not be read. Press Refresh to try again.';
     }
     paintAll();
   }
 
   // The activity list (GET /api/phones/activity). A list that cannot be read keeps what it had.
+  let activityGoodAt = 0;
+  let activityFailed = false;
+  let refusedShown = false;
+  const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function activityNotRead(res) {
+    if (res && (res.status === 401 || res.status === 403)) {
+      if (!refusedShown) {
+        refusedShown = true;
+        MuseUI.toast('Plenum needs to be opened again from this device.', 'bad');
+      }
+      return;
+    }
+    activityFailed = true;
+    paintActivity();
+  }
+
   async function refreshActivity() {
     try {
       await (MuseUI.ready ?? Promise.resolve());
       const res = await MuseUI.request('/api/phones/activity');
-      if (!res.ok) return;
+      if (!res.ok) return activityNotRead(res);
       const data = await res.json().catch(() => ({}));
+      activityGoodAt = Date.now();
+      activityFailed = false;
+      refusedShown = false;
       const rows = Array.isArray(data.activity) ? data.activity : [];
       activity = rows.filter(isObj).slice(0, 50).map(e => ({ at: Number(e.at) || 0, device: textOf(e.device, 'Phone'), text: textOf(e.text) }));
       paintActivity();
     } catch {
-      // The list stays as it was.
+      // The list stays as it was, and says when that was.
+      activityNotRead(null);
     }
   }
 
@@ -225,7 +268,7 @@
       if (!isObj(p)) continue;
       const id = textOf(p.id);
       if (!id) continue;
-      next.set(id, { id, name: textOf(p.name, 'Phone'), carrier: textOf(p.carrier) });
+      next.set(id, { id, name: textOf(p.name, 'Phone'), carrier: textOf(p.carrier), form: formOf(p) });
     }
     if (liveKnown) {
       for (const [id, p] of next) if (!live.has(id)) MuseUI.toast(`${p.name} connected.`, 'ok');
@@ -259,8 +302,12 @@
       return;
     }
     const names = list.map(p => p.name);
-    const full = list.length === 1 ? `Phone connected: ${names[0]}` : `${list.length} phones connected`;
-    const short = list.length === 1 ? 'Phone' : `${list.length} phones`;
+    // Phones, browsers (Add a browser), or devices when both are connected.
+    const browsers = list.filter(p => p.form === 'browser').length;
+    const many = browsers === 0 ? 'phones' : browsers === list.length ? 'browsers' : 'devices';
+    const one = list[0]?.form === 'browser' ? 'Browser' : 'Phone';
+    const full = list.length === 1 ? `${one} connected: ${names[0]}` : `${list.length} ${many} connected`;
+    const short = list.length === 1 ? one : `${list.length} ${many}`;
     const label = narrowQuery?.matches ? short : full;
     const tip = `Connected: ${names.join(', ')}. Open Settings › Phones.`;
     // The accessible name keeps the full words even where the bar shows the short label (the fit ladder in style.css, step 4).
@@ -382,7 +429,7 @@
 
   // A phone may change the phones and the desktop-wide switches only at Full control. The computer itself always may.
   function mayManage() {
-    if (!onPhone()) return true;
+    if (!remotePage()) return true;
     const me = (view?.devices ?? []).find(d => isObj(d) && d.id === ownId());
     return me?.tier === 'full';
   }
@@ -416,15 +463,16 @@
     const d = (view?.devices ?? []).find(x => isObj(x) && x.id === row.id);
     const before = d?.tier ?? 'full';
     if ((RANK[value] ?? 0) <= (RANK[before] ?? 0)) return changeTier(row, value);      // lowering: no confirm
-    const name = textOf(d?.name, 'this phone');
+    const self = formOf(d) === 'browser' ? 'this browser' : 'this phone';
+    const name = textOf(d?.name, self);
     const plainHttp = d?.app === 'lan-web' ? ' It pairs through a web page sent without encryption, so someone on that network could have changed it.' : '';
     const ok = await MuseUI.confirm(value === 'full' ? {
       title: `Give ${name} Full control?`,
-      body: `With Full control this phone can do everything this window can: start runs that edit files and run commands, use the browser and the computer, and change settings.${plainHttp}`,
+      body: `With Full control ${self} can do everything this window can: start runs that edit files and run commands, use the browser and the computer, and change settings.${plainHttp}`,
       action: 'Give Full control', tone: 'danger', focusCancel: true,
     } : {
       title: `Give ${name} Approve and watch?`,
-      body: `With Approve and watch this phone can approve or deny waiting cards, which lets runs go ahead, as well as watch and stop.${plainHttp}`,
+      body: `With Approve and watch ${self} can approve or deny waiting cards, which lets runs go ahead, as well as watch and stop.${plainHttp}`,
       action: 'Give Approve and watch', tone: 'danger', focusCancel: true,
     });
     if (!ok) { row.tierSel.value = before; return; }
@@ -433,9 +481,10 @@
 
   async function removeDevice(row) {
     const d = (view?.devices ?? []).find(x => isObj(x) && x.id === row.id);
-    const mine = onPhone() && row.id === ownId();
+    const mine = remotePage() && row.id === ownId();
+    const self = formOf(d) === 'browser' ? 'this browser' : 'this phone';
     const ok = await MuseUI.confirm({
-      title: mine ? 'Remove this phone?' : `Remove ${textOf(d?.name, 'this phone')}?`,
+      title: mine ? `Remove ${self}?` : `Remove ${textOf(d?.name, self)}?`,
       body: 'It can no longer reach this computer, and its connection closes at once. To use Plenum on it again, pair it again.',
       action: 'Remove',
       tone: 'danger',
@@ -541,17 +590,25 @@
 
   // ---------- pairing (Add phone, human-only: the server refuses it from a phone) ----------
 
-  async function addPhone() {
+  // Add phone ({}) or Add a browser ({ for: 'browser' }). A new code of either kind ends the one before.
+  async function addPhone(form = 'phone') {
     offerError = '';
+    const browser = form === 'browser';
     try {
-      const data = await MuseUI.api('/api/phones/pair/start', {});
-      setOffer(textOf(data.state, 'offer'), data.expiresInS, '');
+      const data = await MuseUI.api('/api/phones/pair/start', browser ? { for: 'browser' } : {});
+      setOffer(textOf(data.state, 'offer'), data.expiresInS, '', null, { form: browser ? 'browser' : 'phone' });
       if (offer && textOf(data.link)) offer.link = textOf(data.link);
+      // Under plain node only: the code to type and the addresses (the desktop app shows them in its own window, never here).
+      if (offer && browser && textOf(data.claim)) offer.claim = textOf(data.claim);
+      if (offer && browser && Array.isArray(data.addresses)) offer.addresses = data.addresses.map(a => textOf(a)).filter(a => /^https?:\/\//.test(a)).slice(0, 4);
     } catch (err) {
       offerError = textOf(err?.message, 'A new code could not be made.');
     }
     paintOffer();
   }
+  const addBrowser = () => addPhone('browser');
+  // New code makes a code of the same kind as the one that ended.
+  const newCode = () => addPhone(offer?.form === 'browser' ? 'browser' : 'phone');
 
   async function cancelPhone() {
     try {
@@ -566,6 +623,7 @@
 
   // The words for each pairing state (MOBILE-UI 7.2). Under plain node there is no window: the link is copied and the Allow row answers.
   function offerWords(o, plain) {
+    if (o.form === 'browser') return browserWords(o, plain);
     switch (o.state) {
       case 'offer':
         if (plain) return { title: 'Open the link on your phone', detail: 'Copy the link and open it on your phone. The code for it appears here.' };
@@ -581,6 +639,30 @@
         return { title: 'The code expired. No phone was paired.', detail: '' };
       case 'failed3':
         return { title: 'Three tries with this code failed, so it was stopped. No phone was paired.', detail: '' };
+      default:
+        return { title: '', detail: '' };
+    }
+  }
+
+  // The same rows for Add a browser. Under plain node the code to type is on this page (there is no window to show it).
+  function browserWords(o, plain) {
+    const where = o.addresses?.[0] ? `On your other computer, open ${o.addresses[0]}` : 'On your other computer, open the address of this computer';
+    switch (o.state) {
+      case 'offer':
+        if (o.claimed && !o.left) return { title: 'The browser has the code', detail: 'Waiting for it to connect.' };
+        if (plain) return { title: 'Open Plenum in the other browser', detail: o.claim ? `${where} and type this code there: ${o.claim.replace(/^(.{4})(.{4})(.{4})$/, '$1-$2-$3')}` : 'Copy the link and open it in the other browser. The code for it appears here.' };
+        return { title: 'Look at the window on your computer', detail: 'A window opened on this computer with an address and a code. Type them in the other browser.' };
+      case 'confirm':
+        if (plain) return { title: o.device ? `A browser is waiting: ${o.device}` : 'A browser is waiting', detail: 'Compare the code shown here with the code in the browser. Allow here only if they match.' };
+        return { title: 'A browser is waiting', detail: 'Compare the code in the window on this computer with the code in the browser. Allow there only if they match.' };
+      case 'allowed':
+        return { title: 'A browser is added.', detail: 'It can do everything this window can. Remove it any time in the list below.' };
+      case 'denied':
+        return { title: 'No browser was added.', detail: '' };
+      case 'expired':
+        return { title: 'The code expired. No browser was added.', detail: '' };
+      case 'failed3':
+        return { title: 'The code was typed wrong five times, so it was stopped. No browser was added.', detail: '' };
       default:
         return { title: '', detail: '' };
     }
@@ -625,7 +707,7 @@
     const active = Boolean(o) && (o.state === 'offer' || o.state === 'confirm');
     const plain = view?.plainNode === true;
     const words = o ? offerWords(o, plain) : { title: '', detail: '' };
-    const answering = Boolean(o) && o.state === 'confirm' && plain && !onPhone();   // pairing is answered at the computer only
+    const answering = Boolean(o) && o.state === 'confirm' && plain && !remotePage();   // pairing is answered at the computer only
     p.offerAnswer.hidden = !answering;
     if (answering && !answerShown) p.offerDeny.focus();   // Deny has the focus, so an Enter does not allow by accident
     answerShown = answering;
@@ -636,12 +718,13 @@
     p.offerDetail.hidden = !o || !words.detail;
     const tried = Boolean(o) && (o.state === 'offer' || o.state === 'confirm') && o.tried === true;
     const left = Boolean(o) && o.state === 'offer' && o.left === true;
-    p.offerTried.textContent = tried ? 'Another device tried to pair with this computer and was turned away. Only a phone that has this code can pair.' : '';
+    const browser = o?.form === 'browser';
+    p.offerTried.textContent = tried ? `Another device tried to pair with this computer and was turned away. Only a ${browser ? 'browser' : 'phone'} that has this code can pair.` : '';
     p.offerTried.hidden = !tried;
-    p.offerLeft.textContent = left ? 'The phone that was waiting left before you answered. Scan the code again.' : '';
+    p.offerLeft.textContent = left ? (browser ? 'The browser that was waiting left before you answered. Type the code again there.' : 'The phone that was waiting left before you answered. Scan the code again.') : '';
     p.offerLeft.hidden = !left;
     // A code and a link come from the server only under plain node, where this page answers the pairing (B-L11).
-    p.offerCode.textContent = plain && o && o.state === 'confirm' && o.code ? `Code on the phone: ${o.code.replace(/^(\d{3})(\d{3})$/, '$1 $2')}` : '';
+    p.offerCode.textContent = plain && o && o.state === 'confirm' && o.code ? `${browser ? 'Code in the browser' : 'Code on the phone'}: ${o.code.replace(/^(\d{3})(\d{3})$/, '$1 $2')}` : '';
     p.offerCode.hidden = !p.offerCode.textContent;
     p.offerCount.textContent = active ? countText() : '';
     p.offerCount.hidden = !active;
@@ -652,11 +735,43 @@
     p.offerError.textContent = offerError;
     p.offerError.hidden = !offerError;
     p.addBtn.disabled = active;
-    p.addBtn.hidden = onPhone();
-    p.pairNotes.hidden = onPhone();
-    if (!onPhone()) showNote('phone-pairing', p.pairNotes);
+    p.addBtn.hidden = remotePage();
+    // Add a browser: at the computer only, like Add phone (pairing is human-only, and the server refuses it from a paired device).
+    p.addBrowserBtn.disabled = active;
+    p.addBrowserBtn.hidden = remotePage();
+    p.addBrowserHelp.hidden = remotePage();
+    p.pairNotes.hidden = remotePage();
+    if (!remotePage()) showNote('phone-pairing', p.pairNotes);
+    paintBrowserAddress();
     if (active) startCount();
     else stopCount();
+  }
+
+  // The row "Open Plenum in a browser" (the computer only): the first short address of the code page, with Copy, and what it is.
+  function paintBrowserAddress() {
+    const p = page;
+    if (!p) return;
+    p.browserRow.hidden = remotePage() || unbuilt;
+    if (p.browserRow.hidden) return;
+    const list = (Array.isArray(view?.pairAddresses) ? view.pairAddresses : []).filter(a => isObj(a) && /^https?:\/\//.test(textOf(a.url)));
+    const first = list[0];
+    p.browserUrl.textContent = first ? textOf(first.url) : '';
+    p.browserUrl.hidden = !first;
+    p.browserCopy.hidden = !first;
+    p.browserCopy.dataset.url = first ? textOf(first.url) : '';
+    if (!first) p.browserText.textContent = 'Turn on Same network or Tailscale above first.';
+    else if (first.kind === 'tailscale') p.browserText.textContent = 'This address is secure. It works on devices signed in to your Tailscale.';
+    else p.browserText.textContent = 'This address works only on this network and is not encrypted. Turn on Tailscale for a secure one.';
+    p.browserRow.dataset.kind = first ? (first.kind === 'tailscale' ? 'tailscale' : 'lan') : 'none';
+  }
+
+  // The row "This browser" on a paired browser's own page: its notifications and its lock are the shell's settings.
+  function paintThisBrowser() {
+    const p = page;
+    if (!p) return;
+    const shown = remotePage() && ownForm() === 'browser' && !unbuilt;
+    p.thisBrowser.hidden = !shown;
+    p.thisBrowserBtn.disabled = typeof window.plenumShell?.openSettings !== 'function';
   }
 
   // ---------- the paired phones ----------
@@ -694,14 +809,17 @@
   }
 
   function paintDeviceRow(row, d) {
-    const phone = onPhone();
+    const phone = remotePage();
     const mine = phone && row.id === ownId();
     const on = live.get(row.id);
     row.name.textContent = textOf(d.name, 'Phone');
     row.dot.dataset.on = on ? 'true' : 'false';
     const where = on ? `Connected over ${CARRIER_WORDS[on.carrier] ?? 'a way to this computer'}.` : (Number(d.lastSeen) > 0 ? `Last seen ${when(d.lastSeen)}.` : 'Not connected yet.');
-    const kind = d.app === 'lan-web' ? 'Web page (plain http)' : (PLATFORM_WORDS[d.platform] ?? 'Phone');
-    const push = PUSH_WORDS[d.push] ? `Notifications: ${PUSH_WORDS[d.push]}.` : 'Notifications are off for this phone.';
+    const browser = formOf(d) === 'browser';
+    const kind = browser
+      ? (d.app === 'lan-web' ? 'Browser, plain http page' : 'Browser')
+      : (d.app === 'lan-web' ? 'Web page (plain http)' : (PLATFORM_WORDS[d.platform] ?? 'Phone'));
+    const push = PUSH_WORDS[d.push] ? `Notifications: ${PUSH_WORDS[d.push]}.` : `Notifications are off for this ${browser ? 'browser' : 'phone'}.`;
     row.meta.textContent = `${kind}. ${d.created ? `Paired ${when(d.created)}. ` : ''}${where} ${push}`;
     row.field.hidden = phone;
     row.tierText.hidden = !phone;
@@ -709,7 +827,7 @@
     if (TIER_LABELS.some(([v]) => v === d.tier)) row.tierSel.value = d.tier;
     row.tierSel.disabled = !mayManage();
     row.remove.hidden = !(!phone || mine || mayManage());
-    row.remove.textContent = mine ? 'Remove this phone' : 'Remove';
+    row.remove.textContent = mine ? `Remove this ${browser ? 'browser' : 'phone'}` : 'Remove';
   }
 
   function paintDevices() {
@@ -718,8 +836,8 @@
     const list = (Array.isArray(view?.devices) ? view.devices : []).filter(isObj).filter(d => textOf(d.id));
     p.empty.hidden = list.length > 0;
     // Only the computer changes how phones reach it, and removes all of them (D7): a phone sees these only as text.
-    p.removeAll.hidden = list.length === 0 || !mayManage() || onPhone();
-    p.expirySel.disabled = onPhone() || !mayManage();
+    p.removeAll.hidden = list.length === 0 || !mayManage() || remotePage();
+    p.expirySel.disabled = remotePage() || !mayManage();
     const seen = new Set();
     for (const d of list) {
       const id = textOf(d.id);
@@ -748,6 +866,8 @@
       return li;
     }));
     p.activityEmpty.hidden = activity.length > 0;
+    p.activityAsOf.textContent = activityFailed && activityGoodAt ? `as of ${clock(activityGoodAt)}` : '';
+    p.activityAsOf.hidden = !p.activityAsOf.textContent;
   }
 
   // ---------- painting the section from the last state ----------
@@ -781,8 +901,9 @@
     p.error.hidden = !loadError || unbuilt;
     if (unbuilt) return;
     const v = view ?? {};
-    const phone = onPhone();
+    const phone = remotePage();
     const manage = mayManage();
+    paintThisBrowser();
 
     // Turn phones on, and the port.
     p.enabled.checked = v.enabled === true;
@@ -1012,7 +1133,23 @@
     // Paired phones.
     const pairBlock = make('div', 'remote-block');
     p.pairNotes = notesWrap();
-    p.addBtn = button('primary', 'Add phone', addPhone);
+    p.addBtn = button('primary', 'Add phone', () => addPhone('phone'));
+    // Add a browser (wave 5): a short address and a code typed on another computer; the same compare and Allow in the window here.
+    p.addBrowserBtn = button('ghost', 'Add a browser', addBrowser);
+    p.addBrowserHelp = make('p', 'remote-help', 'Use Plenum from a browser on another computer. You type a short address and a code there. No camera is needed.');
+    // The short address of the code page, for the browser on the other computer (the computer only; it holds no key).
+    p.browserRow = make('div', 'remote-browser-row');
+    p.browserLabel = make('p', 'remote-browser-label', 'Open Plenum in a browser');
+    p.browserUrl = make('span', 'remote-browser-url');
+    p.browserCopy = button('ghost small', 'Copy', async () => {
+      const url = p.browserCopy.dataset.url || '';
+      if (!url) return;
+      const ok = await MuseUI.copyText?.(url);
+      MuseUI.toast(ok ? 'Address copied.' : 'The address could not be copied.', ok ? 'ok' : 'bad');
+    });
+    p.browserText = make('p', 'remote-help');
+    p.browserRow.append(p.browserLabel, line(p.browserUrl, p.browserCopy), p.browserText);
+    p.browserRow.hidden = true;
     p.offer = make('div', 'remote-offer');
     p.offerTitle = make('p', 'remote-offer-title');
     p.offerDetail = make('p', 'remote-offer-text');
@@ -1028,7 +1165,7 @@
     p.offerAnswer.classList.add('remote-answer');
     p.offerAnswer.hidden = true;
     p.offerCancel = button('ghost small', 'Cancel', cancelPhone);
-    p.offerNew = button('ghost small', 'New code', addPhone);
+    p.offerNew = button('ghost small', 'New code', newCode);
     p.offerCopy = button('ghost small', 'Copy link', async () => {
       const link = offer?.link ?? '';
       if (!link) return;
@@ -1063,7 +1200,12 @@
     p.removeAll = button('ghost small', 'Remove all', removeAll);
     p.removeAllHelp = make('p', 'remote-help', 'Also gives this computer a new key, so every phone must pair again.');
     p.removeAllStatus = statusEl();
-    pairBlock.append(p.pairNotes, line(p.addBtn), p.offer, p.empty, p.devices, expiryField, p.expiryStatus, line(p.removeAll), p.removeAllHelp, p.removeAllStatus);
+    // This browser (a paired browser's own page): its notifications and its lock live in the shell's settings.
+    p.thisBrowser = make('div', 'remote-this-browser');
+    p.thisBrowserBtn = button('ghost small', 'Notifications and lock', () => window.plenumShell?.openSettings?.());
+    p.thisBrowser.append(make('p', 'remote-browser-label', 'This browser'), line(p.thisBrowserBtn));
+    p.thisBrowser.hidden = true;
+    pairBlock.append(p.pairNotes, line(p.addBtn, p.addBrowserBtn), p.addBrowserHelp, p.browserRow, p.thisBrowser, p.offer, p.empty, p.devices, expiryField, p.expiryStatus, line(p.removeAll), p.removeAllHelp, p.removeAllStatus);
 
     // Notifications.
     const pushBlock = make('div', 'remote-block');
@@ -1088,8 +1230,10 @@
     p.stopStatus = statusEl();
     p.activityHead = make('h5', 'remote-sub', 'Activity from phones');
     p.activityList = make('ul', 'remote-activity');
+    p.activityAsOf = make('p', 'remote-quiet');
+    p.activityAsOf.hidden = true;
     p.activityEmpty = make('p', 'remote-quiet', 'Nothing from a phone yet. What a phone does here is listed with its name.');
-    stopBlock.append(line(p.stopBtn), p.stopHelp, p.stopStatus, p.activityHead, p.activityEmpty, p.activityList);
+    stopBlock.append(line(p.stopBtn), p.stopHelp, p.stopStatus, p.activityHead, p.activityAsOf, p.activityEmpty, p.activityList);
 
     p.main.append(
       powerBlock,

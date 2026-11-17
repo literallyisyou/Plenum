@@ -80,7 +80,7 @@ export function updateDesktopBody(computer, minimum, have) {
 export function uiFailedBody(computer, cause) {
   if (cause === 'not-sent') return `${computer} did not send Plenum's screens. Try again.`;
   if (cause === 'stopped') return `Plenum on ${computer} stopped while the screens were loading.`;
-  return 'A file from ' + computer + ' did not match its checksum, so the phone kept the copy it had. Try again; if it happens again, restart Plenum on the computer.';
+  return 'Part of Plenum did not arrive intact from ' + computer + ', so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.';
 }
 
 export function drivingLine(computer, driving) {

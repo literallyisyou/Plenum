@@ -251,6 +251,22 @@
       }
       b.setAttribute('aria-label', name);
     }
+    paintBizWait();
+  }
+
+  function paintBizWait() {
+    const w = refs.bizWait;
+    if (!w) return;
+    const pb = q('#paneButtons [data-pane="business"] .badge');
+    const count = pb && !pb.hidden ? txt(pb) : '';
+    w.hidden = !count;
+    if (refs.bizWaitN.textContent !== count) refs.bizWaitN.textContent = count;
+    const label = count ? `${count} waiting for you in your businesses. Open Today` : '';
+    if (w.getAttribute('aria-label') !== label) {
+      if (label) w.setAttribute('aria-label', label);
+      else w.removeAttribute('aria-label');
+      w.title = label;
+    }
   }
 
   // The Stop dock is the cell the shell's Stop covers. In the cell, the shell draws Stop there. While the keyboard is open the dock
@@ -552,9 +568,11 @@
     if (state.tab === 'chat' && next !== 'chat' && refs.chat) state.chatScroll = refs.chat.scrollTop;
     if (state.tab === 'projects' && next !== 'projects') pushTabEntry();
     else if (state.tab !== 'projects' && next === 'projects') dropTabEntry();
+    const toProjects = next === 'projects' && state.tab !== 'projects';
     state.tab = next;
     root.dataset.phTab = next;
     refreshChrome();
+    if (toProjects) glanceFront();
     if (next === 'chat' && refs.chat) {
       const at = state.chatScroll;
       requestAnimationFrame(() => {
@@ -663,6 +681,20 @@
     refs.connChip = conn;
     refs.connDot = dot;
     refs.connWord = word;
+
+    // What waits for the person in the businesses (the count of the Businesses pane's title bar button, which the phone hides): shown on
+    // every tab, one tap opens Today. Hidden while nothing waits.
+    const wait = mk('button', 'ph-biz-wait');
+    wait.type = 'button';
+    wait.hidden = true;
+    const waitDot = mk('span', 'ph-dot');
+    waitDot.setAttribute('aria-hidden', 'true');
+    const waitN = mk('span', 'ph-biz-wait-n');
+    wait.append(waitDot, waitN);
+    wait.addEventListener('click', () => openToday(''));
+    refs.bizWait = wait;
+    refs.bizWaitN = waitN;
+    top.append(wait);
 
     const more = mk('button', 'ph-icon-btn ph-more');
     more.type = 'button';
@@ -1421,6 +1453,8 @@
     fake: [],                  // debug approvals for another project (plenumPhoneDebug.approval)
     fakeSeq: 0,
     tierOverride: null,
+    ticks: 0,                  // one-second looks that ran (none while the app is behind); read by plenumPhoneDebug.counts()
+    framePaints: 0,            // frames in which the page's changes were looked at (sweep, the waiting bar); the same
     announced: new Set(),      // approval ids already announced as waiting off screen
     waitTarget: null,
     pictureTold: false,
@@ -2037,6 +2071,59 @@
     else goSpendLimit();
   }
 
+  // Wave 4: Today in the Businesses pane (at one business when an id is given), Settings › Accounts, Settings › Background services, and
+  // the Plan use pop-up. The ids are the computer's own: letters, digits, dots, dashes and underscores, as the shell's links check them.
+  const PLACE_ID = /^[A-Za-z0-9_.-]{1,80}$/;
+  const safeId = v => (typeof v === 'string' && PLACE_ID.test(v) ? v : '');
+
+  function openToday(business, tries = 15) {
+    const open = MuseUI.openBusinesses;
+    if (typeof open !== 'function' || !MuseUI.pane.list().includes('business')) {
+      // The Businesses pane may still be loading when the app opens from a notification.
+      if (tries > 0) setTimeout(() => openToday(business, tries - 1), 200);
+      else MuseUI.toast('Businesses are not in this Plenum build yet.', 'bad');
+      return;
+    }
+    closeLayers(entry => entry.kind === 'sheet');
+    if (state.tab === 'agents' || state.tab === 'review') applyTab('chat');
+    try {
+      open({ tab: 'today', business: safeId(business) });
+    } catch {
+      MuseUI.toast('Businesses could not open.', 'bad');
+    }
+  }
+
+  function goSettings(section) {
+    closeLayers(entry => entry.kind === 'sheet');
+    try {
+      MuseUI.openSettings(section);
+    } catch {
+      MuseUI.toast('Settings could not open.', 'bad');
+    }
+  }
+
+  function goPlanUse() {
+    if (typeof MuseUI.openPlanUse === 'function') {
+      closeLayers(entry => entry.kind === 'sheet');
+      setTab('chat');
+      try {
+        MuseUI.openPlanUse();
+        return;
+      } catch {
+        // The pop-up is not ready: the strip's button or the spend limit is the way in.
+      }
+    }
+    goLimit();
+  }
+
+  // A notification of an approval names the project it waits in (the desktop's routes do), or the approval itself (the phone's #waiting=).
+  function goWaitingFor(id) {
+    const items = waitingItems();
+    if (!id || items.some(i => i.id === id)) return goWaiting(id);
+    const inProject = items.find(i => i.projectId === id);
+    return goWaiting(inProject ? inProject.id : '');
+  }
+
   function handleRoute(link) {
     if (!link || typeof link !== 'object') return;
     if (link.kind === 'waiting') goWaiting(typeof link.id === 'string' ? link.id : '');
@@ -2044,13 +2131,48 @@
     else if (link.kind === 'chat') goChat(typeof link.project === 'string' ? link.project : '');
     else if (link.kind === 'settings' && link.section === 'limit') goLimit();
     else if (link.kind === 'home') setTab('projects');
+    else if (link.kind === 'today') openToday(safeId(link.id) || safeId(link.business));
+    else if (link.kind === 'accounts') goSettings('accounts');
+    else if (link.kind === 'services') goSettings('services');
+    else if (link.kind === 'plan-use') goPlanUse();
+  }
+
+  // { kind, id } from another part of the page (window event 'plenum:open'): the same places, with chat and waiting named by an id.
+  function handleOpen(d) {
+    if (!d || typeof d !== 'object' || typeof d.kind !== 'string') return;
+    const id = safeId(d.id);
+    if (d.kind === 'chat') goChat(id);
+    else if (d.kind === 'waiting') goWaitingFor(id);
+    else if (['today', 'accounts', 'services', 'plan-use'].includes(d.kind)) handleRoute({ kind: d.kind, id });
+  }
+
+  // The page's own address can name one of the new places too (#today, #today=<business id>, #accounts, #services). It is taken off the
+  // address once it is followed, so Back and a reload do not follow it again.
+  function placeOfHash(hash) {
+    const text = String(hash || '').replace(/^#/, '');
+    if (text === 'today' || text === 'accounts' || text === 'services') return { kind: text };
+    const m = /^today=([A-Za-z0-9_.-]{1,80})$/.exec(text);
+    return m ? { kind: 'today', id: m[1] } : null;
+  }
+  function followHash() {
+    const link = placeOfHash(location.hash);
+    if (!link) return;
+    try {
+      history.replaceState(history.state, '', location.pathname + location.search);
+    } catch {
+      // The address stays; the place is still opened once.
+    }
+    handleRoute(link);
   }
 
   function wireRoutes() {
     if (shell && typeof shell.onRoute === 'function') shell.onRoute(handleRoute);
     else window.addEventListener('plenum:route', e => handleRoute(e.detail));
+    window.addEventListener('plenum:open', e => handleOpen(e.detail));
+    window.addEventListener('hashchange', followHash);
     const first = shellCall('takeRoute');
     if (first) handleRoute(first);
+    else followHash();
   }
 
   // ---------- the composer's mic (L18, P-24): only when the shell says this phone can listen ----------
@@ -2712,6 +2834,7 @@
       refreshAll();
     };
     dbg.route = link => handleRoute(link);
+    dbg.counts = () => ({ ticks: p2.ticks, framePaints: p2.framePaints });
     // Gives this page a shell property it does not have (computers, connectComputer, contactEmail, caps, dictation); undefined takes it away again.
     dbg.shell = patch => {
       for (const [key, value] of Object.entries(patch && typeof patch === 'object' ? patch : {})) {
@@ -2737,19 +2860,32 @@
 
   function observeAll() {
     let frame = 0;
+    // Everything the page changed in one frame is looked at once, in that frame: the names of the agent Stops first (paintAgents sweeps
+    // sweep() too), then the cards, the waiting bar and the newer line. Wave 4: this used to run paintAgents for every batch of changes,
+    // which a streaming reply makes dozens of times a second.
     const later = () => {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
+        p2.framePaints += 1;
         sweep();
         refreshWait();
         paintNewer();
       });
     };
-    // The names of the agent Stops are put back at once, in the same turn as the redraw that replaced them, so a screen reader never lands on a
-    // Stop that is only called "Stop <agent>" for a frame; everything else waits for the next frame.
-    new MutationObserver(() => {
-      paintAgents();
+    // A streaming reply changes its own run box dozens of times a second. The only thing of this layer in a run box is an approval card (and
+    // a hand-over box, which is one), so a change there is looked at only when it adds, removes or changes a card; the reply's text is not.
+    const elOf = node => (node && node.nodeType === 1 ? node : node ? node.parentElement : null);
+    const holdsCard = node => node && node.nodeType === 1 && (node.matches('.approval') || Boolean(node.querySelector('.approval')));
+    const onlyReply = r => {
+      const el = elOf(r.target);
+      if (!el || !el.closest || !el.closest('.run-box') || el.closest('.approval')) return false;
+      for (const n of r.addedNodes) if (holdsCard(n)) return false;
+      for (const n of r.removedNodes) if (holdsCard(n)) return false;
+      return true;
+    };
+    new MutationObserver(records => {
+      if (records.every(onlyReply)) return;
       later();
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
     window.addEventListener('plenum:board', refreshWait);
@@ -2760,7 +2896,16 @@
     window.addEventListener('plenum:connection', refreshAll);
     window.addEventListener('online', refreshAll);
     window.addEventListener('offline', refreshAll);
-    setInterval(refreshAll, 1000);
+    // The one-second look skips its tick while the app is behind (the phone is locked or another app is in front), and runs once as soon
+    // as it is in front again.
+    setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      p2.ticks += 1;
+      refreshAll();
+    }, 1000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'hidden') refreshAll();
+    });
   }
 
   // ---------- track B (MOBILE-UI 8.10 and 8.11, wave 121): the phone as the person ----------
@@ -3169,6 +3314,33 @@
     ensureLive();
   }
 
+  // ---------- wave 4: the Today card of the businesses on the Projects screen ----------
+  // ext-business.js draws the card (MuseUI.businessToday.node(): what waits, what runs, what did not run today, each business's next run,
+  // Run now, Pause, Pause all) and hides it while no business exists; this layer only places it above the list of chats, and asks it to read
+  // again when Projects comes to the front. The Businesses pane may load after this panel, so its event places the card too.
+  function placeGlance() {
+    const today = MuseUI.businessToday;
+    const node = today && typeof today.node === 'function' ? today.node() : null;
+    if (!node || !refs.sidebar) return false;
+    const head = q(':scope > .side-head', refs.sidebar);
+    if (node.parentElement !== refs.sidebar) {
+      if (head) refs.sidebar.insertBefore(node, head);
+      else refs.sidebar.prepend(node);
+    }
+    return true;
+  }
+  function glanceFront() {
+    if (state.tab !== 'projects') return;
+    const today = MuseUI.businessToday;
+    if (today && typeof today.refresh === 'function') {
+      try {
+        today.refresh();
+      } catch {
+        // The card reads again on its next event.
+      }
+    }
+  }
+
   function startPart2() {
     buildLive();
     buildWait();
@@ -3186,6 +3358,8 @@
     refreshAll();
     wireRoutes();
     if (shell && typeof shell.onCaps === 'function') shell.onCaps(() => paintMic());
+    if (!placeGlance()) soon(placeGlance, 25, 400);
+    window.addEventListener('plenum:biz-today', () => placeGlance());
   }
 
   // ---------- building the phone's frame ----------
@@ -3217,6 +3391,7 @@
     if (refs.effortSel) refs.effortSel.addEventListener('change', refreshChrome);
     if (refs.modelSel) refs.modelSel.addEventListener('change', refreshChrome);
     state.chatTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
       paintChip();
       paintTitle();
     }, 800);

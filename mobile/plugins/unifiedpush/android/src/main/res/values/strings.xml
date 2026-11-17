@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Notification channel names, shown in Android's notification settings for Plenum. -->
+    <!-- Notification channels, shown in Android's notification settings for Plenum. The same names and descriptions are in
+         mobile/plugins/unifiedpush/src/core.js NOTIFICATION_CHANNEL_LIST (mobile/test/plugins.test.mjs pins them). -->
     <string name="plenum_channel_approvals">Approvals and your turn</string>
+    <string name="plenum_channel_approvals_desc">Something is waiting for your OK, or a model needs you to do a step.</string>
     <string name="plenum_channel_finished">Finished runs</string>
+    <string name="plenum_channel_finished_desc">A run or a council finished.</string>
+    <string name="plenum_channel_problems">Problems</string>
+    <string name="plenum_channel_problems_desc">A run failed, or something stopped working and needs a look.</string>
     <string name="plenum_channel_limits">Limits</string>
+    <string name="plenum_channel_limits_desc">A plan or spend limit was reached.</string>
+    <!-- The line above a group of two or more notifications from one business or project. -->
+    <string name="plenum_group_title">Plenum</string>
+    <string name="plenum_group_summary">%1$d updates</string>
 </resources>

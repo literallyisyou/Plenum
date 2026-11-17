@@ -1212,3 +1212,50 @@ html[data-surface="phone"] .ph-settings-note {
 
 /* ---------- the Businesses pane: every select is a full touch target (the switcher "Business shown" was 35 px high) ---------- */
 html[data-surface="phone"] .biz-select { min-height: var(--tap); }
+
+/* ---------- wave 4: the Businesses pane at phone size, the Today card on Projects, the waiting count in the title bar ---------- */
+/* The pane: every control is a 44 px target, nothing is wider than the screen at 360 px, the tab row scrolls sideways when its words do
+   not fit (large text), and long names wrap instead of being cut. */
+html[data-surface="phone"] .ext-biz { padding-inline: 12px; }
+html[data-surface="phone"] .ext-biz .biz-input,
+html[data-surface="phone"] .ext-biz .biz-quiet,
+html[data-surface="phone"] .ext-biz .biz-opt { min-height: var(--tap); }
+html[data-surface="phone"] .biz-tabs { overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+html[data-surface="phone"] .biz-tabs::-webkit-scrollbar { display: none; }
+html[data-surface="phone"] .biz-tab { flex: 1 0 auto; padding: 0 12px; }
+html[data-surface="phone"] .ext-biz .biz-pill { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+html[data-surface="phone"] .biz-switcher { flex: 1 1 100%; }
+html[data-surface="phone"] .biz-day { min-height: var(--tap); padding-inline: 4px; }
+html[data-surface="phone"] .biz-day input { width: 22px; height: 22px; }
+html[data-surface="phone"] .ext-biz .switch-row { min-height: var(--tap); }
+html[data-surface="phone"] .biz-rt-switch { min-width: var(--tap); min-height: var(--tap); justify-content: center; }
+html[data-surface="phone"] .biz-start-facts { grid-template-columns: minmax(0, 1fr); }
+html[data-surface="phone"] .biz-start-key { margin-top: 4px; }
+html[data-surface="phone"] .biz-note-input { flex: 1 1 100%; }
+
+/* The Today card sits above the list of chats; with it shown the whole Projects screen scrolls as one, so the list is never squeezed. */
+html[data-surface="phone"] .sidebar > .biz-glance { flex: none; }
+html[data-surface="phone"] .sidebar:has(> .biz-glance:not([hidden])) .projects { flex: none; overflow: visible; }
+html[data-surface="phone"] .biz-glance button,
+html[data-surface="phone"] .biz-glance select,
+html[data-surface="phone"] .biz-glance input { min-height: var(--tap); }
+
+/* What waits for you in the businesses, in the title bar on every tab: one tap opens Today. Hidden while nothing waits. */
+html[data-surface="phone"] .ph-biz-wait {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  order: 2;
+  gap: 6px;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line-2));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+  color: var(--text);
+  font: 600 13px/1 var(--ui);
+}
+html[data-surface="phone"] .ph-biz-wait[hidden] { display: none; }
+html[data-surface="phone"] .ph-biz-wait .ph-dot { background: var(--warn); }

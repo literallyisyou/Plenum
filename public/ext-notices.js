@@ -205,7 +205,7 @@
 
   // A dialog for Approve all and Apply update. Cancel is focused, so Enter or Escape keeps things as they are. It is shown with
   // show() and a scrim, as the other confirmations are, so the drive pill and its Stop stay pressable over it (UI-ARCH 7).
-  // It resolves 'yes', 'no' or 'more'. Don't show again is written for 'yes' and 'no' only.
+  // It resolves 'yes', 'no' or 'more'. Don't show again is written for 'yes' only: Cancel leaves the question asked next time.
   function askDialog(n) {
     return new Promise(resolve => {
       const num = ++seq;
@@ -245,6 +245,7 @@
       scrim.className = 'risk-scrim';
       const order = [moreBtn, check, cancelBtn, actionBtn];
 
+      const opener = document.activeElement;
       let settled = false;
       const keepFocus = e => {
         if (!dlg.contains(e.target)) cancelBtn.focus();
@@ -255,7 +256,8 @@
         document.removeEventListener('focusin', keepFocus);
         scrim.remove();
         dlg.remove();
-        if (answer !== 'more' && check.checked) setHidden(n.id, true);
+        if (answer === 'yes' && check.checked) setHidden(n.id, true);
+        if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
         resolve(answer);
       };
       cancelBtn.addEventListener('click', () => finish('no'));

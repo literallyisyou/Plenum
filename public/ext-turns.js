@@ -217,7 +217,8 @@
     if (working || runGoing()) return;
     if (composerHasText()) return MuseUI.toast('The composer already has text. Clear it first, then edit the message.', 'bad');
     const n = (MuseUI.state.messages ?? []).length - index - 1;
-    if (!window.confirm(`Edit this message? ${editGoes(n)} Undo stays above the composer until you send a message.`)) return;
+    const sure = await MuseUI.confirm({ title: 'Edit message', body: `Edit this message? ${editGoes(n)} Undo stays above the composer until you send a message.`, action: 'Edit message', tone: 'danger', focusCancel: true });
+    if (sure !== true) return;
     const text = await cutBack(index);
     if (text === null) return;
     setComposer(text);
@@ -411,6 +412,8 @@
     refusal: ['pick-model'],
     other: ['open-log'],
   };
+  // The kinds Plenum sends again by itself (lib/cli-errors.mjs, lib/api-errors.mjs).
+  const AUTO_AGAIN = new Set(['sign-in-busy', 'network', 'overloaded', 'crashed']);
   const actionsOf = kind => (Object.hasOwn(CLI_ACTIONS, kind) ? CLI_ACTIONS[kind] : Object.hasOwn(API_ACTIONS, kind) ? API_ACTIONS[kind] : null);
 
   // The Accounts card of each program, by the name Plenum's own sentences use and by the provider part of a model's id.
@@ -543,6 +546,13 @@
       if (!found.actions.includes('retry')) {
         article.dataset.retry = 'no';
         dropRetry(article);
+      }
+      // A kind Plenum sends again by itself carries its own line ("Plenum sends your message again in ..."), when the turn has one. The line
+      // is shown as a quiet note, not as an error; Retry stays for sending at once.
+      const auto = typeof article.dataset.errorNotice === 'string' ? article.dataset.errorNotice.trim() : '';
+      if (auto && AUTO_AGAIN.has(found.kind) && found.actions.includes('retry')) {
+        article.dataset.autoRetry = '1';
+        sayUnder(article, auto, false);
       }
       const controls = controlsOf(found, (text, bad) => sayUnder(article, text, bad));
       if (!controls.length) continue;

@@ -2,6 +2,7 @@
 node_modules/
 release/
 dist/
+dist-android/
 
 # Phone shell built by scripts/build-mobile.mjs, and the installs of the phone app and the relay
 mobile/www/

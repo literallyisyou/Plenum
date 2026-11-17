@@ -6,6 +6,12 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f6f6fb" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0a0a11" media="(prefers-color-scheme: dark)">
+<!-- The page colour before the first paint (wave 4, m3). This page carries no inline CSS and no inline code: its CSP refuses both, and
+     scripts/build-mobile.mjs stops the build on either. So the colour comes from the color-scheme meta above (the browser paints a dark
+     canvas on a dark phone) and from the two stylesheets below, which block the first paint until they are read: the page and body
+     background is the bg token, #f6f6fb light and #0a0a11 dark, the same colours as the theme-color metas. A theme chosen in Plenum
+     (Dark on a light phone, Light on a dark one) is shown by shell.js before it does anything else (earlyTheme in app.js, from a copy of
+     the theme it keeps in localStorage). The Android app paints its window and WebView in the same colours natively. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Plenum">

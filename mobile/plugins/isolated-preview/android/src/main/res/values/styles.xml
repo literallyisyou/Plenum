@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The preview's theme: the phone's own look without an action bar, light in light mode (values-night/styles.xml has the dark one).
+     The platform has Theme.DeviceDefault.DayNight only from API 29 and no NoActionBar variant of it, so this pair does the same
+     from API 26 (minSdk). -->
+<resources>
+    <style name="Theme.IsolatedPreview.DayNight.NoActionBar" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+</resources>

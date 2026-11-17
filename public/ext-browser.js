@@ -34,6 +34,10 @@
   // While the view is shown its place is sent again this often, so a view the desktop took off the window by itself (the window hid
   // to the tray, a crashed page) comes back without waiting for a change here.
   const HEARTBEAT_MS = 2000;
+  // Wave 5 (brb): on a remote page (a phone, or a browser on another computer) the native view is never placed: the pane shows a picture of the
+  // computer's Browser instead, asked for again this often while the pane and the tab are both in front.
+  const REMOTE_SHOT_MS = 2500;
+  const remotePage = () => Boolean(window.plenumShell) && window.plenumShell.desktop !== true;
   const TEXT = {
     plain: 'The browser is part of the Plenum desktop app. This copy was started with node server.mjs, so it has no browser. Open the desktop app to use it.',
     empty: 'No tab is open. Type an address above, or open a new tab.',
@@ -53,6 +57,7 @@
     approveAll: 'Approve all is on: this run’s cards will be answered for you.',
     secretNote: 'This is typed straight into the field. The model never sees it, and Plenum does not keep it.',
     noActions: 'Nothing yet. What the model does in the browser is listed here.',
+    remote: 'This is a picture of the Browser on your computer. Click and type in it there.',
   };
   const DOWNLOAD_NOTICE = 'browser-download';
   const PERMISSION_NOTICE = 'browser-permission';
@@ -414,13 +419,16 @@
 
     const status = mk('p', 'ext-brw-status');
     status.setAttribute('role', 'status');
+    // Wave 5 (brb): what the picture is, on a remote page.
+    const remoteNote = mk('p', 'ext-brw-status ext-brw-remote', TEXT.remote);
+    remoteNote.hidden = !remotePage();
 
     const actionsBox = buildActions();
     const control = buildControl();
     const more = buildSettings();
     const foot = mk('p', 'ext-brw-foot', TEXT.signIn);
 
-    root.append(bar, tabsRow, header, strip, asks, viewEl, status, actionsBox.el, control.el, more.el, foot);
+    root.append(bar, tabsRow, header, strip, asks, viewEl, remoteNote, status, actionsBox.el, control.el, more.el, foot);
     body.replaceChildren(root);
 
     ui = {
@@ -1317,6 +1325,7 @@
   let again = false;
   let lastKey = 'h';
   let lastSentAt = 0;
+  let lastShotAt = 0;
   let syncTimer = null;
   let shotUrl = '';
 
@@ -1375,9 +1384,11 @@
   }
 
   async function sync() {
-    const want = wanted();
-    const key = want.mode === 'shown' ? `s:${Math.round(want.box.left)},${Math.round(want.box.top)},${Math.round(want.box.width)},${Math.round(want.box.height)}` : want.mode === 'covered' ? 'c' : 'h';
-    if (key === lastKey && !(want.mode === 'shown' && Date.now() - lastSentAt > HEARTBEAT_MS)) return;
+    let want = wanted();
+    // Wave 5 (brb): a remote page never places the computer's view ("shown" would move it on the computer's screen): it shows a picture.
+    if (want.mode === 'shown' && remotePage()) want = { mode: 'picture' };
+    const key = want.mode === 'shown' ? `s:${Math.round(want.box.left)},${Math.round(want.box.top)},${Math.round(want.box.width)},${Math.round(want.box.height)}` : want.mode === 'covered' ? 'c' : want.mode === 'picture' ? 'p' : 'h';
+    if (key === lastKey && !(want.mode === 'shown' && Date.now() - lastSentAt > HEARTBEAT_MS) && !(want.mode === 'picture' && Date.now() - lastShotAt >= REMOTE_SHOT_MS)) return;
     if (sending) {
       again = true;
       return;
@@ -1394,6 +1405,14 @@
       } else if (want.mode === 'covered') {
         const data = await MuseUI.api('/api/browser/bounds', { visible: false, snapshot: true });
         if (data && typeof data.image === 'string' && data.image.startsWith('data:image/jpeg;base64,')) showShot(data.image);
+      } else if (want.mode === 'picture') {
+        lastShotAt = Date.now();
+        const data = await MuseUI.api('/api/browser/bounds', { visible: false, snapshot: true });
+        if (data && typeof data.image === 'string' && data.image.startsWith('data:image/jpeg;base64,')) {
+          showShot(data.image);
+          // The picture is the view here, not a view under a layer: it is not dimmed.
+          delete ui.viewEl.dataset.covered;
+        }
       } else if (previous !== 'h') {
         await MuseUI.api('/api/browser/bounds', { visible: false });
       }

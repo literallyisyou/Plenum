@@ -24,7 +24,7 @@ Contents:
 | Phone | Now (phase 1) | Next |
 |---|---|---|
 | iPhone | Over Tailscale or your relay (the page must be https), open the Plenum page in Safari, tap Share, then Add to Home Screen. Open Plenum from the Home Screen and pair there. Notifications need the Home Screen app. | An iPhone app on TestFlight first (phase 3), then the App Store. It needs the Apple Developer Program enrolment, and the owner runs the first TestFlight build on their own phone. |
-| Android | Over Tailscale or your relay (https), Chrome offers Install. Pair from the installed app. | An APK attached to the GitHub release of each tag (phase 2), signed with the upload key kept in the repository secrets. Google's developer verification for sideloaded apps applies; until the developer account is verified, Android may show a warning or make you wait before the install (MOBILE.json distribution.phase2). |
+| Android | The app, built on your own computer and installed over USB (section 6, "Build for your own phone"). Or, over Tailscale or your relay (https), Chrome offers Install. Pair from the installed app. | No release has been published and there is no Play listing. `release.yml` can attach a signed APK to the GitHub release of a tag once the four Android signing secrets are set; Google's developer verification for sideloaded apps would then apply (MOBILE.json distribution.phase2). |
 | Either | The LAN page (`http://<computer address>:<port>/p/<key>`) works in any phone browser with no install. It cannot send notifications or use the camera, and it says so at the top of the screen. | The Capacitor apps (phase 2 Android, phase 3 iPhone). No store listing exists yet, and no job publishes to a store or submits for review. |
 
 There is no store listing, no review submission and no TestFlight upload unless you start one yourself (see section 7 for the
@@ -77,9 +77,9 @@ Phone checks (phase 1, PWA and app):
 - [ ] iPhone: an approval push arrives with the app closed (device).
 - [ ] iPhone: repeat on an EU-region iPhone if you can borrow one (device).
 - [ ] Android, PWA: Chrome install, pair, and Web Push after a tap (device).
-- [ ] Android: the GitHub APK install flow, from the release page, with the install-unknown-apps setting for the app you open the APK with (device).
+- [ ] Android: the debug APK from `node scripts/build-android.mjs` installs with `adb install -r`, and the next build installs over it without losing the pairing (device).
 - [ ] LAN: the app reaches the computer over ws:// on your Wi-Fi, with and without the Local Network permission (device).
-- [ ] Android: UnifiedPush through the ntfy app, when that connector is built (device).
+- [ ] Android: a notification arrives with the app closed, through UnifiedPush and the ntfy app, with battery optimisation off for ntfy (device).
 - [ ] Windows: the firewall prompt appears on the Private and Public profiles, and the pairing window is missing from a
       computer-use screenshot.
 - [ ] Settings > Phones > Test this phone: copy the on-device report and note which fallback, if any, is needed.
@@ -139,6 +139,34 @@ The Android project (after `npx cap sync android` in `mobile/`) builds with `./g
 using JDK 21 and the Android SDK for API 36 with build-tools 36.0.0. A signed release needs the environment variables
 ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD. Keep the keystore out of the
 repository: it belongs in the Actions secrets, and a lost key means a new package name.
+
+### Build for your own phone (Android)
+
+The app is a debug build for your own phone, not for Google Play. The whole toolchain is on D:, nothing goes on C:.
+
+- Java: Eclipse Temurin JDK 21 in `D:\Android\jdk21` (exactly 21: Gradle 8.14 cannot run on Java 25).
+- Android SDK: `D:\Android\sdk` with `platforms;android-36`, `build-tools;36.0.0` and `platform-tools` (for adb).
+- Gradle's cache and its wrapper: `D:\Gradle` (GRADLE_USER_HOME). The debug signing key: `D:\Android\user`
+  (ANDROID_USER_HOME). Keep that folder, so each new APK installs over the last one.
+
+Then, from the project folder:
+
+    node scripts/build-android.mjs --check   # only says what it found, and what to install if something is missing
+    node scripts/build-android.mjs           # phone bundle, cap sync, Gradle; copies the APK into dist-android\
+    adb install -r "dist-android\plenum-debug-<version>.apk"
+
+The script prints the APK's path, size and sha256. Each local build gets a higher versionCode (minutes since a fixed date) and
+a versionName such as `0.5.0-dev.261116.1432`, so the app loads its new screens after each reinstall. `--native-only`
+skips the phone bundle and cap sync when only Java, Kotlin, resources or Gradle files changed. The script never downloads a
+JDK or an SDK and never starts an emulator or adb; the first build of a new Gradle version fetches it into `D:\Gradle`.
+
+On the phone, turn on USB debugging (Settings > About phone, tap Build number seven times, then Settings > System > Developer
+options), connect it, and allow the computer when the phone asks. A long press on the Plenum icon offers Today, Waiting for
+you and Stop all.
+
+Notifications while the app is closed come through UnifiedPush. Install the free ntfy app (F-Droid or Google Play), open it
+once, and turn battery optimisation off for ntfy (Settings > Apps > ntfy > Battery > Unrestricted); otherwise Android delays
+or drops notifications while the phone sleeps. Then turn notifications on in Plenum's Settings on the phone.
 
 The iPhone project is built on a Mac with Xcode 26 and the Swift Package Manager (there is no CocoaPods step):
 

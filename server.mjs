@@ -11,7 +11,7 @@ import {
   anthropicKey, testAnthropicKey, EFFORTS, billingFor, isSubscriptionToken, SUBSCRIPTION_TOKEN_REFUSAL,
 } from './lib/providers.mjs';
 import { summarizeUsage, totalUsage } from './lib/pricing.mjs';
-import { COULD_NOT_CHECK, codexLoginStatus, faultText, forgetCodexLogin, openSignIn, museSignedIn, refreshKeySecrets, softCheck } from './lib/accounts.mjs';
+import { COULD_NOT_CHECK, codexLoginStatus, faultText, forgetCodexLogin, openSignIn, museAnswered, museSignedIn, museSignedOut, refreshKeySecrets, softCheck } from './lib/accounts.mjs';
 import { imageSupport } from './lib/capabilities.mjs';
 import { assertCanSave, connectKeyChannel, forgetKey, keyStorage, parentChannel, storeKey } from './lib/keys.mjs';
 import { expandFileMentions, listTree, workingDiff } from './lib/files.mjs';
@@ -22,7 +22,8 @@ import { invalidateProviderStatus, knownProviders, prewarmProviderStatus, provid
 import { claudeRoute, claudeCliStatus, forgetClaudeStatus } from './lib/claude-cli.mjs';
 import { cleanReason } from './lib/tools.mjs';
 import { DEFAULT_COUNCIL, normalizeCouncil, retryCouncil, retryPlan, runCouncil } from './lib/council.mjs';
-import { noteSignInOpened } from './lib/signin-check.mjs';
+import { createSignInGate, noteSignInOpened, signInKind, signedInProgram } from './lib/signin-check.mjs';
+import { AGAIN_WAITS, createAgain, MAX_TRIES } from './lib/council-again.mjs';
 import { checkTasks, coderRefs, planBuild, runBuild } from './lib/delegate.mjs';
 import { effectiveAgents, typeByName } from './lib/agents.mjs';
 import { liveAgents, offerFor, openRun, registerRunScope, withRun } from './lib/agent-run.mjs';
@@ -196,11 +197,34 @@ const STATIC = {
   '/icon.png': { file: 'icon.png', type: 'image/png' },
   '/mark.svg': { file: 'mark.svg', type: 'image/svg+xml' },
 };
-// Files are read on each request, so interface changes show up on the next reload.
+// The file is looked up on each request (lib/overlay.mjs), so interface changes show up on the next reload.
 function staticAsset(pathname) {
   if (!Object.hasOwn(STATIC, pathname)) return null;
   const { file, type } = STATIC[pathname];
   return { file: overlay.filePath(`public/${file}`), type };
+}
+
+// The page's files in memory (wave 4 s2): file path -> { mtimeMs, size, etag, bytes }. Each request stats the file and reads it
+// again only when its time or size changed, so an applied update (a new path through the overlay) or an edited file shows on the
+// next reload. The ETag is a hash of the bytes; a window that already has them gets 304 and no body. An HTML file's ETag is the hash
+// of the themed text it is sent as (withTheme), so a change of theme or of the terms is a new ETag too.
+const assetCache = new Map();
+const etagOf = data => `"${createHash('sha256').update(data).digest('base64url').slice(0, 32)}"`;
+async function assetEntry(file) {
+  const st = await fs.stat(file);
+  const hit = assetCache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
+  const bytes = await fs.readFile(file);
+  // The time and size of the stat above: a file that changed again during the read differs from them at the next request.
+  const entry = { mtimeMs: st.mtimeMs, size: st.size, etag: etagOf(bytes), bytes };
+  assetCache.set(file, entry);
+  return entry;
+}
+// Whether an If-None-Match header names this ETag ("*" or a list; a weak W/ tag matches its strong form, RFC 9110 weak comparison).
+function etagMatches(header, etag) {
+  if (typeof header !== 'string' || header === '') return false;
+  if (header.trim() === '*') return true;
+  return header.split(',').some(tag => tag.trim().replace(/^W\//, '') === etag);
 }
 
 // Scope id -> AbortController for the run in progress. One run per thread (lib/scope.mjs): the project's Main thread uses the project's own
@@ -748,6 +772,125 @@ async function saveReporting(send, asNotice = false) {
 // its text, steps or spend have changed, at most this often (B-29).
 const DRAFT_SAVE_MS = 4000;
 
+// A chat turn repairs its sign-in and sends itself again after a passing failure, as a council turn does (lib/council.mjs runSeat; the
+// sign-in gate of lib/signin-check.mjs, DECISIONS item 154, and the again of lib/council-again.mjs, item 158). Before the first try the
+// gate asks the turn's program whether it is signed in (its own few seconds at most; no answer is never "signed out") and, when the
+// program says it is signed out, opens its sign-in window (never with PLENUM_NO_SIGNIN_WINDOW=1) and waits for it. A try that failed
+// before it wrote text, ran a tool, showed a card, started an agent or a computer step is sent again when the gate (not signed in, sign-in
+// refused) or the again (busy service, dropped connection, a program that ended, an answer that could not be read, a sign-in another
+// process was renewing) says so; no turn is tried more than MAX_TRIES times. A writable turn on Codex, Gemini CLI, Muse Code or Grok Build,
+// whose own commands and edits Plenum does not see, is sent again only for a sign-in failure (STEPS_SEEN, below). A review is never sent again, and a model that runs with an
+// API key never is (its request has its own tries). While Plenum waits, the turn's stream says why in a notice event ({ type, text }, the
+// shape of the council's notices); the error event is sent only for the try whose failure stands.
+// The events a try may send and still be sent again: none of them did anything in the project or on the screen.
+const QUIET_EVENTS = new Set(['start', 'delta', 'notice', 'error', 'thought']);
+// The programs whose every step reaches runTurn as an event when the turn hands them its ctx, so acted and out.tools see what a try did:
+// Claude (Plenum's tool loop on the API route, the CLI's tool_use lines on the CLI route), Cursor and Antigravity (their steps and cards go
+// through ctx). An API model runs only Plenum's own tool loop, and the echo model does nothing. Codex, Gemini CLI, Muse Code and Grok Build
+// (in print mode) run their commands and edits without telling Plenum, so a writable turn on one of them is sent again only for a sign-in
+// that failed at its start (chatRepair's signInOnly). A read-only turn can change nothing, so it is sent again on any of them.
+const STEPS_SEEN = new Set(['anthropic', 'cursor', 'antigravity']);
+const stepsSeen = (provider, withCtx) => provider === 'echo' || Boolean(apiProvider(provider)) || (withCtx && STEPS_SEEN.has(provider));
+// The gate's and the again's sentences are written for a council's card; a chat turn says "your message".
+const CHAT_WORDS = [
+  [/ Seats that answer at the same time go on\./g, ''],
+  [/The turns that use .+? wait up to (.+?) and run when it is done\./g, 'Your message waits up to $1 and is sent when it is done.'],
+  [/It sends the turns that use .+? all the same:/g, 'It sends your message all the same:'],
+  [/so this turn did not run/g, 'so your message was not sent'],
+  [/then run this turn again/g, 'then send your message again'],
+  [/\ba turn\b|\bthe turn\b/g, 'your message'],
+];
+const chatWords = text => CHAT_WORDS.reduce((out, [re, to]) => out.replace(re, to), String(text ?? ''));
+const waitWords = ms => {
+  if (ms >= 60_000) {
+    const m = Math.round(ms / 60_000);
+    return m === 1 ? '1 minute' : `${m} minutes`;
+  }
+  const s = Math.max(1, Math.round(ms / 1000));
+  return s === 1 ? '1 second' : `${s} seconds`;
+};
+// What a chat turn's stream says when Plenum sends the message again for a passing failure. step is 0 for the first resend of a kind.
+function chatAgainNote(kind, program, step, ms) {
+  const wait = waitWords(Number(ms) || 0);
+  switch (kind) {
+    case 'overloaded': return `${program}'s service was busy. Plenum sends your message again in ${wait}.`;
+    case 'network': return `The connection to ${program}'s service failed. Plenum sends your message again in ${wait}.`;
+    case 'crashed': return `${program} stopped before it answered. Plenum sends your message again.`;
+    case 'bad-output': return `${program}'s answer could not be read. Plenum sends your message again.`;
+    case 'sign-in-busy': return step === 0
+      ? `${program} was renewing its sign-in in another window. Plenum sends your message again in ${wait}.`
+      : `${program} was still renewing its sign-in. Plenum sends your message once more in ${wait}.`;
+    default: return '';
+  }
+}
+// Test runs only (MUSE_CONSOLE_TEST=1): PLENUM_TEST_AGAIN_WAITS, a JSON object { kind: [ms, ...] }, replaces waits of AGAIN_WAITS so a
+// suite does not wait 20 seconds for each resend. Anything else in it is ignored; without MUSE_CONSOLE_TEST it is never read.
+function chatAgainWaits() {
+  if (process.env.MUSE_CONSOLE_TEST !== '1' || !process.env.PLENUM_TEST_AGAIN_WAITS) return {};
+  try {
+    const raw = JSON.parse(process.env.PLENUM_TEST_AGAIN_WAITS);
+    const out = {};
+    for (const [kind, steps] of Object.entries(raw ?? {})) {
+      if (Object.hasOwn(AGAIN_WAITS, kind) && Array.isArray(steps) && steps.length <= 10 && steps.every(ms => Number.isFinite(ms) && ms >= 0)) out[kind] = steps;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+// The sign-in gate and the again of one chat turn. say takes one plain sentence for the turn's stream.
+function chatRepair({ ref, signal, say }) {
+  const tell = text => {
+    if (text) say(chatWords(text));
+  };
+  const gate = createSignInGate({ signal, say: tell });
+  const waits = chatAgainWaits();
+  const table = { ...AGAIN_WAITS, ...waits };
+  // The program's name as Plenum shows it (from the route check the again makes), the kind it is asked about, and how often each kind
+  // was sent again, for the sentence.
+  let program = '';
+  let asking = null;
+  const steps = new Map();
+  const again = createAgain({
+    signal,
+    waits,
+    route: async r => {
+      const on = await signedInProgram(r);
+      if (on?.name) program = on.name;
+      return on;
+    },
+    say: text => {
+      const step = steps.get(asking) ?? 0;
+      steps.set(asking, step + 1);
+      tell(chatAgainNote(asking, program || labelFor(ref), step, table[asking]?.[step]) || text);
+    },
+  });
+  return {
+    // Before the first try: { ok: true }, or { ok: false, error, kind } when the program is signed out and its sign-in was not finished.
+    async ready() {
+      await gate.preflight([ref]);
+      const held = await gate.ready(ref);
+      return held.ok ? { ok: true } : { ok: false, error: chatWords(held.error), kind: typeof held.kind === 'string' ? held.kind : null };
+    },
+    // After a try that failed with nothing done: 'again' to send it once more (the stream was told and the wait is over), else 'no'.
+    // signInOnly (a writable turn on a program whose steps Plenum does not see, STEPS_SEEN) keeps only the sign-in failures, which come
+    // before the program does anything; a dropped connection, a busy service, a program that ended or an answer that could not be read
+    // may come after it ran commands or changed files, so that failure stands.
+    async failed(err, { signInOnly = false } = {}) {
+      const kind = typeof err?.kind === 'string' && err.kind ? err.kind : null;
+      const signIn = signInKind(kind, err?.message);
+      if (signIn) return gate.failed(ref, 'chat', signIn, '');
+      if (!kind) return 'no';
+      if (signInOnly && kind !== 'sign-in-busy') return 'no';
+      asking = kind;
+      return again.failed('chat', kind, { label: 'your message', ref });
+    },
+    worked() {
+      gate.worked(ref);
+    },
+  };
+}
+
 // tools is the project's CLI options (effectiveSettings(...).tools). Only a chat turn passes it; the advisor stays read-only.
 // denyPatterns is the project's own list (denyPatternsOf), added to the built-in deny list for every command this turn runs.
 // readOnly is a chat turn in a project in plan mode, and every advisor call (a review or the auto-advisor), whether or not
@@ -771,6 +914,23 @@ const DRAFT_SAVE_MS = 4000;
 // The reply is capped at MAX_REPLY_CHARS (B-51): past it the text is cut, a notice says so, and the stop reason is 'capped'.
 async function runTurn({ ref, system, messages, root, kind, scope, mode, effort, send, signal, requestApproval, agent, tools, denyPatterns = [], answerBlocked = false, covers, readOnly = false, images = [], documents = [], computer = null, selfStart = false, browser = false, mcpBridge = false, focus = false, rules = null, stoppedNote = null }) {
   send({ type: 'start', kind, model: ref, label: labelFor(ref) });
+  // How many things this turn did besides writing text: a tool step, a card, an agent, a drive. A try that did one is never sent again
+  // (chatRepair, above). Every event of the turn and every card it asks goes through these two.
+  let acted = 0;
+  const sendOut = send;
+  send = ev => {
+    if (!QUIET_EVENTS.has(ev?.type)) acted += 1;
+    sendOut(ev);
+  };
+  const askOut = requestApproval;
+  if (typeof askOut === 'function') {
+    requestApproval = Object.assign((payload, handle) => {
+      acted += 1;
+      return askOut(payload, handle);
+    }, { close: askOut.close });
+  }
+  // Only a chat turn repairs its sign-in and is sent again; a review (an advisor turn) is not.
+  const repair = kind === 'chat' ? chatRepair({ ref, signal, say: text => send({ type: 'notice', text }) }) : null;
   const out = { api: [], tools: [] };
   // scope is the thread this reply belongs to (lib/scope.mjs): its id keys the chat, the CLI sessions and the checkpoints, and the project
   // record is the project's. Computer runs and agents stay per project.
@@ -929,26 +1089,65 @@ async function runTurn({ ref, system, messages, root, kind, scope, mode, effort,
       }
     }
     const session = kind === 'chat' && !readOnly ? { projectId: sid, emit: send, lastReplyModel: lastChatModel(sid) } : null;
-    if (go) {
-      // Cursor and Grok Build always get the ctx: their approval cards (ask first, the default) are asked through ctx.approve, and they keep
-      // their own tools (lib/cursor.mjs, lib/grok.mjs). A read-only run of either ignores the ctx there.
-      const cardTurn = ['cursor', 'grok', 'antigravity'].includes(splitRef(ref).provider);
-      for await (const delta of streamChat(ref, { system, messages, cwd: root, signal, ctx: agent || computerOnly || cardTurn || mcpBridge ? ctx : undefined, mode, effort, readOnly, session, tools, images, documents, onUsage: rec => { reports.push(rec); draftTick(); }, onStop: r => { if (!capped) stop = r; } })) {
-        // Past the cap the rest of the stream is read but neither kept nor sent, so the process and its tool calls still finish (B-51).
-        if (capped || !delta) continue;
-        if (text.length + delta.length > MAX_REPLY_CHARS) {
-          const shown = delta.slice(0, Math.max(0, MAX_REPLY_CHARS - text.length)) + REPLY_CAP_NOTE;
-          text += shown;
-          send({ type: 'delta', text: shown });
-          capped = true;
-          stop = 'capped';
-          continue;
-        }
-        text += delta;
-        send({ type: 'delta', text: delta });
+    // The sign-in check before the first try (chatRepair). A program that is signed out and was not signed in meanwhile ends the turn
+    // with the gate's own words, as its error.
+    if (go && repair && !signal.aborted) {
+      const held = await repair.ready();
+      if (!held.ok && !signal.aborted) {
+        go = false;
+        error = true;
+        failure = held.error;
+        failureKind = held.kind;
+        send({ type: 'error', message: held.error, ...(held.kind ? { kind: held.kind } : {}) });
       }
     }
+    // A turn stopped before its model started (Stop, or a desktop window that closed while the message was prepared) starts no model.
+    if (signal.aborted) go = false;
+    // A try that failed with nothing done is sent again when the gate or the again says so (chatRepair); the draft row and the question
+    // stay as they are, and only the failure that stands reaches the stream as an error.
+    // Cursor and Grok Build always get the ctx: their approval cards (ask first, the default) are asked through ctx.approve, and they keep
+    // their own tools (lib/cursor.mjs, lib/grok.mjs). A read-only run of either ignores the ctx there.
+    const { provider: turnProvider } = splitRef(ref);
+    const cardTurn = ['cursor', 'grok', 'antigravity'].includes(turnProvider);
+    const withCtx = Boolean(agent || computerOnly || cardTurn || mcpBridge);
+    // A writable turn on a program whose steps Plenum does not see is sent again only for a sign-in that failed at its start (STEPS_SEEN).
+    const signInOnly = !readOnly && !stepsSeen(turnProvider, withCtx);
+    const sendAgain = async (err, tries) => {
+      if (!repair || tries >= MAX_TRIES || signal.aborted || text.trim() || capped || acted || out.tools.length || out.api.length || run) return false;
+      return (await repair.failed(err, { signInOnly })) === 'again' && !signal.aborted;
+    };
+    if (go) {
+      for (let tries = 1; ; tries += 1) {
+        try {
+          for await (const delta of streamChat(ref, { system, messages, cwd: root, signal, ctx: withCtx ? ctx : undefined, mode, effort, readOnly, session, tools, images, documents, onUsage: rec => { reports.push(rec); draftTick(); }, onStop: r => { if (!capped) stop = r; } })) {
+            // Past the cap the rest of the stream is read but neither kept nor sent, so the process and its tool calls still finish (B-51).
+            if (capped || !delta) continue;
+            if (text.length + delta.length > MAX_REPLY_CHARS) {
+              const shown = delta.slice(0, Math.max(0, MAX_REPLY_CHARS - text.length)) + REPLY_CAP_NOTE;
+              text += shown;
+              send({ type: 'delta', text: shown });
+              capped = true;
+              stop = 'capped';
+              continue;
+            }
+            text += delta;
+            send({ type: 'delta', text: delta });
+          }
+          break;
+        } catch (err) {
+          if (!(await sendAgain(err, tries).catch(() => false))) throw err;
+          // Only blank text can be there; the next try's reply starts from nothing.
+          text = '';
+        }
+      }
+      // A reply that came shows that its program is signed in: the gate takes its sign-in window off the list.
+      if (text.trim() && !signal.aborted) repair?.worked();
+      // Muse Code has no sign-in check of its own: a reply on its sign-in is the word that it is signed in (lib/accounts.mjs noteAnswered,
+      // told only when that is news). Gemini CLI and Grok Build say it in their own adapters.
+      if (text.trim() && !signal.aborted) museAnswered(turnProvider);
+    }
   } catch (err) {
+    if (!signal.aborted && err?.kind === 'not-signed-in') museSignedOut(splitRef(ref).provider);
     if (!signal.aborted) {
       error = true;
       failure = err.message;
@@ -1058,7 +1257,9 @@ async function computerSupportFor(ref) {
 
 // A phone's send carries x-plenum-client-id (the phone layer sets it, lib/remote/proxy.mjs passes it on), so a retry after a dropped
 // connection cannot send the same message twice. A repeat within SEND_REPEAT_MS of the first is refused with the usual 409. A send is
-// recorded when its run starts (see handleTurn), so one refused before that (busy, folder gone) can be sent again.
+// recorded when its run starts (see handleTurn), so one refused before that (busy, folder gone) can be sent again, and one refused after
+// it but before its reply's stream opened (the spend cap, a message too long, a picture or PDF the model cannot take, a hook) is
+// forgotten again (forgetSend).
 const SEND_REPEAT_MS = 60_000;
 const SEND_IDS_MAX = 256;
 const CLIENT_SEND_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -1071,6 +1272,25 @@ function noteSend(req) {
   if (sentClientIds.has(id)) throw httpError(409, 'That message was already sent.');
   sentClientIds.set(id, now);
   while (sentClientIds.size > SEND_IDS_MAX) sentClientIds.delete(sentClientIds.keys().next().value);
+}
+// A send that noteSend recorded and that was refused before its run started: the same id may be sent again.
+function forgetSend(req) {
+  const id = req.headers['x-plenum-client-id'];
+  if (typeof id === 'string' && CLIENT_SEND_ID.test(id)) sentClientIds.delete(id);
+}
+
+// A run ends when the desktop window that asked for it goes (its stream's connection closes before the run ended). It is registered as
+// soon as the run is marked running, and a connection that closed during the awaits before that ends the run at once. A phone's request
+// (viaOf: the Bridge's x-plenum-device) is never ended this way: the Bridge drops it when the phone locks or changes network, and the run
+// goes on, saving its draft and its reply; the phone finds it again on /api/events (every run event carries its runId). Stop (/api/cancel)
+// and stop-all still end it, as does the run's time limit. Every send of a run checks that its stream is still open.
+function stopOnClose(req, res, ac) {
+  if (viaOf(req)) return;
+  if (res.destroyed) {
+    ac.abort();
+    return;
+  }
+  res.on('close', () => { if (!res.writableFinished) ac.abort(); });
 }
 
 // Chat turns and /review share this path. /review reviews the last answer plus the working-tree diff, and streams the
@@ -1097,6 +1317,7 @@ async function handleTurn(req, res, { review }) {
   if (!review) noteSend(req);
   const ac = new AbortController();
   beginRun(project, scope, ac, { kind: review ? 'review' : 'chat' });
+  stopOnClose(req, res, ac);
   events.publishState('run');
   let timedOut = false;
   // The turn's wall-clock backstop. It is armed just before runTurn, when it is known what the turn may run (B-81), not here.
@@ -1283,7 +1504,6 @@ async function handleTurn(req, res, { review }) {
       connection: 'keep-alive',
       'x-content-type-options': 'nosniff',
     });
-    res.on('close', () => { if (!res.writableFinished) ac.abort(); });
     // One notice per chat turn in a project in plan mode, then one when the project's AGENTS.md went into the prompt.
     // Same shape as the other notices.
     // A thread that is only read-only because another thread is the writer says that instead (the notice names the writer).
@@ -1295,16 +1515,17 @@ async function handleTurn(req, res, { review }) {
     if (!questionSaved) send({ type: 'notice', text: `${store.saveFailure() ?? 'Plenum could not save its state file.'} Your message is shown but is lost on restart until a save works.` });
     // The notes of the turn hooks that ran before the stream opened, and the hooks' own sends from here on.
     for (const note of extra.notes) send({ type: 'notice', text: note });
-    // The automatic compaction (DECISIONS item 86). The question is taken out of the thread while the summary is written, so the summary
-    // covers the earlier messages only, and it goes back after the summary. A summary that fails or is empty leaves the thread as it was,
-    // and the message goes on with it; a Stop ends the turn as it always does.
+    // The automatic compaction (DECISIONS item 86). The summary is written from the messages before the question, so it covers the earlier
+    // messages only. The question stays in the thread all the while (up to AUTO_COMPACT_MS), so every save in that time, and a crash, keeps
+    // it; the earlier messages are replaced by the summary in one step with nothing awaited, the question after it. A summary that fails or
+    // is empty leaves the thread as it was, and the message goes on with it; a Stop ends the turn as it always does.
     if (autoCompact?.due && questionRecord && !ac.signal.aborted) {
       const live = store.transcript(scope.id);
       const label = labelFor(ref);
       send({ type: 'notice', kind: 'auto-compact', text: `This chat holds about ${tokenText(autoCompact.used)} tokens, and the auto-compact limit for ${label} is ${tokenText(autoCompact.limit)}. ${label} first writes a summary that replaces the earlier messages.` });
       const at = live.lastIndexOf(questionRecord);
-      if (at >= 0) live.splice(at, 1);
-      const before = live.filter(m => m.kind === 'chat').length;
+      const earlier = at >= 0 ? live.slice(0, at) : live.slice();
+      const before = earlier.filter(m => m.kind === 'chat').length;
       const cac = new AbortController();
       const onStop = () => cac.abort();
       ac.signal.addEventListener('abort', onStop, { once: true });
@@ -1312,7 +1533,7 @@ async function handleTurn(req, res, { review }) {
       let summary = '';
       let failure = '';
       try {
-        summary = await writeSummary({ project, scope, ref, log: live, signal: cac.signal });
+        summary = await writeSummary({ project, scope, ref, log: earlier, signal: cac.signal });
         if (!summary && !cac.signal.aborted) failure = `${label} returned an empty summary`;
       } catch (err) {
         failure = err.message;
@@ -1322,15 +1543,18 @@ async function handleTurn(req, res, { review }) {
       }
       if (cac.signal.aborted && !ac.signal.aborted) failure = `it took longer than ${AUTO_COMPACT_MS / 60_000} minutes`;
       if (summary && !cac.signal.aborted) {
+        // One synchronous step: the question (and anything after it) is lifted off, the messages before it become the summary, and the
+        // question goes back after the summary. A question no longer in the thread is put back after it, as before.
+        const from = live.lastIndexOf(questionRecord);
+        const tail = from >= 0 ? live.splice(from) : [questionRecord];
         replaceWithSummary(scope, live, summary);
-        live.push(questionRecord);
+        live.push(...tail);
         // The history of this turn is the summary now; the newest message is the one already built above.
-        messages = [...historyFor(replayable(live.slice(0, -1)), ref, { textOnly: !toolLoop }), messages.at(-1)];
+        messages = [...historyFor(replayable(live.slice(0, live.length - tail.length)), ref, { textOnly: !toolLoop }), messages.at(-1)];
         await saveReporting(send);
         events.publishState('run');
         send({ type: 'notice', kind: 'auto-compact', text: `Compacted ${before} messages into a summary. Your message goes on from there.` });
       } else {
-        live.push(questionRecord);
         if (!ac.signal.aborted) send({ type: 'notice', kind: 'auto-compact', text: `Auto-compact did not finish (${failure || 'stopped'}). The chat is unchanged, and your message goes on with it.` });
       }
     }
@@ -1401,8 +1625,10 @@ async function handleTurn(req, res, { review }) {
     // A plan turn runs outside the model's native CLI session, so that session has not seen it. Forgetting the session makes
     // the next normal turn start a new one with the whole chat, plan included.
     if (planMode) forgetSession(scope.id, ref);
-    // The turn's 'after' snapshot and the hooks after it. A run that was stopped or timed out takes none.
+    // The turn's 'after' snapshot and the hooks after it. A run that was stopped or timed out runs only the hooks that ask for such a
+    // turn too (stoppedToo, lib/turn-hooks.mjs); the snapshot, checks and list hooks are written for a turn that ended by itself.
     if (hookCtx && !ac.signal.aborted) await runAfter(hookCtx, turn);
+    else if (hookCtx) await runAfter(hookCtx, turn, { stopped: true });
 
     let advisorTurn = null;
     if (!review && st.advisor && st.advisorAuto && turn.text.trim() && !turn.error && !ac.signal.aborted) {
@@ -1444,7 +1670,12 @@ async function handleTurn(req, res, { review }) {
     // stop is 'length' when the reply was cut at the output limit, so the page can offer Continue (public/ext-cutoff.js).
     send({ type: 'done', aborted: ac.signal.aborted, timedOut, usage: turn.usage ?? null, stop: turn.stop ?? null, ...(advisorTurn ? { advisorUsage: advisorTurn.usage ?? null } : {}) });
   } catch (err) {
-    if (!streaming) throw err;
+    if (!streaming) {
+      // Refused before it ran (spend cap, too long, a picture or PDF this model cannot take, a hook): the phone's retry with the same
+      // client id is a new send, not a repeat.
+      if (!review) forgetSend(req);
+      throw err;
+    }
     send({ type: 'error', message: err.message, ...errorExtras(err) });
     // A failed run ends with done too, as streamForProject does, so a window that draws this run from the events channel
     // knows it is over. Its reply is saved before that done (B-42), as on the success path.
@@ -1599,6 +1830,8 @@ async function streamForProject(req, res, project, makeRun, onEvent, { kind = 'r
   scope = refuseClosingCopy(project, scope);
   const ac = new AbortController();
   beginRun(project, scope, ac, { kind });
+  // A desktop window's request that closed during the awaits above ends the run at once; a phone's never does (stopOnClose).
+  stopOnClose(req, res, ac);
   if (EXCLUSIVE_KINDS[kind]) exclusive.set(project.id, { scope: scope.id, kind });
   events.publishState('run');
   // A route module that builds a seat's generator from the signal alone (pipelines) finds its project this way (agent-roles).
@@ -1614,7 +1847,6 @@ async function streamForProject(req, res, project, makeRun, onEvent, { kind = 'r
     activity.runEvent(scope.id, ev);
     if (streaming && !res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(ev)}\n\n`);
   };
-  res.on('close', () => { if (!res.writableFinished) ac.abort(); });
   // What the run leaves in the chat is stored here, once, however the run ended. A failure of the hook is reported in the stream.
   const finishRun = async () => {
     if (typeof after !== 'function') return;
@@ -2952,16 +3184,32 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET') throw httpError(405, 'Method not allowed.');
     const asset = staticAsset(url.pathname) ?? (await extAsset(url.pathname));
     if (!asset) throw httpError(404, 'Not found.');
-    res.writeHead(200, {
+    // no-cache: the window keeps the file but asks each time, and the ETag makes that ask cheap (304, no body).
+    let entry;
+    try {
+      entry = await assetEntry(asset.file);
+    } catch (err) {
+      if (err?.code === 'ENOENT') throw httpError(404, 'Not found.');
+      throw err;
+    }
+    const html = asset.type.startsWith('text/html');
+    const body = html ? withTheme(entry.bytes.toString('utf8')) : entry.bytes;
+    const etag = html ? etagOf(body) : entry.etag;
+    const headers = {
       'content-type': asset.type,
       'cache-control': 'no-cache',
+      etag,
       'content-security-policy': CSP,
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
       'referrer-policy': 'no-referrer',
-    });
-    const body = await fs.readFile(asset.file);
-    return res.end(asset.type.startsWith('text/html') ? withTheme(body.toString('utf8')) : body);
+    };
+    if (etagMatches(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    res.writeHead(200, headers);
+    return res.end(body);
   } catch (err) {
     // What the request is answered with, and the log line when the failure is one nobody meant (requestFault, below).
     const fault = requestFault(req, err);
@@ -3017,7 +3265,10 @@ function requestFault(req, err) {
 // stop.mjs can abort a run in this process. It starts only when "Let phones connect" is on in the saved state; with it off nothing is
 // bound, and lib/routes/remote.mjs starts the Bridge on the first phone request. The module is loaded by import(), so a build without
 // the phone packages (@noble, ws) still starts: its phone routes answer 503 "Phones need a newer Plenum build.".
+// With phones off the module is not loaded at all here (wave 4 s2): loading it held the server for about 200 ms right after it began to
+// listen. lib/routes/remote.mjs loads it on the first phone request, as before.
 async function startPhones() {
+  if (store.get().phones?.enabled !== true) return;
   let remote;
   try {
     remote = await import('./lib/remote/index.mjs');
@@ -3025,7 +3276,6 @@ async function startPhones() {
     console.error(`Phones are not available in this build (${err?.code ?? 'load error'}).`);
     return;
   }
-  if (store.get().phones?.enabled !== true) return;
   // Not awaited: the start reads the keys and binds the phones' port, and the server answers meanwhile.
   remote.startRemote({ running, publicState, port: PORT, options: { log: line => console.error(String(line).slice(0, 200)) } })
     .catch(() => console.error('Phones could not start. Settings > Phones shows why.'));
@@ -3068,10 +3318,13 @@ ensureToken();
 // What the events channel sends as the state: everything but the transcript (see publicState).
 events.useStateProvider(() => publicState({ messages: false }));
 await listen();
+// The desktop app waits for this message to know the server answers (wave 4 d1). A plain Node start has no channel, and nothing is sent.
+shellPost({ type: 'listening', port: PORT });
 // Leftovers of a run that was cut off (a child process tree, a scratch folder) are cleared once, when the module is there (lib/child-ledger.mjs).
 import('./lib/child-ledger.mjs').then(m => m.sweepOnce?.()).catch(() => {});
-// The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them.
-prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) });
+// The provider status and the CLIs' model lists are read in the background from now on; nothing here waits for them. The start of
+// those reads (looking for each CLI) runs on the next turn of the event loop, so the first requests after listen() are answered first.
+setImmediate(() => prewarmProviderStatus({ accepted: () => termsAccepted(store.get()) }));
 await startPhones();
 // The plan watch (lib/plan-watch.mjs): reads every subscription's plan use by itself and warns before a business runs out. It does nothing
 // before the License Agreement is accepted, and has no timer with PLENUM_NO_SCHEDULER=1 or PLENUM_SMOKE=1.

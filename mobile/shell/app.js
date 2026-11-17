@@ -19,6 +19,16 @@
 //   setApprove(value), testPush(), enableNotifications(), enableLock(mode), setPin(pin), lockOff(pin), setPrefs(patch),
 //   cancelConnect(), cancelPairing(), demoDecide(id, 'approve'|'deny'), demoReset(). Each answers { ok, reason }.
 //   Stabilising (H3, H7, M6, M7, M9, M11, M15, L18): showUi({ force }), useCopy(), openShell(hash), takeRoute(), scan(), pushAndroid(), dictation().
+//   Wave 4 (m2, notifications): openNotificationSettings(), awaitPushApp(), ackPushRepaired(); state().notifySetup is the last turn-on
+//   ({ seq, ok, reason, auto, testSent }), state().pushRepaired the one-time "turned them back on" line, state().androidPush the status row.
+//   Wave 4 (m3, phone feel): leavingPage() (pagehide: the app keeps a biometric unlock in its memory for the next page), the status bar
+//   follows Plenum's theme (SystemBars), and the shell page shows its kept theme before the first paint (earlyTheme).
+//   Wave 5 (brb, a browser on another computer): POST /_bridge/presence { visible } at every HELLO and visibility change (sendPresence);
+//   navigator.storage.persist() after the first pairing on a secure Chromium page (persistStorage); two tabs of one browser on one computer
+//   (createTabGuard; state().tab is { state: 'elsewhere' | 'moved', computer } or null, and connect(id) is the tab's Use it here); the code
+//   page at /pair/ (isClaimPage: no service worker, no UI host, nothing connected; state().claim.paired lists the computers paired through
+//   this host); confirmPair({ name }) for a browser offer (payload form 'browser'); a launch link acts once (wireAppPlugin, LAUNCH_KEY). The
+//   'online' event already reconnects (w4-m1 wireNetwork).
 //   state().screenRequest is { screen: 'settings' | 'computers', seq } or null: the shell page was asked for one of its own screens (#settings,
 //   #computers) and the screens open it once the app is unlocked; seq is 1 for the first request and rises by one for each later one.
 //
@@ -31,12 +41,13 @@
 
 import { b64uToBytes, bytesToB64u, defaultCreateWorker, openChannel, sendLockedStop } from './channel.js';
 import { createPlatformStore, publicComputer } from './store.js';
-import { createBiometricGate, createLock, createPasskeyGate } from './lock.js';
+import { createBiometricGate, createLock, createPasskeyGate, createUnlockMemory } from './lock.js';
 import { pageCandidates, parsePairingText, startPairing } from './pairing.js';
 import { carrierUrlOk, hostLabel, usableCarriers } from './carriers.js';
 import { createStopController, STOP_DONE_MS, STOP_NEEDS_UNLOCK } from './stop.js';
 import { createDebugLog } from './debug.js';
-import { createAndroidPush, dropWebPush, isRouteLink, parseNotificationHash, subscribeWebPush } from './push.js';
+import { createAndroidPush, dropWebPush, endpointHash, isRouteLink, parseNotificationHash, subscribeWebPush } from './push.js';
+import { NOTIFY_REPAIRED, NOTIFY_TEST_ON_WAY } from './screens/copy2.js';
 import { appKindFor, capsFor, isLanPage, isNative, pageKindFor, platformFor } from './device.js';
 import { createUiHost, SHELL_LINK_KEY, SHELL_QUERY } from './ui-host.js';
 import { createReplay } from './screens/demo.js';
@@ -99,6 +110,17 @@ const APPROVE_META = 'approve';    // this phone's copy of its Approve-from-noti
 const STOP_NOTICE = new Set(['done', 'queued', 'failed']);
 const APPROVE_OFF_META = 'approve-off-pending'; // set when the opt-out of Approve-from-notifications could not reach the computer; retried at every HELLO
 const UP_PENDING_META = 'up-pending'; // an Android UnifiedPush endpoint the computer has not accepted yet (push.js createAndroidPush pendingStore)
+// Wave 4 (m2): which computers hold this phone's Android endpoint (push.js postedStore; no key, only a short hash), when the last notification
+// arrived, and the one-time "turned them back on" line Phone settings shows.
+const UP_POSTED_META = 'up-posted';
+const PUSH_LAST_META = 'push-last-at';
+const PUSH_REPAIRED_META = 'push-repaired';
+// The approval, handover and needs notifications this phone heard of (push.js seenStore: tag, kind, computer id, card id; no text), and
+// which endpoint (short hash) each computer was last sent again by a repair and when, so a computer that keeps dropping the same address is
+// not reported as fixed each time.
+const UP_SEEN_META = 'up-seen';
+const PUSH_REPAIRS_META = 'push-repairs';
+const REPAIR_SAME_MS = 24 * 60 * 60 * 1000;
 const STOP_META = 'pending-stop';   // a Stop the UI page left for the shell page (createParkedStop)
 const LINK_META = 'shell-link';       // the link the UI page left for the shell page on the apps (ui-host.js openShell), in the store's meta
 const LINK_TTL_MS = 120 * 1000;
@@ -109,6 +131,20 @@ const OPEN_SHELL_HASHES = Object.freeze(['', '#settings', '#computers']);
 const FACADE_PLUGINS = Object.freeze(['App', 'TextZoom', 'Haptics', 'Dictation', 'IsolatedPreview', 'Browser', 'Share', 'Filesystem']);
 const INTENT_KEY = 'plenum-intent'; // sessionStorage: a notification route that arrived on the shell page, for the UI page to show
 const SW_REGISTRATION_WAIT_MS = 3000;
+// w4-m1: the line the shell says when a computer that asked for a Plenum update connects again (it was updated). It waits for the UI page in
+// sessionStorage under NOTE_KEY for NOTE_TTL_MS (the computer's name is the only thing in it; no key, no link).
+export const updatedLine = name => `Plenum on ${String(name || 'your computer').slice(0, 60)} was updated. Connected again.`;
+export const UPDATED_LINE_PATTERN = /^Plenum on [^\n]{1,60} was updated\. Connected again\.$/;
+const NOTE_KEY = 'plenum-note';
+const NOTE_TTL_MS = 60 * 1000;
+// Wave 4 (m3): how recent a biometric unlock must be for the next page of the app to start unlocked when the lock time is Immediately.
+export const PAGE_SWITCH_FRESH_MS = 60 * 1000;
+// Wave 4 (m3): the shell page's copy of the chosen theme ('dark' or 'light'; nothing for Follow phone), in localStorage so it can be read
+// synchronously before the first paint. Only the theme: no key, no lock state.
+export const THEME_KEY = 'plenum-theme';
+if (typeof document !== 'undefined' && document.documentElement?.hasAttribute?.('data-shell-page') && !globalThis.__PLENUM_SHELL_NO_AUTOSTART__) {
+  earlyTheme(globalThis);
+}
 export const CARD_CHANGED = 'That card changed. Open it to answer.';
 // B-117: a notification names the computer that sent it. 64 hex characters is the id this phone keeps that computer's record under (the
 // computer sends sha256 of its static public key, lib/remote/index.mjs phoneRecordId); anything else is an older computer's own short id,
@@ -162,11 +198,22 @@ export function safeState(state) {
     },
     intent: s.intent ?? null,
     device: { platform: s.device?.platform, app: s.device?.app, appVersion: s.device?.appVersion, protocol: s.device?.protocol },
+    // Wave 5 (brb): another tab of this browser holds this computer (boot.js draws the card with Use it here, which is connect(computer)).
+    // The field is there only while that is so: the listed fields of plan C6b are unchanged otherwise.
+    ...(s.tab ? { tab: { state: s.tab.state, computer: s.tab.computer } } : {}),
   });
+}
+
+// Wave 4 (m3): what the UI page's shim gets of SystemBars: setStyle with 'DARK' or 'LIGHT' only (no hide, no show), so the status bar can
+// follow Plenum's theme on the UI page and nothing there can hide the bar.
+function barsForPage(plugin) {
+  if (typeof plugin?.setStyle !== 'function') return null;
+  return Object.freeze({ setStyle: options => plugin.setStyle({ style: options?.style === 'DARK' ? 'DARK' : 'LIGHT' }) });
 }
 
 // The facade the UI page's shim gets (plan C6b): a frozen object with exactly these members and nothing else.
 export function makeFacade(shell, plugins) {
+  const bars = barsForPage(plugins?.SystemBars);
   return Object.freeze({
     state: () => safeState(shell.state()),
     subscribe: fn => shell.subscribe(state => fn(safeState(state))),
@@ -182,7 +229,7 @@ export function makeFacade(shell, plugins) {
     openShell: hash => (OPEN_SHELL_HASHES.includes(hash) ? shell.openShell(hash) : Promise.resolve(false)),
     takeRoute: () => shell.takeRoute(),
     log: line => shell.pageLog(line),
-    plugin: name => (FACADE_PLUGINS.includes(name) ? plugins?.[name] ?? null : null),
+    plugin: name => (name === 'SystemBars' ? bars : FACADE_PLUGINS.includes(name) ? plugins?.[name] ?? null : null),
   });
 }
 
@@ -332,6 +379,123 @@ export async function registerServiceWorker(env = globalThis) {
   }
 }
 
+// Wave 5 (brb): two tabs of one browser on one computer. They share one device and one handshake counter (store.js serialises the counter
+// within a page only), so only one tab holds the channel. Tabs talk over BroadcastChannel('plenum-tab'): before a tab connects by itself (at
+// start, after an unlock) it asks whether another tab holds that computer and waits TAB_ASK_MS for an answer; a tab that holds it answers busy,
+// and the asking tab shows "Plenum is open in another tab of this browser." with Use it here. Use it here (and any connect the person asks for)
+// tells the other tab to let go: it closes its channel and shows "Plenum moved to another tab." with its own Use it here. A page without
+// BroadcastChannel runs as before (both tabs connect). Messages carry a random tab id and the computer id, nothing else.
+export const TAB_CHANNEL = 'plenum-tab';
+export const TAB_ASK_MS = 300;
+export function createTabGuard({ env = globalThis, BroadcastChannelCtor = env?.BroadcastChannel, tabId = null, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  let bc = null;
+  try { bc = typeof BroadcastChannelCtor === 'function' ? new BroadcastChannelCtor(TAB_CHANNEL) : null; } catch { bc = null; }
+  if (!bc) return null;
+  // Node's BroadcastChannel (a suite that starts the shell on its own global) keeps the process alive unless it is unref'd; browsers have no unref.
+  try { bc.unref?.(); } catch { /* not Node */ }
+  const self = tabId ?? (() => {
+    try {
+      const bytes = new Uint8Array(8);
+      env.crypto.getRandomValues(bytes);
+      return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      return Math.random().toString(16).slice(2);
+    }
+  })();
+  let held = null;           // the computer this tab holds the channel for
+  let onTaken = () => {};
+  const waiting = new Map(); // ask id -> resolve(true) when another tab answers busy
+  let askSeq = 0;
+  const post = msg => { try { bc.postMessage({ ...msg, tab: self }); } catch { /* closed */ } };
+  bc.onmessage = event => {
+    const m = event?.data;
+    if (!m || typeof m !== 'object' || m.tab === self || typeof m.computer !== 'string') return;
+    if (m.op === 'ask' && held === m.computer) post({ op: 'busy', to: m.tab, ask: m.ask, computer: m.computer });
+    else if (m.op === 'busy' && m.to === self) waiting.get(m.ask)?.(true);
+    else if (m.op === 'take' && held === m.computer) {
+      held = null;
+      try { onTaken(m.computer); } catch { /* the shell is gone */ }
+    }
+  };
+  return {
+    id: self,
+    // Resolves true when another tab of this browser holds the computer now.
+    ask(computer) {
+      const ask = ++askSeq;
+      return new Promise(resolve => {
+        let timer = null;
+        const done = value => {
+          if (!waiting.has(ask)) return;
+          waiting.delete(ask);
+          if (timer !== null) clearTimer(timer);
+          resolve(value);
+        };
+        waiting.set(ask, done);
+        timer = setTimer(() => done(false), TAB_ASK_MS);
+        timer?.unref?.();
+        post({ op: 'ask', ask, computer: String(computer) });
+      });
+    },
+    take(computer) { post({ op: 'take', computer: String(computer) }); },
+    hold(computer) { held = computer ? String(computer) : null; },
+    holding: () => held,
+    onTaken(fn) { onTaken = typeof fn === 'function' ? fn : () => {}; },
+    close() {
+      held = null;
+      for (const done of [...waiting.values()]) done(false);
+      try { bc.close(); } catch { /* closed */ }
+    },
+  };
+}
+
+// Wave 5 (brb): the code page (/pair/, the listener serves the shell's files there without the same-network cookie). It registers no service
+// worker, makes no UI host and connects nothing: it claims a code and goes to the link the computer answers with.
+export function isClaimPage(env = globalThis) {
+  return /^\/pair\/(index\.html)?$/.test(String(env?.location?.pathname ?? ''));
+}
+
+// Wave 5 (brb): keep this browser's keys when the browser runs short of space. Asked once, after the first pairing, on a secure page of a
+// Chromium browser, where it is granted or refused without a prompt. Firefox asks the person, so it is not asked there. Resolves true when
+// it was asked.
+export async function persistStorage(env = globalThis) {
+  if (isNative(env) || env?.isSecureContext !== true) return false;
+  const storage = env?.navigator?.storage;
+  if (typeof storage?.persist !== 'function') return false;
+  const ua = String(env?.navigator?.userAgent ?? '');
+  const brands = Array.isArray(env?.navigator?.userAgentData?.brands) ? env.navigator.userAgentData.brands.map(b => String(b?.brand ?? '')) : [];
+  const chromium = brands.some(b => /chromium/i.test(b)) || (/\bChrome\//.test(ua) && !/\bFirefox\//.test(ua));
+  if (!chromium || /\bFirefox\//.test(ua)) return false;
+  try {
+    if (typeof storage.persisted === 'function' && (await storage.persisted()) === true) return false;
+    await storage.persist();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Wave 5 (brb): the shell's page on this computer for each paired computer whose way in is this page's own host (the code page's "Open
+// Plenum"): '/p/<key>/' from a carrier URL ws(s)://<host>/b/<key> with host === location.host. Records with no such URL are left out.
+export function pagesHere(records, host) {
+  const out = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    let path = null;
+    for (const c of Array.isArray(record?.carriers) ? record.carriers : []) {
+      for (const url of Array.isArray(c?.urls) ? c.urls : c?.url ? [c.url] : []) {
+        try {
+          const u = new URL(String(url));
+          const m = /^\/b\/([0-9a-f]{32})$/.exec(u.pathname);
+          if (m && (u.protocol === 'ws:' || u.protocol === 'wss:') && u.host === host) path = `/p/${m[1]}/`;
+        } catch { /* not a URL */ }
+        if (path) break;
+      }
+      if (path) break;
+    }
+    if (path) out.push({ id: String(record.id ?? ''), name: String(record.name ?? '') || 'your computer', path });
+  }
+  return out;
+}
+
 // A plugin-less secure storage for a phone whose plugins did not load: every call fails, so a key is never written anywhere else.
 const NO_SECURE_STORAGE = Object.freeze({
   async getItem() { throw new Error('secure storage is not available'); },
@@ -368,6 +532,23 @@ export function createShell({
   devBuild = DEV_BUILD,
   storage = 'ok',
   parkedStop = null,
+  // w4-m1: { put(text) } where the "was updated" line waits for the UI page the shell page hands over to, and initialNote, the line that page
+  // took out at start (runStart: sessionStorage, the line has no secret in it). Both optional.
+  noteCarry = null,
+  initialNote = null,
+  // Wave 4 (m3): the app's SystemBars plugin on the shell page of the Android app (null elsewhere: the UI page's shim sets the bars there),
+  // the page's prefers-color-scheme query (a MediaQueryList, or null), and { put(theme) }, which shows the chosen theme ('dark', 'light' or
+  // null for Follow phone) and keeps a copy the shell page reads synchronously at its next start (earlyTheme). All optional.
+  systemBars = null,
+  colorScheme = null,
+  themeCarry = null,
+  // Wave 5 (brb): createTabGuard() (two tabs of one browser), null where there is none. claimPage: the code page at /pair/ (it connects nothing,
+  // and its state carries the computers paired through this host). host: location.host, for that list. persist: persistStorage after the
+  // first pairing (runStart passes the page's).
+  tabGuard = null,
+  claimPage = false,
+  host = '',
+  persist = null,
 } = {}) {
   if (!store) throw new TypeError('createShell needs a store');
   let computers = [];
@@ -412,6 +593,9 @@ export function createShell({
   let pushKnown = null;
   let approveStored = false;
   let hiddenAt = null;
+  // w4-m1: the id of the computer that asked for a Plenum update (status update-desktop). When the phone connects to it again, the shell says
+  // updatedLine(name) once. Kept across channels: Try again opens a new one.
+  let updateAskedBy = null;
   // Counts the pairings this page finished (from the link or the paste), so the screens start the onboarding once per pairing.
   let pairedSeq = 0;
   let pairedId = null;
@@ -428,6 +612,20 @@ export function createShell({
   let intentSeq = intent ? 1 : 0;
   let dictationState = null;
   let androidPushState = null;
+  // Wave 4 (m2): the time of the last notification this phone heard of, the one-time repaired line, the step a turn-on waits for when Plenum
+  // comes back to the front ('no-distributor' after Get ntfy, 'denied' after the notification settings), the reason of the last turn-on,
+  // and the outcome of the last turn-on for the screens ({ seq, ok, reason, auto, testSent }).
+  let pushLastAt = null;
+  let pushRepaired = false;
+  let fixWaiting = null;
+  let lastEnableReason = null;
+  let notifySetup = null;
+  let notifySeq = 0;
+  let rechecking = false;
+  // Wave 5 (brb): another tab of this browser holds this computer: { state: 'elsewhere' (it held it first) | 'moved' (it took it), computer }.
+  let tab = null;
+  // Wave 5 (brb): on the code page, the computers paired through this host ([{ id, name, path }]), read at boot.
+  let claimHere = [];
   const replay = mode === 'demo' ? createReplay(demoSession) : null;
   const unlockedKeys = new Map();
   const subs = new Set();
@@ -453,9 +651,70 @@ export function createShell({
         save: body => store.meta.put(UP_PENDING_META, body),
         clear: () => store.meta.remove(UP_PENDING_META),
       },
+      postedStore: {
+        load: () => store.meta.get(UP_POSTED_META),
+        save: record => store.meta.put(UP_POSTED_META, record),
+      },
+      seenStore: {
+        load: () => store.meta.get(UP_SEEN_META),
+        save: record => store.meta.put(UP_SEEN_META, record),
+      },
+      computerOf: () => activeId ?? '',
+      // Plenum in front: a finished run, a failure, a limit or a list of things is the toast, not a system notification.
+      onNotice: note => {
+        say(note.text, note.tone);
+        refresh();
+      },
+      isShowing: payload => cardShowing(payload),
+      onReceived: at => {
+        pushLastAt = at;
+        store.meta.put(PUSH_LAST_META, at).catch(() => {});
+        if (androidPushState) {
+          androidPushState = { ...androidPushState, lastAt: at };
+          refresh();
+        }
+      },
+      // A renewal at start or at a HELLO posts later, when the push app answers: the status row is read again then.
+      onState: () => {
+        readAndroidPush().then(refresh, () => {});
+      },
       log: line => debug.log(line, 'warn'),
     })
     : null;
+
+  // The approval card a notification is about is on screen now (the UI page draws it with data-approval-id): no system notification then.
+  function cardShowing(payload) {
+    const doc = pushEnv?.document;
+    const id = String(payload?.ids?.approval ?? '');
+    if (!doc || doc.visibilityState === 'hidden' || typeof doc.querySelector !== 'function' || !/^[A-Za-z0-9_.-]{1,80}$/.test(id)) return false;
+    try {
+      const node = doc.querySelector(`[data-approval-id="${id}"]`);
+      if (!node) return false;
+      return typeof node.getClientRects !== 'function' || node.getClientRects().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // The Android status the screens draw (push.js status() plus the last notification's time and the last turn-on's reason).
+  async function readAndroidPush() {
+    if (!androidPush) return;
+    const st = await androidPush.status().catch(() => null);
+    if (st) androidPushState = { ...st, lastAt: pushLastAt, lastReason: lastEnableReason };
+  }
+
+  // Takes a notification down after its Stop, Deny or Approve was handled: the one named by the route's &nt=<tag>. A route without one came
+  // from a notification without a tag of its own (the plugin then uses the tag 'plenum'), so that one goes, and for a Deny or an Approve the
+  // approval notification this phone heard of for that card on that computer. Nothing else: not a handover, not another computer's card.
+  async function clearNotification(link, computer = '') {
+    if (!androidPush || !link) return false;
+    if (link.nt) return androidPush.clear({ tag: link.nt }).catch(() => false);
+    const done = await androidPush.clear({ tag: 'plenum' }).catch(() => false);
+    if ((link.kind === 'deny' || link.kind === 'approve') && link.id) {
+      await androidPush.clearApprovals({ computer: computer || link.computer || activeId || '', approval: link.id }).catch(() => 0);
+    }
+    return done;
+  }
 
   const view = () => ({
     mode,
@@ -471,7 +730,7 @@ export function createShell({
     stop: { ...stopView },
     lockStop: { ...lockStop },
     storage: storage === 'unavailable' ? 'unavailable' : 'ok',
-    pairing: pairing ? { ...pairing, ...(pairing.review ? { review: { name: pairing.review.name, hosts: pairing.review.hosts.map(h => ({ ...h })) } } : {}) } : null,
+    pairing: pairing ? { ...pairing, ...(pairing.review ? { review: { name: pairing.review.name, hosts: pairing.review.hosts.map(h => ({ ...h })), ...(pairing.review.form === 'browser' ? { form: 'browser' } : {}) } } : {}) } : null,
     selftest,
     debugLines: debug.lines().length,
     prefs: { ...prefs },
@@ -486,6 +745,10 @@ export function createShell({
     screenRequest: screenRequest ? { ...screenRequest } : null,
     dictation: dictationState ? { ...dictationState } : null,
     androidPush: androidPushState ? { ...androidPushState } : null,
+    pushRepaired,
+    notifySetup: notifySetup ? { ...notifySetup } : null,
+    tab: tab ? { ...tab } : null,
+    claim: claimPage ? { paired: claimHere.map(c => ({ ...c })) } : null,
   });
 
   let snapshot = view();
@@ -668,7 +931,7 @@ export function createShell({
         return done ? { ok: true, reason: null, opening: true } : { ok: false, reason: 'unavailable' };
       }
     }
-    const opened = await connectNow(id);
+    const opened = await connectNow(id, { take: true });
     refresh();
     return opened;
   }
@@ -703,6 +966,14 @@ export function createShell({
       if (s.status !== 'connected') {
         hello = null;
       }
+      // w4-m1: the computer was updated while the phone waited on "Update Plenum on your computer": say so once it connects.
+      if (s.status === 'update-desktop') updateAskedBy = ch.id ?? activeId;
+      else if (s.status === 'connected' && updateAskedBy && updateAskedBy === (ch.id ?? activeId)) {
+        updateAskedBy = null;
+        const line = updatedLine(s.desktopName || name);
+        say(line, 'ok');
+        try { noteCarry?.put(line); } catch { /* the UI page then does not repeat it */ }
+      }
       refresh();
     });
     ch.onEvent(event => {
@@ -719,16 +990,12 @@ export function createShell({
       if (!live()) return;
       hello = h;
       refresh();
-      loadPush();
+      sendPresence();
+      syncPush(h).catch(() => {});
       retryApproveOff();
       // A Stop key the computer just gave this phone (HELLO stopKeyNew) is in the store by now: the lock screen can send Stop without the unlock.
       // The ways the HELLO listed (B-122) are in the record too: the list is read again, so the Ways screen shows them.
       (Array.isArray(h?.carriers) ? loadComputers() : refreshLockStop()).then(refresh).catch(() => {});
-      // B-129: an Android endpoint the computer did not get is sent now that there is a channel.
-      androidPush?.resend().then(async () => {
-        androidPushState = await androidPush.state();
-        refresh();
-      }).catch(() => {});
       afterHello();
     });
     refresh();
@@ -746,13 +1013,112 @@ export function createShell({
   }
 
   // Reads the computer's notification switches once a computer says hello. POST /api/phones/push with no change answers them.
+  // Resolves the answer ({ ok, json, ... }) or null.
   async function loadPush() {
-    if (replay || !channel) return;
+    if (replay || !channel) return null;
     const out = await postJson('/api/phones/push', {});
     if (out.ok && out.json?.push && typeof out.json.push === 'object') {
       pushKnown = { ...out.json.push };
       refresh();
     }
+    return out;
+  }
+
+  // At every HELLO (wave 4, m2): an Android endpoint the computer did not get goes first (B-129), then the switches are read. The answer says
+  // whether the computer holds this phone's subscription (subscribed, and endpoint: the first 16 hex of its sha256). When this phone takes
+  // notifications to be on and the computer has lost them (or holds another endpoint), they are sent again quietly and Phone settings says so
+  // once; otherwise the push app hands the endpoint again (renew), so a key set the computer lost comes back without a word. With no approval
+  // waiting, the approval notifications still showing are taken down.
+  async function syncPush(h) {
+    if (replay) return;
+    const ch = channel;
+    if (androidPush) await androidPush.resend().catch(() => null);
+    const out = await loadPush();
+    // A channel that changed meanwhile has its own HELLO, which runs this again.
+    if (!channel || channel !== ch) return;
+    const json = out?.ok ? out.json : null;
+    const subscribed = typeof json?.subscribed === 'boolean' ? json.subscribed : typeof json?.push?.subscribed === 'boolean' ? json.push.subscribed : null;
+    const held = typeof json?.endpoint === 'string' && /^[0-9a-f]{16}$/.test(json.endpoint) ? json.endpoint : null;
+    if (androidPush) {
+      await checkAndroidPush(subscribed, held).catch(() => {});
+      // Nothing waits on this computer: its approval notifications go (only those: a handover, a needs list or another computer's card stays).
+      if (h?.pending && h.pending.approvals === 0) await androidPush.clearApprovals({ computer: activeId ?? '' }).catch(() => 0);
+      await readAndroidPush();
+      refresh();
+    } else if (subscribed === false) {
+      await repostWebPush().catch(() => {});
+    }
+  }
+
+  async function checkAndroidPush(subscribed, held) {
+    if (!(await androidPush.believedOn())) return;
+    const mine = held ? await androidPush.endpointHash() : null;
+    if (subscribed === false || (held && mine && held !== mine)) {
+      const fixed = await androidPush.repair();
+      if (fixed.ok) await notePushRepaired(fixed.hash ?? null);
+      else debug.log(`push: repair ${fixed.reason ?? 'failed'}`, 'warn');
+      return;
+    }
+    if (subscribed === true && held) await androidPush.adopt(held);
+    await androidPush.renew();
+  }
+
+  // Web: the computer lost the subscription this browser made for it (its record kept the endpoint). The computer drops one mostly when the
+  // push service called the address gone, so sending the same one back would only be dropped again: the browser's subscription is replaced
+  // by a fresh one (no prompt: the permission is already granted) and that one goes to the computer. A subscription that belongs to another
+  // computer (B-128) is never touched. When the fresh one cannot be made or sent, the record says so (pushLost) and the next HELLO tries again.
+  async function repostWebPush() {
+    const key = typeof hello?.vapidPublicKey === 'string' ? hello.vapidPublicKey : null;
+    if (!activeId || !channel || !key || notifications?.permission !== 'granted' || !serviceWorker) return;
+    const forId = activeId;
+    const record = await store.get(forId).catch(() => null);
+    const endpoint = typeof record?.pushEndpoint === 'string' ? record.pushEndpoint : '';
+    if (!endpoint && record?.pushLost !== true) return;
+    const registration = await registrationOf(serviceWorker).catch(() => null);
+    if (!registration?.pushManager) return;
+    const held = await Promise.resolve(registration.pushManager.getSubscription?.()).catch(() => null);
+    if (held) {
+      if (!endpoint || held.endpoint !== endpoint) return;
+      const gone = await Promise.resolve(held.unsubscribe?.()).catch(() => false);
+      if (gone !== true) return;
+    }
+    await store.patchComputer(forId, { pushEndpoint: null, pushLost: true }).catch(() => {});
+    const out = await subscribeWebPush({
+      registration,
+      applicationServerKey: key,
+      request: channel.request,
+      deviceId: typeof hello?.deviceId === 'string' && hello.deviceId ? hello.deviceId : forId,
+      notification: notifications,
+      env: pushEnv,
+    });
+    if (out.ok && out.endpoint) {
+      await store.patchComputer(forId, { pushEndpoint: out.endpoint, pushLost: null }).catch(() => {});
+      await notePushRepaired(await endpointHash(out.endpoint), forId);
+      return;
+    }
+    // Another computer took the browser's one subscription meanwhile, or notifications were blocked: nothing to try again.
+    if (out.state !== 'failed') await store.patchComputer(forId, { pushLost: null }).catch(() => {});
+    debug.log(`push: could not make a new subscription (${out.state})`, 'warn');
+  }
+
+  // A repair went through. The one-time line shows only when it sent something that may work: a computer that dropped this same address
+  // again within a day of the last repair is not reported as fixed again (it is noted in the debug log instead).
+  async function notePushRepaired(hash = null, forId = activeId ?? '') {
+    const key = String(forId ?? '');
+    const kept = await store.meta.get(PUSH_REPAIRS_META).catch(() => null);
+    const repairs = kept && typeof kept === 'object' && !Array.isArray(kept) ? { ...kept } : {};
+    const last = repairs[key];
+    const again = Boolean(hash) && last?.hash === hash && wall() - (Number(last.at) || 0) < REPAIR_SAME_MS;
+    repairs[key] = { hash: hash ?? null, at: wall() };
+    await store.meta.put(PUSH_REPAIRS_META, repairs).catch(() => {});
+    if (again) {
+      debug.log('push: the computer dropped this phone\'s notifications again; the same address went again', 'warn');
+      return;
+    }
+    pushRepaired = true;
+    debug.log('push: the computer had lost this phone\'s notifications; sent again', 'info');
+    await store.meta.put(PUSH_REPAIRED_META, true).catch(() => {});
+    refresh();
   }
 
   // The phone's copy of the Approve-from-notifications switch (the computer keeps the real one; a demo changes nothing on disk).
@@ -777,6 +1143,7 @@ export function createShell({
     if ((parsed?.kind === 'approve' || parsed?.kind === 'deny') && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS) {
       say(NOTIFICATION_OLD, 'warn');
       emitRoute({ kind: 'waiting', id: parsed.id });
+      await clearNotification(parsed, link.computer ?? parsed.computer ?? '');
       return { ok: false, reason: 'expired', kind: parsed.kind };
     }
     return api.handleHash(link.text, link.computer ?? '');
@@ -797,12 +1164,33 @@ export function createShell({
   // B-119 (and B-127): a connect that is still reading the store when another starts, or when the person cancels, locks or forgets, is superseded
   // and opens nothing, so two overlapping connects never leave a worker nobody closes.
   let connectSeq = 0;
-  async function connectNow(id) {
+  // take (wave 5, brb): the person asked for this computer here (Use it here, a computer chosen, Try again, Stop), so another tab of this
+  // browser that holds it lets go. Without it (a connect the shell makes by itself) the tab asks first and stays out when another holds it.
+  async function connectNow(id, { take = false } = {}) {
     const seq = ++connectSeq;
     const record = await store.get(id);
     if (!record) return { ok: false, reason: 'unknown' };
     const keyed = keyedRecord(record);
     if (!keyed) return { ok: false, reason: 'locked' };
+    if (tabGuard && !take && tabGuard.holding() !== id && await tabGuard.ask(id)) {
+      if (seq !== connectSeq) return { ok: false, reason: 'superseded' };
+      if (channel) {
+        retireChannel(channel);
+        channel = null;
+      }
+      hello = null;
+      activeId = id;
+      tab = { state: 'elsewhere', computer: id };
+      channelState = { ...channelState, status: 'closed', desktopName: String(keyed.name ?? '') };
+      refresh();
+      return { ok: false, reason: 'other-tab' };
+    }
+    if (seq !== connectSeq) return { ok: false, reason: 'superseded' };
+    if (tabGuard) {
+      if (take) tabGuard.take(id);
+      tabGuard.hold(id);
+    }
+    tab = null;
     if (channel) {
       retireChannel(channel);
       channel = null;
@@ -842,6 +1230,21 @@ export function createShell({
   // channel.request as the shell's own call: the worker lets a shell-scope request reach /_bridge/log.
   const shellRequest = ch => (spec, body, opts) => ch.request(spec, body, { ...(opts ?? {}), scope: 'shell' });
 
+  // Wave 5 (brb): tells the computer whether this page is in front (POST /_bridge/presence { visible }, shell scope). A hidden tab that keeps
+  // polling then still gets its notifications (the computer skips a device it takes to be in front). Sent at every HELLO and on every
+  // visibility change; an older computer without the path answers 404, and every error is ignored.
+  function pageVisible() {
+    return pushEnv?.document?.visibilityState !== 'hidden';
+  }
+  function sendPresence(visible = pageVisible()) {
+    const ch = channel;
+    if (!ch || replay || typeof ch.request !== 'function') return;
+    try {
+      Promise.resolve(ch.request({ method: 'POST', path: '/_bridge/presence', headers: { 'content-type': 'application/json' } }, JSON.stringify({ visible: visible === true }), { scope: 'shell' }))
+        .then(answer => answer?.cancel?.(), () => {});
+    } catch { /* not sent */ }
+  }
+
   // Resolves true once the computer has said hello (or at once if it has), false when there is no channel or it does not come within ms.
   // A notification link that opens the app cold arrives before the channel is up: Deny and Approve wait a moment for it, they do not fail.
   function whenConnected(ms = 8000) {
@@ -866,8 +1269,41 @@ export function createShell({
   async function savePrefs(next) {
     prefs = S.normalisePrefs(next);
     await store.meta.put(PREFS_META, prefs).catch(() => {});
+    applyTheme();
     return refresh();
   }
+
+  // Wave 4 (m3): the theme as the page draws it (Plenum's own Theme setting, else the phone's), for the status bar and the next start.
+  function themeNow() {
+    if (prefs.theme === 'dark' || prefs.theme === 'light') return prefs.theme;
+    return colorScheme?.matches === true ? 'dark' : 'light';
+  }
+
+  // Capacitor's SystemBars follows the phone's theme, not Plenum's, so Dark in Plenum on a light phone drew dark icons on the dark page. The
+  // style names the bars' background: DARK gives light icons (SystemBars.java: setAppearanceLightStatusBars(!style.equals("DARK"))). Set
+  // once per change; a phone without the plugin is left as it is.
+  let appliedBars = null;
+  function applyBars() {
+    if (typeof systemBars?.setStyle !== 'function') return;
+    const style = themeNow() === 'dark' ? 'DARK' : 'LIGHT';
+    if (style === appliedBars) return;
+    appliedBars = style;
+    try {
+      Promise.resolve(systemBars.setStyle({ style })).catch(() => { if (appliedBars === style) appliedBars = null; });
+    } catch {
+      appliedBars = null;
+    }
+  }
+
+  // The status bar, and the chosen theme where the shell page reads it before its first paint at the next start (earlyTheme).
+  function applyTheme() {
+    applyBars();
+    try {
+      themeCarry?.put(prefs.theme === 'dark' || prefs.theme === 'light' ? prefs.theme : null);
+    } catch { /* not kept: the next start follows the phone until the preferences are read */ }
+  }
+  if (typeof colorScheme?.addEventListener === 'function') colorScheme.addEventListener('change', () => applyBars());
+  else if (typeof colorScheme?.addListener === 'function') colorScheme.addListener(() => applyBars());
 
   // M11: "Hide Plenum in the app switcher" (on by default) is FLAG_SECURE on Android, set through the app's own PlenumPrivacy plugin. The
   // setting is also kept natively, so the flag is on from the first frame; this keeps the two in step with the phone's preference. The
@@ -900,8 +1336,53 @@ export function createShell({
   async function loadAndroidPush() {
     if (!androidPush) return;
     await androidPush.start();
-    androidPushState = await androidPush.state();
+    const last = await store.meta.get(PUSH_LAST_META).catch(() => null);
+    pushLastAt = Number.isFinite(last) && last > 0 ? last : null;
+    pushRepaired = (await store.meta.get(PUSH_REPAIRED_META).catch(() => null)) === true;
+    await readAndroidPush();
     refresh();
+    // Wave 4 (m2): at every start the push app hands the endpoint and its key set again while this listener is attached (the HELLO sends it).
+    if (mode === 'normal') await androidPush.renew().catch(() => false);
+  }
+
+  // Turn on, for the screens and for the re-check when Plenum comes back to the front. On success the test notification is sent and the
+  // toast says it is on its way. The outcome is kept for the screens in state().notifySetup.
+  async function turnOnNotifications({ auto = false } = {}) {
+    const out = await api.enableNow();
+    let testSent = false;
+    if (out.ok && !replay) {
+      const sent = await postJson('/api/phones/test-push', {});
+      testSent = sent.ok;
+      if (testSent) say(NOTIFY_TEST_ON_WAY, 'ok');
+    }
+    lastEnableReason = out.ok ? null : out.reason;
+    if (androidPush) {
+      fixWaiting = !out.ok && (out.reason === 'no-distributor' || out.reason === 'denied') ? out.reason : null;
+      await readAndroidPush();
+    }
+    notifySeq += 1;
+    notifySetup = { seq: notifySeq, ok: out.ok, reason: out.ok ? null : out.reason, auto, testSent };
+    refresh();
+    return out;
+  }
+
+  // Back in front after "Get ntfy" or "Open notification settings": when the missing piece is there now, notifications are turned on again
+  // without another tap. Nothing happens while it is still missing.
+  async function recheckNotifications() {
+    if (!androidPush || !fixWaiting || rechecking || lockStatus.locked) return;
+    rechecking = true;
+    try {
+      const ready = fixWaiting === 'no-distributor' ? await androidPush.hasDistributor() : await androidPush.permitted();
+      if (!ready) {
+        await readAndroidPush();
+        refresh();
+        return;
+      }
+      fixWaiting = null;
+      await turnOnNotifications({ auto: true });
+    } finally {
+      rechecking = false;
+    }
   }
 
   // ----- the UI hand-over (H3) -----
@@ -980,6 +1461,23 @@ export function createShell({
     refresh();
   }
 
+  // Wave 5 (brb): another tab of this browser took this computer (its Use it here): this tab lets go of its channel and says where it went.
+  tabGuard?.onTaken(computer => {
+    if (computer !== activeId) return;
+    connectSeq += 1;
+    if (channel) {
+      retireChannel(channel);
+      channel = null;
+    }
+    hello = null;
+    tab = { state: 'moved', computer };
+    channelState = { ...channelState, status: 'closed' };
+    refresh();
+  });
+
+  // w4-m1: the "was updated" line the shell page said just before it handed this page the UI.
+  if (typeof initialNote === 'string' && UPDATED_LINE_PATTERN.test(initialNote)) say(initialNote, 'ok');
+
   const api = {
     state: () => snapshot,
     subscribe(fn) {
@@ -995,10 +1493,13 @@ export function createShell({
       if (booted) return snapshot;
       booted = true;
       prefs = S.normalisePrefs(await store.meta.get(PREFS_META).catch(() => null));
+      applyTheme();
       approveStored = (await store.meta.get(APPROVE_META).catch(() => null)) === true;
       try {
         if (lock) {
-          await lock.lockOnLaunch();
+          // Wave 4 (m3): a page of this app unlocked within the person's lock time (one minute for page switches when it is Immediately; a
+          // real return from the background still locks at once, visibility() below) does not ask for the fingerprint again.
+          await lock.lockOnLaunch({ freshMs: S.lockAfter(prefs.lockAfter).ms || PAGE_SWITCH_FRESH_MS });
           lockStatus = { ...lockStatus, ...(await lock.status()) };
         }
       } catch {
@@ -1021,6 +1522,16 @@ export function createShell({
         computers = [{ ...DEMO_COMPUTER }];
         activeId = DEMO_COMPUTER.id;
         channelState = { ...channelState, status: 'connected', carrier: 'lan', desktopName: 'Demo computer', since: Date.now() };
+        return refresh();
+      }
+      // Wave 5 (brb): the code page connects nothing. It lists the computers paired through this host, for its Open Plenum.
+      if (claimPage) {
+        const records = [];
+        for (const c of computers) {
+          const record = await store.get(c.id).catch(() => null);
+          if (record) records.push(record);
+        }
+        claimHere = pagesHere(records, host);
         return refresh();
       }
       const saved = await store.meta.get(ACTIVE_META).catch(() => null);
@@ -1067,7 +1578,9 @@ export function createShell({
         refresh();
         return { ...pairing };
       }
-      pairing = { state: 'starting', code: null, tried: [], reason: null };
+      // An Add a browser offer keeps its form on every pairing state, so the code, denied and expired screens use the browser's words.
+      const form = payload.form === 'browser' ? { form: 'browser' } : {};
+      pairing = { state: 'starting', code: null, tried: [], reason: null, ...form };
       refresh();
       // The key of a record the lock wrapped stays in memory for this unlocked session, so the new computer can connect now.
       let wrapped = null;
@@ -1086,7 +1599,7 @@ export function createShell({
           return kept;
         },
         onState: s => {
-          pairing = { ...s };
+          pairing = { ...s, ...form };
           refresh();
         },
       });
@@ -1101,8 +1614,10 @@ export function createShell({
         pairedId = id ?? null;
         holdUi = true;
         if (wrapped) unlockedKeys.set(wrapped.id, wrapped.key);
+        // Wave 5 (brb): the first computer this browser pairs with: ask the browser to keep the keys when it runs short of space.
+        if (computers.length === 1 && typeof persist === 'function') Promise.resolve().then(persist).catch(() => {});
         // Connects only when the app is still unlocked (the lock can come on while the pairing is open).
-        if (id && !lockStatus.locked) await connectNow(id);
+        if (id && !lockStatus.locked) await connectNow(id, { take: true });
         refresh();
         return { ...final, computerId: id ?? null };
       }
@@ -1120,7 +1635,7 @@ export function createShell({
           return { ok: true, reason: 'opening' };
         }
       }
-      const result = await connectNow(id);
+      const result = await connectNow(id, { take: true });
       refresh();
       return result;
     },
@@ -1144,6 +1659,15 @@ export function createShell({
       // Locked, or the lock could not be read: Stop does not wait for an unlock when this phone can send it without one.
       if (lockStatus.locked || lockUnreadable) return lockedStop(project, named);
       if (named && (named !== activeId || !channel)) return stopOn(named, project);
+      // Wave 5 (brb): another tab of this browser holds the computer: Stop moves it here and stops (Stop always works from the tab in front).
+      if (tab && !channel && tab.computer) {
+        const opened = await connectNow(tab.computer, { take: true });
+        if (!opened.ok) {
+          say('Could not reach your computer from this tab. Press Stop in the other tab or on your computer.', 'warn');
+          refresh();
+          return { ...stopView, state: 'idle', reason: opened.reason ?? 'failed' };
+        }
+      }
       if (!stopCtl) return { ...stopView, state: 'idle', text: 'Nothing to stop: no computer is connected.' };
       notePress(activeId);
       const out = await stopCtl.press(project);
@@ -1155,6 +1679,8 @@ export function createShell({
       if (replay) return { ...refresh(), ok: false, reason: 'demo' };
       if (activeId === id) {
         connectSeq += 1;   // a connect to this computer that is still starting opens nothing
+        tabGuard?.hold(null);
+        tab = null;
         if (channel) {
           retireChannel(channel);
           channel = null;
@@ -1254,12 +1780,48 @@ export function createShell({
     // Web: the permission, then the push subscription, which the computer keeps: "Allowed" means a subscription is on the computer. The
     // computer's VAPID public key comes in its HELLO (vapidPublicKey); without it nothing is subscribed and the answer says so.
     // Android: UnifiedPush through the person's push app (push.js createAndroidPush); the endpoint it gives goes to the computer.
+    // Wave 4 (m2): on success the test notification goes out too (turnOnNotifications), and a missing push app or a blocked permission is
+    // checked again when Plenum comes back to the front.
     async enableNotifications() {
       if (replay) return { ok: true, reason: null };
+      return turnOnNotifications();
+    },
+
+    // Wave 4 (m2): Android's notification settings for Plenum (the PlenumPrivacy plugin). An app without that method answers unavailable, and
+    // the screen says where to find the page. Plenum checks the permission again when it comes back to the front.
+    async openNotificationSettings() {
+      const privacy = native?.PlenumPrivacy;
+      if (!privacy || typeof privacy.openNotificationSettings !== 'function') return { ok: false, reason: 'unavailable' };
+      try {
+        const out = await privacy.openNotificationSettings();
+        if (out?.opened === false) return { ok: false, reason: 'unavailable' };
+        if (androidPush) fixWaiting = 'denied';
+        return { ok: true, reason: null };
+      } catch {
+        return { ok: false, reason: 'unavailable' };
+      }
+    },
+
+    // After "Get ntfy": Plenum checks for the push app when it comes back to the front.
+    awaitPushApp() {
+      if (!androidPush) return { ok: false, reason: 'unavailable' };
+      fixWaiting = 'no-distributor';
+      return { ok: true, reason: null };
+    },
+
+    // Phone settings showed the "turned them back on" line: it is not shown again.
+    ackPushRepaired() {
+      if (!pushRepaired) return { ok: true, reason: null };
+      pushRepaired = false;
+      store.meta.remove(PUSH_REPAIRED_META).catch(() => {});
+      refresh();
+      return { ok: true, reason: null };
+    },
+
+    // The one turn-on for every platform; turnOnNotifications wraps it. Kept in the api for the closures it reads.
+    async enableNow() {
       if (androidPush) {
         const out = await androidPush.enable();
-        androidPushState = await androidPush.state();
-        refresh();
         return { ok: out.ok === true, reason: out.ok === true ? null : (out.reason ?? 'failed') };
       }
       const key = typeof hello?.vapidPublicKey === 'string' ? hello.vapidPublicKey : null;
@@ -1277,7 +1839,7 @@ export function createShell({
       });
       // B-128: this computer's record keeps the endpoint of the browser subscription it made, so turning notifications off removes that one and
       // never another computer's.
-      if (out.ok && out.endpoint && forId) await store.patchComputer(forId, { pushEndpoint: out.endpoint }).catch(() => {});
+      if (out.ok && out.endpoint && forId) await store.patchComputer(forId, { pushEndpoint: out.endpoint, pushLost: null }).catch(() => {});
       refresh();
       if (out.ok) return { ok: true, reason: null };
       if (out.state === 'denied') return { ok: false, reason: 'denied' };
@@ -1294,7 +1856,7 @@ export function createShell({
     async chooseDistributor() {
       if (!androidPush) return { ok: false, reason: 'unavailable' };
       const out = await androidPush.chooseDistributor();
-      androidPushState = await androidPush.state();
+      await readAndroidPush();
       refresh();
       return out;
     },
@@ -1304,7 +1866,8 @@ export function createShell({
       if (replay) return { ok: true, reason: null };
       if (androidPush) {
         const out = await androidPush.disable();
-        androidPushState = await androidPush.state();
+        fixWaiting = null;
+        await readAndroidPush();
         refresh();
         return out;
       }
@@ -1314,6 +1877,8 @@ export function createShell({
       if (out.ok && activeId) {
         const record = await store.get(activeId).catch(() => null);
         const endpoint = typeof record?.pushEndpoint === 'string' ? record.pushEndpoint : '';
+        // Off means off: a fresh subscription a repair still owed this computer (repostWebPush) is not made.
+        if (record?.pushLost === true) await store.patchComputer(activeId, { pushLost: null }).catch(() => {});
         const key = typeof hello?.vapidPublicKey === 'string' ? hello.vapidPublicKey : null;
         if (endpoint || key) {
           const registration = await registrationOf(serviceWorker).catch(() => null);
@@ -1375,6 +1940,8 @@ export function createShell({
 
     cancelConnect() {
       connectSeq += 1;
+      tabGuard?.hold(null);
+      tab = null;
       if (channel) {
         retireChannel(channel);
         channel = null;
@@ -1400,11 +1967,13 @@ export function createShell({
     },
 
     // The person pressed Pair on the review screen: the parked link starts pairing. Resolves the final pairing state, or { ok: false, reason: 'none' }.
-    async confirmPair() {
+    // Wave 5 (brb): options.name is the name typed on the review screen of a browser offer (form 'browser'); a phone offer has no field.
+    async confirmPair(options = {}) {
       const parked = pendingPair;
       if (!parked) return { ok: false, reason: 'none' };
       pendingPair = null;
-      return api.pair(parked.text);
+      const name = parked.form === 'browser' ? cleanName(options?.name) : '';
+      return api.pair(parked.text, name ? { name } : {});
     },
 
     // A line from the UI page's console (the facade's log): redacted, kept in the phone's own console and, when connected, sent to the computer.
@@ -1483,6 +2052,7 @@ export function createShell({
         channelState = { ...channelState, status: 'closed' };
       }
       connectSeq += 1;
+      tabGuard?.hold(null);
       unlockedKeys.clear();
       await refreshLockStop();
       lock.lock();
@@ -1494,6 +2064,7 @@ export function createShell({
     // The page went to the background or came back. The lock comes on after the time the person chose (prefs.lockAfter, five
     // minutes by default); "Immediately" locks on every return. The channel reconnects at once on return.
     async visibility(visible) {
+      sendPresence(visible === true);
       if (!visible) {
         hiddenAt = wall();
         return refresh();
@@ -1507,8 +2078,26 @@ export function createShell({
         const locked = lockStatus.mode !== 'off' && away !== null && away >= after;
         if (locked && !lockStatus.locked) await api.lockNow();
       }
-      channel?.reconnect();
+      // w4-m1: the worker hears how long the page was away; after RESUME_RACE_AFTER_MS it dials beside the probe (channel.worker.js).
+      channel?.reconnect({ reason: 'resume', hiddenMs: away });
+      // w4-m2: back from installing ntfy or from the notification settings: turn notifications on when that is now possible.
+      if (fixWaiting) recheckNotifications().catch(() => {});
       return refresh();
+    },
+
+    // Wave 4 (m3): the page is being left (pagehide: on the apps, a switch between the shell page and the UI page). While unlocked in biometric
+    // mode the app keeps the time in its memory, so the next page starts unlocked (lock.js keepUnlocked). Nothing is stored by the page.
+    leavingPage() {
+      if (!lock || lockStatus.locked || typeof lock.keepUnlocked !== 'function') return false;
+      return lock.keepUnlocked();
+    },
+
+    // w4-m1: the phone's network came back or changed (the Network plugin's networkStatusChange with connected true, or the page's 'online'
+    // event; wireNetwork). The channel tries at once and dials beside the probe of a session that is up, whose socket may be on the old network.
+    networkChanged() {
+      if (replay || !channel || lockStatus.locked) return false;
+      channel.reconnect({ reason: 'network' });
+      return true;
     },
 
     async runSelftest(options = {}) {
@@ -1536,7 +2125,20 @@ export function createShell({
     // link waits for the unlock.
     // computerHint (B-117) is the computer a notification came from (the service worker's message carries it apart from the fragment; a
     // fragment may also end in &computer=<id>). Stop all, Deny and Approve act on that computer, not on whichever one is open.
+    // Wave 4 (m2): once a Stop, Deny or Approve from a notification is handled, whatever its outcome, that notification is taken down (the one
+    // named by the route's &nt=<tag>, else every approval notification). One that waits behind the lock, or that went to the shell page to be
+    // answered there, stays until it is handled.
     async handleHash(hash, computerHint = '') {
+      const out = await api.runHash(hash, computerHint);
+      const link = parseNotificationHash(String(hash ?? ''));
+      if (androidPush && link && ['stop', 'deny', 'approve'].includes(link.kind) && out?.reason !== 'locked' && out?.reason !== 'opening' && out?.opening !== true) {
+        await clearNotification(link, computerHint || link.computer || '');
+      }
+      return out;
+    },
+
+    // The link itself (handleHash takes the notification down after it).
+    async runHash(hash, computerHint = '') {
       const text = String(hash ?? '');
       // The shell page's own screens (from the UI page's Phone settings and Computers): the screens read screenRequest once the app is unlocked.
       // The UI page has no such screens and ignores these two.
@@ -1565,7 +2167,7 @@ export function createShell({
           if (hello) afterHello();
           return { ok: true, reason: null, kind: 'connect' };
         }
-        const opened = await connectNow(connectId);
+        const opened = await connectNow(connectId, { take: true });
         if (!opened.ok) forceUi = false;
         refresh();
         return { ...opened, kind: 'connect' };
@@ -1574,7 +2176,10 @@ export function createShell({
       const parsed = parseNotificationHash(text);
       const link = parsed ? { ...parsed } : null;
       const hinted = String(computerHint ?? '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 80) || link?.computer || '';
-      if (link) delete link.computer;
+      if (link) {
+        delete link.computer;
+        delete link.nt;
+      }
       const named = !isPair && RECORD_ID.test(hinted) && ['stop', 'deny', 'approve'].includes(link?.kind) ? hinted : '';
       if (!isPair && !link) return { ok: false, reason: 'no link' };
       if (booted) await lockRead;
@@ -1616,8 +2221,8 @@ export function createShell({
           refresh();
           return { ...pairing };
         }
-        pendingPair = { text: bare };
-        pairing = { state: 'review', code: null, tried: [], reason: null, review: { name: cleanName(payload.name) || 'Plenum computer', hosts } };
+        pendingPair = { text: bare, form: payload.form };
+        pairing = { state: 'review', code: null, tried: [], reason: null, review: { name: cleanName(payload.name) || 'Plenum computer', hosts, form: payload.form } };
         refresh();
         return { ok: true, reason: null, kind: 'review' };
       }
@@ -1813,9 +2418,63 @@ export function linkOfUrl(url) {
 // shell's handleHash holds it). Returns afterStart(), which runs the link the app was launched with, once: call it when the shell has started.
 // On iOS a plenum://app/ link (#stop, #deny, #approve) is ignored: the iPhone has no notification actions, and any web page can open the scheme.
 // plenum://pair still reaches the review screen.
+//
+// Wave 5 (brb, the k1 follow-up): a launch link acts once. getLaunchUrl() answers the link the app was started with on every page load of
+// that start (the shell page, then the UI page, then the shell page again), so the link the shell has run is remembered in sessionStorage
+// (LAUNCH_KEY): a later page load of the same start never runs it again, and a shortcut or a notification acts once. Only a hash of the URL is
+// kept (a pairing link carries its secret), at most LAUNCH_KEEP of them. The storage lives as long as the app's WebView, so a new start from
+// the same notification runs it again, as it should. MainActivity drops a replayed intent natively (k1); this is the backstop.
+export const LAUNCH_KEY = 'plenum-launch-done';
+export const LAUNCH_KEEP = 20;
+
+// A short hash of a launch URL: SHA-256 (hex, first 32) where the page has crypto.subtle, else FNV-1a.
+export async function launchHash(url, env = globalThis) {
+  const text = String(url ?? '');
+  try {
+    const subtle = env?.crypto?.subtle;
+    if (subtle?.digest) {
+      const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(text)));
+      return Array.from(digest.slice(0, 16), b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch { /* the plain hash below */ }
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    h1 = Math.imul(h1 ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ text.charCodeAt(text.length - 1 - i), 0x811c9dc5) >>> 0;
+  }
+  return `f${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
+
+function launchMemory(env) {
+  const session = () => {
+    try { return env?.sessionStorage ?? null; } catch { return null; }
+  };
+  const read = () => {
+    try {
+      const list = JSON.parse(session()?.getItem(LAUNCH_KEY) ?? '[]');
+      return Array.isArray(list) ? list.filter(k => typeof k === 'string') : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    has: key => read().includes(key),
+    add(key) {
+      try {
+        const list = read().filter(k => k !== key);
+        list.push(key);
+        session()?.setItem(LAUNCH_KEY, JSON.stringify(list.slice(-LAUNCH_KEEP)));
+      } catch { /* not kept: k1's native check still drops a replayed intent */ }
+    },
+  };
+}
+
 export function wireAppPlugin({ appPlugin, shell, env, pageKind, platform = null }) {
   const opened = new Set();
   let launchRan = false;
+  const memory = launchMemory(env);
+  const remember = url => { launchHash(url, env).then(key => memory.add(key), () => {}); };
   const wanted = link => Boolean(link) && !(platform === 'ios' && link.startsWith('#'));
   if (appPlugin?.addListener) {
     appPlugin.addListener('appUrlOpen', event => {
@@ -1823,6 +2482,8 @@ export function wireAppPlugin({ appPlugin, shell, env, pageKind, platform = null
       const link = linkOfUrl(url);
       if (!wanted(link)) return;
       opened.add(url);
+      // The system may deliver the launching link this way too: it is remembered, so the next page load does not run it again.
+      remember(url);
       shell.handleHash(link).catch(() => {});
     });
     if (pageKind === 'shell') {
@@ -1842,9 +2503,162 @@ export function wireAppPlugin({ appPlugin, shell, env, pageKind, platform = null
       const url = String(launched?.url ?? '');
       const link = linkOfUrl(url);
       // The system may also deliver the launching link as an appUrlOpen: it has run then.
-      if (wanted(link) && !opened.has(url)) shell.handleHash(link).catch(() => {});
+      if (!wanted(link) || opened.has(url)) return;
+      // An earlier page load of this start ran it already.
+      const key = await launchHash(url, env);
+      if (memory.has(key)) return;
+      memory.add(key);
+      shell.handleHash(link).catch(() => {});
     } catch { /* no launch link */ }
   };
+}
+
+// w4-m1: reconnect on a network change. The Network plugin (native.js registers it) says networkStatusChange { connected, connectionType }; a
+// change that leaves the phone connected (Wi-Fi to mobile data, a new Wi-Fi, back from no signal) asks the channel to try at once, since
+// the socket in use may belong to the old network. The page's 'online' event does the same on the web and as a fallback in the apps. A
+// change to "not connected" does nothing: the next one will say connected. Returns a function that removes the listeners.
+//
+// Only a real change counts. The Android plugin (@capacitor/network) sends networkStatusChange { connected: true } on every resume (it
+// registers its network callback again and Android reports the current network at once) and on every onCapabilitiesChanged while the app is
+// open, with nothing changed. Each of those would dial beside a live session and put the offline cadence back to 10 s. So the last status
+// is kept (seeded from getStatus) and an event asks the shell only when the phone goes from not connected to connected, or the connection
+// type changes while connected. The first status seen with no seed is only recorded. A return from the background is the page's own
+// visibility() call (reason 'resume' with the time away); a network that changed while the app was away still shows here as a new type.
+// Bursts are folded: one call at once, then at most one more after NETWORK_QUIET_MS.
+export const NETWORK_QUIET_MS = 1500;
+export function wireNetwork({ network = null, env = null, shell, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let removed = false;
+  let lastAsked = -Infinity;
+  let pending = null;
+  const ask = () => {
+    lastAsked = now();
+    try { shell?.networkChanged?.(); } catch { /* the shell is gone */ }
+  };
+  const changed = () => {
+    if (removed || pending) return;
+    const wait = lastAsked + NETWORK_QUIET_MS - now();
+    if (wait <= 0) { ask(); return; }
+    pending = setTimer(() => { pending = null; if (!removed) ask(); }, wait);
+  };
+  const onOnline = () => changed();
+  env?.addEventListener?.('online', onOnline);
+  let handle = null;
+  // { connected, type } last seen; null until the seed or the first event.
+  let last = null;
+  let heard = false;
+  const statusOf = status => ({ connected: status?.connected === true, type: String(status?.connectionType ?? '') });
+  if (network?.getStatus) {
+    try {
+      Promise.resolve(network.getStatus()).then(status => {
+        if (!heard && status && typeof status === 'object') last = statusOf(status);
+      }, () => {});
+    } catch { /* no seed: the first event is recorded */ }
+  }
+  if (network?.addListener) {
+    try {
+      Promise.resolve(network.addListener('networkStatusChange', status => {
+        heard = true;
+        const next = statusOf(status);
+        const prev = last;
+        last = next;
+        if (!next.connected || !prev) return;
+        if (!prev.connected || prev.type !== next.type) changed();
+      })).then(h => {
+        handle = h ?? null;
+        if (removed) handle?.remove?.();
+      }, () => {});
+    } catch { /* no listener: the 'online' event still works */ }
+  }
+  return () => {
+    removed = true;
+    if (pending) { try { clearTimer(pending); } catch { /* gone */ } pending = null; }
+    env?.removeEventListener?.('online', onOnline);
+    try { handle?.remove?.(); } catch { /* already removed */ }
+  };
+}
+
+// w4-m1: the "was updated" line on its way from the shell page to the UI page (sessionStorage; nothing secret is in it).
+function createNoteCarry(env) {
+  const session = () => {
+    try { return env?.sessionStorage ?? null; } catch { return null; }
+  };
+  return {
+    put(text) {
+      try { session()?.setItem(NOTE_KEY, JSON.stringify({ text: String(text), at: Date.now() })); } catch { /* not carried */ }
+    },
+    take() {
+      try {
+        const raw = session()?.getItem(NOTE_KEY);
+        if (!raw) return null;
+        session().removeItem(NOTE_KEY);
+        const value = JSON.parse(raw);
+        const fresh = Number.isFinite(value?.at) && Date.now() - value.at >= 0 && Date.now() - value.at < NOTE_TTL_MS;
+        return fresh && typeof value.text === 'string' && UPDATED_LINE_PATTERN.test(value.text) ? value.text : null;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+// Wave 4 (m3): the page's prefers-color-scheme query, or null.
+function schemeQuery(env) {
+  try {
+    return env?.matchMedia?.('(prefers-color-scheme: dark)') ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Wave 4 (m3): shows a chosen theme on the shell page's root at once ('dark', 'light'; null hands it back to the stylesheet, which follows the
+// phone). It is the root's color-scheme, set through the CSSOM (the strict CSP refuses style attributes in the markup, not this), so the page
+// background (the light-dark() tokens, #f6f6fb or #0a0a11) is the chosen one from the first paint. screens/main.js sets data-theme to the same
+// value once the preferences are read.
+export function showEarlyTheme(doc, theme) {
+  const style = doc?.documentElement?.style;
+  if (!style) return false;
+  const value = theme === 'dark' || theme === 'light' ? theme : '';
+  try {
+    if (typeof style.setProperty === 'function') {
+      if (value) style.setProperty('color-scheme', value);
+      else style.removeProperty?.('color-scheme');
+    } else {
+      style.colorScheme = value;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Wave 4 (m3): the shell page's copy of the chosen theme (THEME_KEY in localStorage). put(theme) shows it and keeps it; an unchanged value
+// writes nothing. Storage that cannot be read or written keeps nothing, and the page follows the phone until the preferences are read.
+function createThemeCarry(env) {
+  const local = () => {
+    try { return env?.localStorage ?? null; } catch { return null; }
+  };
+  return {
+    put(theme) {
+      const value = theme === 'dark' || theme === 'light' ? theme : null;
+      showEarlyTheme(env?.document, value);
+      const ls = local();
+      if (!ls) return;
+      try {
+        if ((ls.getItem(THEME_KEY) ?? null) === value) return;
+        if (value) ls.setItem(THEME_KEY, value);
+        else ls.removeItem(THEME_KEY);
+      } catch { /* not kept */ }
+    },
+  };
+}
+
+// Wave 4 (m3): the first thing the shell page does when this module runs, before anything is awaited: the theme kept from the last start, so
+// a page in Plenum's Dark on a light phone (or Light on a dark one) does not first draw the other theme. Answers the theme shown, or null.
+export function earlyTheme(env = globalThis) {
+  let saved = null;
+  try { saved = env?.localStorage?.getItem(THEME_KEY) ?? null; } catch { saved = null; }
+  if (saved !== 'dark' && saved !== 'light') return null;
+  return showEarlyTheme(env?.document, saved) ? saved : null;
 }
 
 // The one-shot slot of a page object other than globalThis (the Node suites): the function boot.js installed, taken and removed.
@@ -1898,6 +2712,8 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
   const pageKind = pageKindFor(env);
   const lan = isLanPage(env);
   const bridge = hasNativeBridge(env);
+  // Wave 5 (brb): the code page at /pair/ (a browser on another computer types the code the computer shows): no service worker, no UI host.
+  const claimPage = !native && pageKind === 'shell' && isClaimPage(env);
   let plugins = null;
   let pluginFailure = false;
   if (native) {
@@ -1922,6 +2738,8 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
     now: () => Date.now(),
     biometric: createBiometricGate({ plugin: biometricPlugin }),
     passkey: native ? null : createPasskeyGate({ credentials: env.navigator?.credentials, PublicKeyCredentialCtor: env.PublicKeyCredential, rpId: env.location?.hostname }),
+    // Wave 4 (m3): the Android app remembers a biometric unlock in its memory (PlenumPrivacy), so a page switch does not ask again.
+    memory: native && device.platform === 'android' && plugins?.PlenumPrivacy ? createUnlockMemory({ plugin: plugins.PlenumPrivacy }) : null,
   });
   const params = new URLSearchParams(String(env.location?.search ?? ''));
   const mode = modeFor(env.location?.search, devBuild);
@@ -1931,10 +2749,10 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
   const parkedStop = createParkedStop(store.meta);
   try { env.sessionStorage?.removeItem(SHELL_LINK_KEY); } catch { /* no session storage */ }
   // F1: the service worker, for the PWA. Not awaited: the page does not wait for the worker to activate.
-  if (!native && pageKind === 'shell') registerServiceWorker(env);
+  if (!native && pageKind === 'shell' && !claimPage) registerServiceWorker(env);
   let shell = null;
   const kind = native ? (device.platform === 'android' ? 'android' : 'ios') : lan ? 'lan' : 'web';
-  const uiHost = mode === 'normal' && env.location && (!native || plugins)
+  const uiHost = mode === 'normal' && !claimPage && env.location && (!native || plugins)
     ? createUiHost({ env, kind, native: plugins, channelOf: () => shell?.channel ?? null, log: line => shell?.debug.log(line, 'warn'), linkStore, stopHandoff: { pending: () => shell?.pendingStop?.() ?? null, park: pending => parkedStop.put(pending), unpark: () => parkedStop.unpark() } })
     : null;
   let initialIntent = null;
@@ -1950,6 +2768,9 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
   // M6: a link the UI page could not carry in an address (the apps): the shell page takes it out of the store once, then waits for the unlock.
   let initialLink = null;
   if (native && plugins && pageKind === 'shell') initialLink = await linkStore.take();
+  // w4-m1: the "was updated" line the shell page left for this UI page.
+  const noteCarry = createNoteCarry(env);
+  const initialNote = pageKind === 'ui' ? noteCarry.take() : null;
   shell = createShell({
     store,
     lock,
@@ -1977,6 +2798,19 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
     devBuild,
     storage: secureStorage === NO_SECURE_STORAGE ? 'unavailable' : 'ok',
     parkedStop,
+    noteCarry,
+    initialNote,
+    // Wave 4 (m3): on the shell page the status bar follows Plenum's theme from here (on the UI page, boot.js does it), and the chosen theme is
+    // kept for the next start of the shell page.
+    systemBars: native && pageKind === 'shell' ? plugins?.SystemBars ?? null : null,
+    colorScheme: pageKind === 'shell' ? schemeQuery(env) : null,
+    themeCarry: pageKind === 'shell' ? createThemeCarry(env) : null,
+    // Wave 5 (brb): two tabs of one browser on one computer (not on the apps, not on the code page), the code page itself, and the
+    // browser's keep-my-keys request after the first pairing.
+    tabGuard: !native && !claimPage && mode === 'normal' ? createTabGuard({ env }) : null,
+    claimPage,
+    host: String(env.location?.host ?? ''),
+    persist: native ? null : () => persistStorage(env),
   });
   if (secureStorage === NO_SECURE_STORAGE) shell.debug.log('storage: unavailable', 'warn');
   // Test hooks, in dev builds only: the full core and the plugin registry on the page object.
@@ -1990,7 +2824,12 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
   env.addEventListener?.('visibilitychange', () => {
     shell.visibility(env.document?.visibilityState !== 'hidden');
   });
-  env.addEventListener?.('pagehide', () => shell.visibility(false));
+  env.addEventListener?.('pagehide', () => {
+    shell.leavingPage();
+    shell.visibility(false);
+  });
+  // w4-m1: a network change reconnects at once (the Network plugin on the apps, the 'online' event everywhere).
+  wireNetwork({ network: plugins?.Network ?? null, env, shell });
   // A notification action while the app is open: the service worker posts the fragment; a fragment typed into the address bar too.
   env.addEventListener?.('hashchange', () => {
     const hash = String(env.location?.hash ?? '');

@@ -255,6 +255,8 @@
     pick.setAttribute('aria-pressed', String(selected));
     const letter = make('span', 'ext-review-letter', file.status);
     letter.title = STATUS_WORD[file.status] ?? file.status;
+    letter.setAttribute('aria-hidden', 'true');
+    pick.setAttribute('aria-label', `${STATUS_WORD[file.status] ?? file.status}: ${file.path}`);
     const name = make('span', 'ext-review-name');
     const slash = file.path.lastIndexOf('/');
     if (slash >= 0) name.append(make('span', 'ext-review-dir', file.path.slice(0, slash + 1)));

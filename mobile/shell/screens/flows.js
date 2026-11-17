@@ -68,6 +68,12 @@ export const LEGAL_LINKS = Object.freeze({
   third: `${REPO}/blob/main/THIRD-PARTY-NOTICES.txt`,
 });
 export const STORE_LINKS = Object.freeze({ ios: null, android: `${REPO}/releases`, web: `${REPO}/releases` });
+// The free push app Plenum's Android notifications come through (wave 4, m2): its Play store page (the Get ntfy button) and its F-Droid page
+// (shown as text under it).
+export const NTFY_LINKS = Object.freeze({
+  play: 'https://play.google.com/store/apps/details?id=io.heckel.ntfy',
+  fdroid: 'https://f-droid.org/packages/io.heckel.ntfy/',
+});
 
 export function openLinkFlow(env, href) {
   if (!href) return { ok: false, reason: 'not-configured' };
@@ -103,4 +109,58 @@ export function cleanPhoneName(text, fallback) {
     .slice(0, 60)
     .trim();
   return cleaned || fallback;
+}
+
+// ---- Wave 5 (brb): the code page at /pair/ ----
+
+// The code as the computer checks it: spaces and dashes out. Twelve letters and digits, or null (nothing is sent then).
+export function claimCodeOf(text) {
+  const code = String(text ?? '').replace(/[\s-]+/g, '');
+  return /^[0-9A-Za-z]{12}$/.test(code) ? code : null;
+}
+
+// The link the computer answers with, when it is a pairing link of this page's own origin (/p/<32 hex>/#pair=...), else null.
+export function claimLinkOk(link, origin) {
+  const text = String(link ?? '');
+  if (text.length > 8192) return null;
+  try {
+    const url = new URL(text);
+    if (url.origin !== String(origin ?? '')) return null;
+    if (!/^\/p\/[0-9a-f]{32}\/$/.test(url.pathname) || !/^#pair=[A-Za-z0-9_-]+$/.test(url.hash)) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+// POST /pair/claim { code } (same origin, JSON). Resolves { ok: true, link } or { ok: false, error }: wrong, none, locked, too-many (the
+// computer's answers), or network (no answer, or one this page cannot use). The link is handed back once and kept nowhere (no web storage).
+export async function claimFlow(env, text) {
+  const code = claimCodeOf(text);
+  if (!code) return { ok: false, error: 'wrong' };
+  const fetchFn = typeof env?.fetch === 'function' ? env.fetch.bind(env) : null;
+  if (!fetchFn) return { ok: false, error: 'network' };
+  let res;
+  try {
+    res = await fetchFn('/pair/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+      cache: 'no-store',
+      credentials: 'same-origin',
+      redirect: 'error',
+    });
+  } catch {
+    return { ok: false, error: 'network' };
+  }
+  let body = null;
+  try { body = await res.json(); } catch { body = null; }
+  if (res.status === 200) {
+    const link = claimLinkOk(body?.link, env?.location?.origin);
+    return link ? { ok: true, link } : { ok: false, error: 'network' };
+  }
+  const error = String(body?.error ?? '');
+  if (['wrong', 'none', 'locked', 'too-many'].includes(error)) return { ok: false, error };
+  if (error === 'bad-request' || error === 'too-large') return { ok: false, error: 'wrong' };
+  return { ok: false, error: 'network' };
 }

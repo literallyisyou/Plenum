@@ -4,4 +4,13 @@
     <string name="title_activity_main">Plenum</string>
     <string name="package_name">com.literallyisyou.plenum</string>
     <string name="custom_url_scheme">com.literallyisyou.plenum</string>
+    <!-- Launcher shortcuts (res/xml/shortcuts.xml). A short label fits about 10 characters; the long one about 25. -->
+    <string name="shortcut_today_short">Today</string>
+    <string name="shortcut_today_long">Today</string>
+    <string name="shortcut_waiting_short">Waiting</string>
+    <string name="shortcut_waiting_long">Waiting for you</string>
+    <!-- Stop: the shell's #stop route stops everything on one computer, the one this phone has open (or used last), not every
+         paired computer (mobile/shell/app.js runHash and stop; a notification's own Stop names its computer). -->
+    <string name="shortcut_stop_short">Stop</string>
+    <string name="shortcut_stop_long">Stop on current computer</string>
 </resources>

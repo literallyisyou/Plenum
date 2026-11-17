@@ -51,11 +51,23 @@
     return document.body.classList.contains(OPEN);
   }
 
+  // While the menu is open the chat, the composer, the Settings page and the side pane cannot take focus or be read behind it. The title
+  // bar (menu button and drive pill with its Stop) stays live: Stop always works, and the button closes the menu.
+  function setBehind(on) {
+    for (const id of ['chat', 'composerWrap', 'settingsPage', 'pane']) {
+      const part = document.getElementById(id);
+      if (!part) continue;
+      if (on) part.setAttribute('inert', '');
+      else part.removeAttribute('inert');
+    }
+  }
+
   function openMenu() {
     if (isOpen() || !narrow.matches) return;
     document.body.classList.add(OPEN);
     toggle.setAttribute('aria-expanded', 'true');
     scrim.hidden = false;
+    setBehind(true);
     // Start at the first project, or at the + button when there are none, so a keyboard user lands inside the menu.
     const first = sidebar.querySelector('.proj-item') || document.getElementById('addProjectBtn');
     if (first) first.focus();
@@ -67,6 +79,7 @@
     document.body.classList.remove(OPEN);
     toggle.setAttribute('aria-expanded', 'false');
     scrim.hidden = true;
+    setBehind(false);
     if (restoreFocus) toggle.focus();
   }
 
@@ -75,6 +88,10 @@
     else openMenu();
   });
   closeBtn.addEventListener('click', () => closeMenu());
+  // Focus moving out of the menu to another part of the page closes it (not when the window itself loses focus).
+  sidebar.addEventListener('focusout', e => {
+    if (isOpen() && e.relatedTarget && !sidebar.contains(e.relatedTarget)) closeMenu(false);
+  });
   scrim.addEventListener('click', () => closeMenu());
 
   // Escape closes the menu only while it is open.
@@ -109,7 +126,9 @@
   function syncDot() {
     dot.hidden = badge.hidden;
     const count = badge.textContent.trim();
-    dot.title = count === '1' ? '1 update to review' : `${count} updates to review`;
+    const words = count === '1' ? '1 update to review' : `${count} updates to review`;
+    dot.title = words;
+    toggle.setAttribute('aria-label', badge.hidden || !count ? 'Open the menu' : `Open the menu, ${words}`);
   }
   new MutationObserver(syncDot).observe(badge, {
     attributes: true, attributeFilter: ['hidden'], childList: true, characterData: true, subtree: true,

@@ -278,7 +278,7 @@
     if (check.aborted) return { kind: 'skip', text: 'Checks stopped' };
     if (check.timedOut) return { kind: 'bad', text: 'Checks timed out' };
     if (check.ok) return { kind: 'ok', text: `Checks passed · ${check.seconds} s` };
-    return { kind: 'bad', text: `Checks failed · ${check.code === null || check.code === undefined ? 'did not start' : `exit ${check.code}`}` };
+    return { kind: 'bad', text: `Checks failed · ${check.code === null || check.code === undefined ? 'the command did not start' : 'the command reported a problem'}` };
   }
 
   // The text a failed check sends the model. It is the same text the server's failureMessage builds (lib/checks.mjs), from the output the
@@ -330,7 +330,9 @@
     if (typeof check.output === 'string' && check.output !== '') {
       const pre = document.createElement('pre');
       pre.className = 'ext-checks-output';
-      pre.textContent = check.output;
+      // The exit number is for the details only; the badge says it in plain words.
+      pre.textContent = typeof check.code === 'number' ? `Exit code ${check.code}
+${check.output}` : check.output;
       pre.hidden = true;
       const toggle = MuseUI.button('ghost small ext-checks-toggle', 'Output');
       toggle.setAttribute('aria-expanded', 'false');

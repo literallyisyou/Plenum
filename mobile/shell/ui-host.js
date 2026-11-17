@@ -210,6 +210,17 @@ export function createUiHost({
     });
   }
 
+  // w4-m1: the Android copy of the UI, { storage, record } when the active record is complete, else null (nothing can be read: null too).
+  async function androidCopy() {
+    try {
+      const storage = androidStore();
+      const record = await storage.readActive();
+      return record?.complete === true && typeof record.cacheName === 'string' && record.cacheName ? { storage, record } : null;
+    } catch {
+      return null;
+    }
+  }
+
   function buildLoader() {
     const channel = channelOf();
     if (!channel) throw new UiError('offline', 'The phone is not connected.');
@@ -344,15 +355,29 @@ export function createUiHost({
     },
 
     // Whether a complete copy of the UI is on the phone, for "Use the copy in this app".
+    // w4-m1: on Android the copy is the complete active record in the app-data folder (loadedHash answers for the web cache only).
     async hasCopy() {
       if (kind === 'ios') return true;
       if (kind === 'lan') return false;
+      if (kind === 'android') return (await androidCopy()) !== null;
       return (await this.loadedHash()) !== null;
     },
 
     // Uses the copy that is already on the phone, without asking the computer.
     async useCopy() {
       if (kind === 'ios') return this.show({});
+      // w4-m1: Android activates the record it has (with this app's shell files) and the WebView reloads at it.
+      if (kind === 'android') {
+        try {
+          const copy = await androidCopy();
+          if (!copy) throw new UiError('storage', 'There is no copy of the screens on this phone.');
+          await copy.storage.activateCopy(copy.record, { readBundled: bundledReader(env.fetch.bind(env), location().href), shellBase: '/shell/' });
+          return { ok: true, status: 'copy', navigated: true };
+        } catch (error) {
+          log(`ui: ${error?.code ?? 'error'}`);
+          return { ok: false, cause: causeOf(error), code: error?.code ?? 'error' };
+        }
+      }
       if (kind === 'web' && (await this.loadedHash()) !== null && (await workerControls())) {
         this.rememberShellPage();
         location().replace('/');

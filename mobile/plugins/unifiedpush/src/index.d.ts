@@ -9,6 +9,8 @@ export interface EndpointRecord {
   temporary: boolean;
 }
 
+export type NotificationChannelId = 'plenum-approvals' | 'plenum-finished' | 'plenum-problems' | 'plenum-limits';
+
 export interface UnifiedPushState {
   supported: boolean;
   distributor: string | null;
@@ -16,10 +18,23 @@ export interface UnifiedPushState {
   failures: Record<string, FailedReason>;
   registrations: string[];
   visible: boolean;
+  /** The push app gave a new endpoint while Plenum was closed: register again so the computer gets it. Absent on older builds. */
+  endpointChanged?: boolean;
+}
+
+/** The `message` event. shown: the plugin already showed it as a notification. clear: a 'clear' that took a notification down. */
+export interface UnifiedPushMessageEvent {
+  instance: string;
+  content: string;
+  decrypted: boolean;
+  shown?: boolean;
+  clear?: boolean;
 }
 
 export interface UnifiedPushPlugin {
   getState(): Promise<UnifiedPushState>;
+  cancel(options: { tag: string }): Promise<{ cancelled: number }>;
+  cancelAll(options?: { channel?: NotificationChannelId }): Promise<{ cancelled: number }>;
   getDistributors(): Promise<{ distributors: string[]; saved: string | null }>;
   chooseDistributor(options: { packageName: string }): Promise<{ saved: string }>;
   pickDistributor(): Promise<{ ok: boolean }>;

@@ -6,6 +6,7 @@
 // page links to Accounts to add a key. State lives in this module's memory only: no browser storage, no key, and every piece of text is
 // set with textContent.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
@@ -269,13 +270,13 @@
   async function call(path, timeoutMs) {
     const res = await MuseUI.request(path, { signal: AbortSignal.timeout(timeoutMs) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(plain({ message: data.error }, 'The price lists could not be read. Try Refresh again.'));
     return data;
   }
 
   function errorText(err) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return 'The price read did not finish in time. Try Refresh again.';
-    return err?.message || 'The API finder could not load.';
+    return plain(err, 'The API finder could not load. Try Refresh again.');
   }
 
   // Reads the four price lists (or the server's copy). force asks the server to read them again, within its one-minute floor.

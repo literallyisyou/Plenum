@@ -1,9 +1,12 @@
 package com.literallyisyou.plenum.isolatedpreview
 
 import android.app.Activity
+import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -13,6 +16,9 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
@@ -54,8 +60,13 @@ class IsolatedPreviewActivity : Activity() {
             textSize = 16f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        // Close is a 48dp touch target at least, as Android asks for any control.
         val close = Button(this).apply {
             text = getString(R.string.isolated_preview_close)
+            minHeight = dp(48)
+            minimumHeight = dp(48)
+            minWidth = dp(48)
+            minimumWidth = dp(48)
             setOnClickListener { finish() }
         }
         val bar = LinearLayout(this).apply {
@@ -75,8 +86,36 @@ class IsolatedPreviewActivity : Activity() {
             addView(view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         setContentView(root)
+        fitInsideSystemBars(root)
         val page = if (html.isEmpty()) EXPIRED_PAGE else html
         view.loadDataWithBaseURL("about:blank", page, "text/html", "utf-8", null)
+    }
+
+    // At targetSdk 35 and later the window runs edge to edge on Android 15+, so the title bar would sit under the status bar
+    // and the page under the keyboard. The window is edge to edge on every version here, and the root is padded by the status
+    // and navigation bars, the display cutout and the keyboard (wave 4, k1).
+    // statusBarColor and navigationBarColor are deprecated at API 35, where the system ignores them; they are set only below it.
+    @Suppress("DEPRECATION")
+    private fun fitInsideSystemBars(root: View) {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        }
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, root).apply {
+            isAppearanceLightStatusBars = !night
+            isAppearanceLightNavigationBars = !night
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
+            )
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
+        ViewCompat.requestApplyInsets(root)
     }
 
     override fun onDestroy() {

@@ -351,7 +351,11 @@ class PhoneHarness {
 
   // The desktop UI's extension panels: every public/ext-*.js in this copy, which of them loaded (HTTP 200) and whether MuseUI exists.
   async panels({ timeoutMs = 25000 } = {}) {
-    const expected = readdirSync(path.join(this.appRoot, 'public')).filter(n => /^ext-[a-z0-9-]+\.js$/.test(n)).map(n => n.slice(0, -3)).sort();
+    const all = readdirSync(path.join(this.appRoot, 'public')).filter(n => /^ext-[a-z0-9-]+\.js$/.test(n)).map(n => n.slice(0, -3)).sort();
+    // Wave 4 p2: public/ext.js (SURFACE) downloads a panel that works on one surface only on that surface; the others skip it on purpose.
+    const surface = await this.eval("document.documentElement.dataset.surface || ''");
+    const ONLY_ON = { 'ext-phone': 'phone' }; // mirrors SURFACE in public/ext.js
+    const expected = all.filter(n => !ONLY_ON[n] || ONLY_ON[n] === surface);
     const t0 = Date.now();
     let probe;
     for (;;) {
@@ -367,8 +371,9 @@ class PhoneHarness {
       expected,
       registered: expected.filter(n => loaded.includes(n) && probe.inDom.includes(n)),
       missing: expected.filter(n => !loaded.includes(n)),
-      extra: loaded.filter(n => !expected.includes(n)),
-      serverListMatches: JSON.stringify(serverList) === JSON.stringify(expected),
+      extra: loaded.filter(n => !all.includes(n)),
+      skipped: all.filter(n => !expected.includes(n)),
+      serverListMatches: JSON.stringify(serverList) === JSON.stringify(all),
       museUi: probe.museUi,
       ms: Date.now() - t0,
     };

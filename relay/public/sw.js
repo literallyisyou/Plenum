@@ -141,12 +141,29 @@
     }
     return valid.filter((a) => keep.includes(a));
   }
+  var CLEAR_TAG = /^plenum-[0-9a-f]{32}$/;
+  async function clearPush(data, env) {
+    let tag = typeof data?.tag == "string" && CLEAR_TAG.test(data.tag) ? data.tag : "";
+    if (!tag || typeof env.registration?.getNotifications != "function") return 0;
+    let closed = 0;
+    try {
+      for (let note of await env.registration.getNotifications({ tag }))
+        note?.close?.(), closed += 1;
+    } catch {
+      return closed;
+    }
+    return closed;
+  }
   async function showPush(event, env) {
     let data = null;
     try {
       data = event.data ? event.data.json() : null;
     } catch {
       data = null;
+    }
+    if (data && typeof data == "object" && data.kind === "clear") {
+      await clearPush(data, env);
+      return;
     }
     let title = text(data?.title, FALLBACK_TITLE, 60), body = text(data?.body, FALLBACK_BODY, 200), chosen = chooseActions(data?.actions, env.maxActions), routes = {};
     for (let a of Array.isArray(data?.actions) ? data.actions : [])
@@ -166,6 +183,7 @@
       },
       actions: chosen.map((a) => ({ action: a.action, title: text(a.title, a.action, 20) }))
     };
+    data?.silent === !0 && (options.silent = !0);
     try {
       await env.registration.showNotification(title, options);
     } catch {

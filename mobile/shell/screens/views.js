@@ -1,7 +1,8 @@
 // The 22 shell screens of part 1 (mob-10, wave 106; MOBILE-UI 6.1 to 6.16). Each builder takes the render context (route.js ctxFor
 // or fixtures.js fixtureCtx) and `io`, the only way a screen reaches the shell:
 //   io.act.*    actions (main.js: tryDemo, consent, pair, readClipboard, openSettings, openLegal, cancelConnect, retry, mismatch,
-//               enableLock, enableNotifications, unlock, unlockAndStop, forgetActive, sendLog, useCopy, chooseComputer, openStore)
+//               enableLock, enableNotifications, unlock, unlockAndStop, forgetActive, sendLog, useCopy, chooseComputer, openStore,
+//               getNtfy, openNotificationSettings)
 //   io.local    what the screen keeps while open (phoneName, consentDeclined, bioMessage, pinMessage)
 //   io.go(id), io.back(), io.advance(), io.later(fn, ms)
 // A screen never touches the channel, the store or the keys. Text goes in with textContent only.
@@ -64,7 +65,7 @@ function welcome(ctx, io) {
       para(C.WELCOME_LEAD),
       para(`${first} ${second}`, 'sh-note'),
       el('div', { class: 'sh-field' },
-        el('label', { class: 'sh-label', for: 'sh-name', text: "This phone's name" }),
+        el('label', { class: 'sh-label', for: 'sh-name', text: ctx.wide ? C2.BROWSER_NAME_LABEL : "This phone's name" }),
         input,
         para('Your computer shows this name.', 'sh-help')),
       declined ? el('button', { type: 'button', class: 'sh-link sh-consent-line', on: { click: () => io.go('consent') } }, C.NEEDS_CONSENT) : null,
@@ -248,7 +249,7 @@ function code(ctx, io) {
     title: C.PAIRING_CHECK,
     body: [
       el('p', { class: 'sh-code', role: 'img', 'aria-label': codeLabel(ctx.code), text: codeSpaced(ctx.code) }),
-      para(`${ctx.computer} ${C.CODE_TEXT}`, 'sh-note'),
+      para(`${ctx.computer} ${ctx.browserOffer ? C2.CODE_TEXT_BROWSER : C.CODE_TEXT}`, 'sh-note'),
       countdown,
     ],
     actions: [button('The codes do not match', { kind: 'danger', onClick: () => io.act.mismatch() })],
@@ -256,23 +257,34 @@ function code(ctx, io) {
 }
 
 // ---- mismatch, denied, expired (6.8) ----
+// An Add a browser offer (ctx.browserOffer) says "this browser" and "Add a browser", and its one way on is the code page at /pair/: there
+// is nothing to scan or paste. Wave 5 integration (phone area).
+const newCodeButton = io => button(C2.TYPE_NEW_CODE, { kind: 'primary', onClick: () => io.act.newCode() });
+
 function mismatch(ctx, io) {
   return frame(ctx, io, {
     title: 'The codes do not match',
-    body: [para(C.MISMATCH_BODY, 'sh-note')],
-    actions: [button('Try again', { kind: 'primary', onClick: () => io.go('how') })],
+    body: [para(ctx.browserOffer ? C2.MISMATCH_BODY_BROWSER : C.MISMATCH_BODY, 'sh-note')],
+    actions: [ctx.browserOffer ? newCodeButton(io) : button('Try again', { kind: 'primary', onClick: () => io.go('how') })],
   });
 }
 
 function denied(ctx, io) {
   return frame(ctx, io, {
     title: 'Pairing was not allowed',
-    body: [para(`${ctx.computer} ${C.DENIED_BODY}`, 'sh-note')],
-    actions: [button('Try again', { kind: 'primary', onClick: () => io.go('how') })],
+    body: [para(`${ctx.computer} ${ctx.browserOffer ? C2.DENIED_BODY_BROWSER : C.DENIED_BODY}`, 'sh-note')],
+    actions: [ctx.browserOffer ? newCodeButton(io) : button('Try again', { kind: 'primary', onClick: () => io.go('how') })],
   });
 }
 
 function expired(ctx, io) {
+  if (ctx.browserOffer) {
+    return frame(ctx, io, {
+      title: 'The code expired',
+      body: [para(C2.EXPIRED_BODY_BROWSER, 'sh-note')],
+      actions: [newCodeButton(io)],
+    });
+  }
   const actions = ctx.lan
     ? [button('Scan the code', { kind: 'primary', onClick: () => io.go('scan') })]
     : [button('Paste a link', { kind: 'ghost', onClick: () => io.go('paste') }), button('Scan the code', { kind: 'primary', onClick: () => io.go('scan') })];
@@ -325,8 +337,23 @@ function pairedLock(ctx, io) {
   });
 }
 
+// Wave 4 (m2): why notifications did not turn on, and the one thing to do about it (onboarding and Phone settings share it). reason is the
+// core's (no-distributor, denied, timeout, vapid, failed, ...); ctx.notifyWhere is set once Android's settings page could not be opened.
+export function notifyFix(ctx, io, reason) {
+  if (!reason) return null;
+  const fix = C2.notifyFixFor(reason, { platform: ctx.platform, computer: ctx.computer }) ?? { text: C.lockFailText(reason), button: null, help: null };
+  const act = fix.button?.action === 'get-ntfy'
+    ? () => io.act.getNtfy?.()
+    : fix.button?.action === 'open-settings' ? () => io.act.openNotificationSettings?.() : null;
+  const help = fix.button?.action === 'open-settings' ? (ctx.notifyWhere ? C2.NOTIFY_SETTINGS_WHERE : C2.NOTIFY_COMES_BACK) : fix.help;
+  return el('div', { class: 'sh-fix', 'data-reason': String(reason) },
+    el('p', { class: 'sh-msg', role: 'alert', text: fix.text }),
+    fix.button && act ? button(fix.button.label, { kind: 'ghost', onClick: act }) : null,
+    help ? para(help, 'sh-help') : null);
+}
+
 function pairedNotify(ctx, io) {
-  const advance = () => { io.local.onboardMessage = null; io.advance(); };
+  const advance = () => { io.local.onboardMessage = null; io.local.notifyReason = null; io.advance(); };
   const message = ctx.onboardMessage ? el('p', { class: 'sh-msg', role: 'alert', text: ctx.onboardMessage }) : null;
   if (ctx.platform === 'ios' && !ctx.forwarder) {
     return frame(ctx, io, {
@@ -335,12 +362,25 @@ function pairedNotify(ctx, io) {
       actions: [button('Continue', { kind: 'primary', onClick: advance })],
     });
   }
+  // A turn-on that stopped says why and what to do (Get ntfy, Open notification settings), and the person stays on this step.
+  const turnOn = async () => {
+    const result = await io.act.enableNotifications();
+    if (result?.ok === true) {
+      io.local.onboardMessage = null;
+      io.local.notifyReason = null;
+      io.advance();
+      return;
+    }
+    io.local.notifyReason = result?.reason ?? 'failed';
+    io.repaint();
+  };
   return frame(ctx, io, {
     title: 'Notifications',
-    body: [para(fill(C.NOTIFY_BODY, ctx.computer), 'sh-note'), message],
+    // Wave 5 (brb): a browser in the computer layout is told what a notification is for there (Web Push, also with the tab in the background).
+    body: [para(ctx.wide && !ctx.lan ? C2.NOTIFY_BODY_BROWSER : fill(C.NOTIFY_BODY, ctx.computer), 'sh-note'), message, notifyFix(ctx, io, ctx.notifyReason ?? null)],
     actions: [
       button('Not now', { kind: 'ghost', onClick: advance }),
-      button('Turn on', { kind: 'primary', onClick: stepThen(io, () => io.act.enableNotifications()) }),
+      button('Turn on', { kind: 'primary', onClick: turnOn }),
     ],
   });
 }

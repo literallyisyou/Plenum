@@ -28,6 +28,7 @@
 // Businesses pane's own (ext-business.css).
 (() => {
   'use strict';
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MU = window.MuseUI;
   if (!MU?.request || !MU?.openDrawer) return;
 
@@ -150,7 +151,7 @@
     const data = await res.json().catch(() => null);
     if (data?.terms === true) window.dispatchEvent(new CustomEvent('plenum:terms-required'));
     if (res.ok && isObj(data)) return { ok: true, status: res.status, data };
-    return { ok: false, status: res.status, error: str(data?.error) || `The request failed (${res.status}).` };
+    return { ok: false, status: res.status, error: plain({ message: str(data?.error) }, 'Plenum could not do that. Try again.') };
   }
 
   // ---------- the setups ----------

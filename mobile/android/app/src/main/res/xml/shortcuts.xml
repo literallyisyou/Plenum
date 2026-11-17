@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app's static shortcuts (a long press on the Plenum icon). Each opens MainActivity by name with a plenum://app/ link, the
+     same fragments Plenum's own notifications use; the shell runs them (mobile/shell/app.js linkOfUrl and handleHash), after the
+     unlock when the app is locked. The intents are explicit (this package, this class), and the plenum://app filter in the manifest
+     stays without BROWSABLE, so a web page still cannot fire them.
+     Wave 5 (f2): #today is routed (mobile/shell/push.js parseNotificationHash, app.js emitRoute, public/ext-phone.js handleRoute opens
+     the Businesses pane on Today), so Today stays enabled. #stop stops everything on the computer the phone has open, or used last
+     (app.js runHash and stop), not every paired computer, so the label is "Stop" / "Stop on current computer", not "Stop all". -->
+
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="today"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_today"
+        android:shortcutShortLabel="@string/shortcut_today_short"
+        android:shortcutLongLabel="@string/shortcut_today_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="plenum://app/#today"
+            android:targetPackage="com.literallyisyou.plenum"
+            android:targetClass="com.literallyisyou.plenum.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="waiting"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_waiting"
+        android:shortcutShortLabel="@string/shortcut_waiting_short"
+        android:shortcutLongLabel="@string/shortcut_waiting_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="plenum://app/#waiting"
+            android:targetPackage="com.literallyisyou.plenum"
+            android:targetClass="com.literallyisyou.plenum.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="stop"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_stop"
+        android:shortcutShortLabel="@string/shortcut_stop_short"
+        android:shortcutLongLabel="@string/shortcut_stop_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="plenum://app/#stop"
+            android:targetPackage="com.literallyisyou.plenum"
+            android:targetClass="com.literallyisyou.plenum.MainActivity" />
+    </shortcut>
+</shortcuts>

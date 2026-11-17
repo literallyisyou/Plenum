@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark mode: the same launch theme as values/styles.xml on the page's dark background (#0a0a11). AppTheme.NoActionBar needs no
+     copy here: its windowBackground is @color/plenum_background, which values-night/colors.xml already makes dark. -->
+<resources>
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#0A0A11</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_mark</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+    </style>
+</resources>

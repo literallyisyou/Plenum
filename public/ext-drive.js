@@ -196,16 +196,39 @@
   }
 
   // Reads GET /api/drive: the live drives and the stop key. A failed read keeps what is on screen; the next read tries again.
+  // A read that Plenum refused (the token is gone or wrong) is said once; any other failed read keeps the last reading and marks its time.
+  let goodAt = 0;
+  let failed = false;
+  let refusedShown = false;
+  const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const asOfText = () => (failed && goodAt ? `as of ${clock(goodAt)}` : '');
+  function readFailed(res) {
+    if (res && (res.status === 401 || res.status === 403)) {
+      if (!refusedShown) {
+        refusedShown = true;
+        MuseUI.toast('Plenum needs to be opened again from this device.', 'bad');
+      }
+      return;
+    }
+    if (failed) return;
+    failed = true;
+    paint();
+  }
+
   async function load() {
     try {
       const res = await MuseUI.request('/api/drive');
-      if (!res.ok) return;
+      if (!res.ok) return readFailed(res);
       const data = await res.json();
+      goodAt = Date.now();
+      failed = false;
+      refusedShown = false;
       replaceAll(data.drives);
       if (data.hotkey && typeof data.hotkey === 'object') hotkey = data.hotkey;
       paint();
     } catch {
-      // Offline or refused; the bar keeps its last state.
+      // Offline or busy; the bar keeps its last state and says when that was.
+      readFailed(null);
     }
   }
 
@@ -278,6 +301,8 @@
     const kindEl = MuseUI.span('db-kind');
     kindEl.setAttribute('aria-hidden', 'true');
     const textEl = MuseUI.span('db-text');
+    const asOf = MuseUI.span('db-asof');
+    asOf.hidden = true;
     const actions = MuseUI.span('db-actions');
     const toggleBtn = MuseUI.button('ghost small db-toggle', 'Pause');
     const stopBtn = MuseUI.button('ghost small db-stop', 'Stop');
@@ -291,9 +316,9 @@
     keyEl.className = 'db-key';
     keyEl.hidden = true;
     actions.append(toggleBtn, stopBtn, keyEl);
-    bar.append(barDot, kindEl, textEl, actions);
+    bar.append(barDot, kindEl, textEl, asOf, actions);
 
-    const row = { bar, barDot, kindEl, kindShown: '', textEl, toggleBtn, stopBtn, keyEl, entry: null, more: null };
+    const row = { bar, barDot, kindEl, kindShown: '', textEl, asOf, toggleBtn, stopBtn, keyEl, entry: null, more: null };
     toggleBtn.addEventListener('click', () => {
       if (row.entry) act(row.entry, row.entry.s.state === 'paused' ? '/api/drive/resume' : '/api/drive/pause');
     });
@@ -320,6 +345,8 @@
     row.entry = entry;
     row.more = more;
     bar.hidden = !entry && !more;
+    row.asOf.textContent = asOfText();
+    row.asOf.hidden = !row.asOf.textContent;
     if (more) {
       const running = more.some(e => e.s.state === 'running');
       bar.dataset.tone = running ? 'running' : 'paused';
@@ -492,15 +519,28 @@
   let stopKeyReading = false;
   let stopKeyTimer = null;
 
+  // Wave 5 (brb): in a browser on another computer (a remote page in the computer layout) the computer's stop key does nothing, so the row
+  // names the Stop on this page instead, with no key. Esc keeps its own row.
+  const REMOTE_STOP_ROW = 'Stop everything: the Stop button at the top right of this page.';
+  const remoteWide = () => Boolean(window.plenumShell) && window.plenumShell.desktop !== true && document.documentElement?.dataset?.surface === 'wide';
+  function listRow() {
+    if (stopRowListed) return;
+    stopRowListed = true;
+    (window.MuseShortcutRows = window.MuseShortcutRows || []).push(stopRow);
+  }
+  if (remoteWide()) {
+    stopRow.keys = [];
+    stopRow.action = REMOTE_STOP_ROW;
+    listRow();
+  }
+
   // Lists the row for a label such as "Ctrl+Alt+Esc". Anything else is left out.
   function useStopKeyLabel(label) {
+    if (remoteWide()) return;
     const parts = String(label ?? '').split('+').map(p => p.trim()).filter(Boolean);
     if (!parts.length || parts.length > 5 || parts.some(p => p.length > 20)) return;
     stopRow.keys = parts;
-    if (!stopRowListed) {
-      stopRowListed = true;
-      (window.MuseShortcutRows = window.MuseShortcutRows || []).push(stopRow);
-    }
+    listRow();
   }
 
   async function loadStopKey() {
@@ -519,6 +559,7 @@
   // The read waits a few seconds, so it never competes with the start of the page, and several calls close together make one read.
   function readStopKeySoon(again) {
     if (!window.plenumShell && document.documentElement?.dataset?.shell !== 'desktop') return;
+    if (remoteWide()) return;
     if (!again && stopRowListed) return; // the Computer panel's read already gave the label
     clearTimeout(stopKeyTimer);
     stopKeyTimer = setTimeout(loadStopKey, STOP_KEY_WAIT_MS);

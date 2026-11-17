@@ -70,14 +70,20 @@ function parseJsonObject(text) {
 }
 function parsePushPayload(value) {
   if (!isPlainObject(value) || value.v !== 1 || !PUSH_KINDS.includes(value.kind)) return null;
+  let ids = isPlainObject(value.ids) ? value.ids : {}, idsOut = {
+    computer: cleanText(ids.computer, 80),
+    project: cleanText(ids.project, 80),
+    approval: cleanText(ids.approval, 80)
+  };
+  if (value.kind === "clear")
+    return typeof value.tag != "string" || !TAG_RE.test(value.tag) ? null : { v: 1, kind: "clear", title: "", body: "", tag: value.tag, tap: "/#home", actions: [], silent: !0, ids: idsOut };
   let title = cleanText(value.title, 120) || "Plenum", body = cleanText(value.body, 240) || "Plenum has an update.", tag = typeof value.tag == "string" && TAG_RE.test(value.tag) ? value.tag : "plenum", tap = isRoute(value.tap) ? value.tap : "/#home", firstLine = cleanText(value.firstLine, 200), actions = [];
   if (Array.isArray(value.actions))
     for (let entry of value.actions) {
       if (actions.length >= 3) break;
       isPlainObject(entry) && PUSH_ACTIONS.includes(entry.action) && isRoute(entry.route) && actions.push({ action: entry.action, title: cleanText(entry.title, 40) || entry.action, route: entry.route });
     }
-  let ids = isPlainObject(value.ids) ? value.ids : {};
-  return {
+  let group = typeof value.group == "string" && value.group.length <= GROUP_MAX ? cleanText(value.group, GROUP_MAX) : "", out = {
     v: 1,
     kind: value.kind,
     title,
@@ -86,23 +92,21 @@ function parsePushPayload(value) {
     tap,
     actions,
     firstLine: firstLine || void 0,
-    ids: {
-      computer: cleanText(ids.computer, 80),
-      project: cleanText(ids.project, 80),
-      approval: cleanText(ids.approval, 80)
-    }
+    ids: idsOut
   };
+  return group && (out.group = group), value.silent === !0 && (out.silent = !0), out;
 }
-function routeForAction(action, firstLine) {
-  return action.action !== "approve" || !firstLine ? action.route : `${action.route}&line=${encodeURIComponent(firstLine)}`;
+function routeForAction(action, firstLine, where) {
+  let route = action.action === "approve" && firstLine ? `${action.route}&line=${encodeURIComponent(firstLine)}` : action.route;
+  return where && PUSH_ACTIONS.includes(action.action) && (typeof where.tag == "string" && TAG_RE.test(where.tag) && (route += `&nt=${where.tag}`), typeof where.computer == "string" && COMPUTER_RE.test(where.computer) && (route += `&computer=${where.computer}`)), route;
 }
 function channelForKind(kind) {
-  return kind === "approval" || kind === "handover" || kind === "needs" ? NOTIFICATION_CHANNELS.approvals : kind === "limit" ? NOTIFICATION_CHANNELS.limits : NOTIFICATION_CHANNELS.finished;
+  return kind === "approval" || kind === "handover" || kind === "needs" ? NOTIFICATION_CHANNELS.approvals : kind === "failed" ? NOTIFICATION_CHANNELS.problems : kind === "limit" ? NOTIFICATION_CHANNELS.limits : NOTIFICATION_CHANNELS.finished;
 }
 function parseMessageEvent(event) {
   if (!isPlainObject(event)) throw new UnifiedPushError("bad-event", "The push event is not an object.");
   let instance = normaliseInstance(event.instance), decrypted = event.decrypted === !0, bytes = decodeBase64(event.content), text = decrypted ? decodeUtf8(bytes) : null, payload = text === null ? null : parsePushPayload(parseJsonObject(text));
-  return { instance, decrypted, bytes, text, payload };
+  return { instance, decrypted, bytes, text, payload, shown: event.shown === !0, clear: payload?.kind === "clear" };
 }
 function parseEndpointEvent(event) {
   if (!isPlainObject(event)) throw new UnifiedPushError("bad-event", "The endpoint event is not an object.");
@@ -112,13 +116,19 @@ function parseEndpointEvent(event) {
   let keys = isPlainObject(event.pubKeySet) && typeof event.pubKeySet.pubKey == "string" && BASE64URL_RE.test(event.pubKeySet.pubKey) && typeof event.pubKeySet.auth == "string" && BASE64URL_RE.test(event.pubKeySet.auth) ? { pubKey: event.pubKeySet.pubKey, auth: event.pubKeySet.auth } : null;
   return { instance, url: event.url, temporary: event.temporary === !0, keys };
 }
-var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, ROUTE_RE, UnifiedPushError, init_core = __esm({
+var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LIST, APPROVAL_TIMEOUT_MS, GROUP_MAX, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, COMPUTER_RE, ROUTE_RE, UnifiedPushError, init_core = __esm({
   "mobile/plugins/unifiedpush/src/core.js"() {
-    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
+    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test", "clear"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
       approvals: "plenum-approvals",
       finished: "plenum-finished",
+      problems: "plenum-problems",
       limits: "plenum-limits"
-    }), INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, ROUTE_RE = /^\/#[\x21-\x7e]{1,200}$/, UnifiedPushError = class extends Error {
+    }), NOTIFICATION_CHANNEL_LIST = Object.freeze([
+      Object.freeze({ id: "plenum-approvals", name: "Approvals and your turn", description: "Something is waiting for your OK, or a model needs you to do a step.", importance: 4 }),
+      Object.freeze({ id: "plenum-finished", name: "Finished runs", description: "A run or a council finished.", importance: 3 }),
+      Object.freeze({ id: "plenum-problems", name: "Problems", description: "A run failed, or something stopped working and needs a look.", importance: 3 }),
+      Object.freeze({ id: "plenum-limits", name: "Limits", description: "A plan or spend limit was reached.", importance: 3 })
+    ]), APPROVAL_TIMEOUT_MS = 3600 * 1e3, GROUP_MAX = 64, INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, COMPUTER_RE = /^[0-9a-f]{64}$/, ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/, UnifiedPushError = class extends Error {
       constructor(code, message) {
         super(message), this.name = "UnifiedPushError", this.code = code;
       }
@@ -1125,7 +1135,14 @@ var NOT_ON_WEB2, UnifiedPushWeb, init_web6 = __esm({
     init_dist();
     NOT_ON_WEB2 = "UnifiedPush is only in the Android app. The browser uses Web Push.", UnifiedPushWeb = class extends WebPlugin {
       async getState() {
-        return { supported: !1, distributor: null, endpoints: {}, failures: {}, registrations: [], visible: !1 };
+        return { supported: !1, distributor: null, endpoints: {}, failures: {}, registrations: [], visible: !1, endpointChanged: !1 };
+      }
+      // Nothing to take down: the browser's notifications are the service worker's (sw.js closes them itself).
+      async cancel() {
+        return { cancelled: 0 };
+      }
+      async cancelAll() {
+        return { cancelled: 0 };
       }
       async getDistributors() {
         return { distributors: [], saved: null };
@@ -1166,6 +1183,7 @@ var UnifiedPush, init_src3 = __esm({
 // mobile/shell/native.js
 var native_exports3 = {};
 __export(native_exports3, {
+  CORE_NAMES: () => CORE_NAMES,
   REGISTERED_NAMES: () => REGISTERED_NAMES,
   buildNative: () => buildNative,
   loadNativePlugins: () => loadNativePlugins,
@@ -1221,6 +1239,7 @@ function buildNative(parts, { platform = "" } = {}) {
       }
     },
     BiometricAuth: parts.BiometricAuth,
+    SystemBars: parts.SystemBars ?? null,
     WebView: parts.WebView,
     UnifiedPush: parts.UnifiedPush,
     Dictation: parts.Dictation,
@@ -1248,10 +1267,10 @@ function buildNative(parts, { platform = "" } = {}) {
   };
 }
 async function loadNativePlugins() {
-  let native = buildNative({ registerPlugin, WebView, SecureStorage: proxy, BiometricAuth: proxy2, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
+  let native = buildNative({ registerPlugin, WebView, SystemBars, SecureStorage: proxy, BiometricAuth: proxy2, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
   return await native.configureStorage(), native;
 }
-var REGISTERED_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIVE, init_native3 = __esm({
+var REGISTERED_NAMES, CORE_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIVE, init_native3 = __esm({
   "mobile/shell/native.js"() {
     init_dist();
     init_esm();
@@ -1270,7 +1289,7 @@ var REGISTERED_NAMES, QR_CODE_HINT, CAMERA_BACK, ORIENTATION_ADAPTIVE, init_nati
       "LocalNotifications",
       "CapacitorBarcodeScanner",
       "PlenumPrivacy"
-    ]), QR_CODE_HINT = 0, CAMERA_BACK = 1, ORIENTATION_ADAPTIVE = 3;
+    ]), CORE_NAMES = Object.freeze(["SystemBars"]), QR_CODE_HINT = 0, CAMERA_BACK = 1, ORIENTATION_ADAPTIVE = 3;
   }
 });
 
@@ -1528,8 +1547,14 @@ function openChannel({
     get state() {
       return state;
     },
-    reconnect() {
-      closed || post({ op: "reconnect" });
+    // w4-m1: why = { reason: 'resume' | 'network' | 'stop' | 'retry', hiddenMs } tells the worker what happened, so a return after a long time
+    // away or a network change dials beside the probe (channel.worker.js reconnectNow). No argument sends { op: 'reconnect' } as before.
+    reconnect({ reason = null, hiddenMs = null } = {}) {
+      closed || post({
+        op: "reconnect",
+        ...typeof reason == "string" && reason ? { reason } : {},
+        ...Number.isFinite(hiddenMs) && hiddenMs >= 0 ? { hiddenMs } : {}
+      });
     },
     close() {
       closed || (closed = !0, post({ op: "close" }), setTimeout(() => {
@@ -2613,7 +2638,40 @@ function createBiometricGate({ plugin = null } = {}) {
     }
   };
 }
-function createLock({ store, now = () => Date.now(), biometric = null, passkey = null, iterations = PIN_ITERATIONS, subtle = globalThis.crypto?.subtle ?? null, mono = () => globalThis.performance?.now?.() ?? Date.now() } = {}) {
+var UNLOCK_FRESH_WAIT_MS = 1500;
+function createUnlockMemory({ plugin = null, waitMs = UNLOCK_FRESH_WAIT_MS, setTimer = globalThis.setTimeout, clearTimer = globalThis.clearTimeout } = {}) {
+  let call = (name, arg) => {
+    try {
+      let fn = plugin?.[name];
+      return typeof fn != "function" ? null : Promise.resolve(fn.call(plugin, arg)).catch(() => null);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    // true only on the app's own { fresh: true } within waitMs; anything else (no method, a refusal, no answer in time) is false.
+    async fresh(maxAgeMs) {
+      if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return !1;
+      let asked = call("unlockFresh", { maxAgeMs: Math.round(maxAgeMs) });
+      if (!asked) return !1;
+      let timer = null, gaveUp = new Promise((resolve) => {
+        timer = setTimer?.(() => resolve(null), waitMs), timer?.unref?.();
+      });
+      try {
+        return (await Promise.race([asked, gaveUp]))?.fresh === !0;
+      } finally {
+        timer !== null && clearTimer?.(timer);
+      }
+    },
+    mark() {
+      call("markUnlocked", {});
+    },
+    clear() {
+      call("clearUnlocked", {});
+    }
+  };
+}
+function createLock({ store, now = () => Date.now(), biometric = null, passkey = null, iterations = PIN_ITERATIONS, subtle = globalThis.crypto?.subtle ?? null, mono = () => globalThis.performance?.now?.() ?? Date.now(), memory = null } = {}) {
   if (!store) throw new TypeError("createLock needs the store");
   let backgroundAt = null, locked = !1, settings = null, pinKeyHeld = null, monoUntil = 0, queue = Promise.resolve(), serial = (fn) => {
     let run = queue.then(fn, fn);
@@ -2642,19 +2700,26 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
         passkeyAvailable: passkey ? await passkey.available() : !1
       };
     },
-    // Called once at launch: a lock that is on starts locked.
-    async lockOnLaunch() {
-      return locked = (await readSettings()).mode !== "off", locked;
+    // Called once at launch: a lock that is on starts locked. Wave 4 (m3): in biometric mode, a page of the same app that was unlocked a
+    // moment ago (freshMs, the app answers through `memory`) starts unlocked, so a page switch does not ask for the fingerprint again.
+    async lockOnLaunch({ freshMs = 0 } = {}) {
+      let s = await readSettings();
+      return locked = s.mode !== "off", locked && s.mode === "biometric" && memory && freshMs > 0 && await memory.fresh(freshMs) && (locked = !1, memory.mark()), locked;
     },
     isLocked: () => locked,
     lock() {
-      return locked = !0, pinKeyHeld = null, !0;
+      return locked = !0, pinKeyHeld = null, memory?.clear(), !0;
+    },
+    // Wave 4 (m3): the page is being left (a page switch) while unlocked in biometric mode: the app keeps the time, so the next page starts
+    // unlocked if it loads within the time.
+    keepUnlocked() {
+      return locked || !memory || settings?.mode !== "biometric" ? !1 : (memory.mark(), !0);
     },
     onBackground() {
       backgroundAt = now();
     },
     async onForeground() {
-      return (await readSettings()).mode !== "off" && backgroundAt !== null && now() - backgroundAt >= BACKGROUND_LOCK_MS && (locked = !0, pinKeyHeld = null), backgroundAt = null, locked;
+      return (await readSettings()).mode !== "off" && backgroundAt !== null && now() - backgroundAt >= BACKGROUND_LOCK_MS && (locked = !0, pinKeyHeld = null, memory?.clear()), backgroundAt = null, locked;
     },
     // The record as it must rest in the store: in PIN mode its private key is wrapped under the PIN key held while unlocked. It refuses
     // (throws 'locked') when the PIN key is not held, so a key is never written plain under a PIN.
@@ -2685,10 +2750,10 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
     return stretched.fill(0), mixed;
   }
   async function enableBiometricInner() {
-    return settings = null, !biometric || !await biometric.available() ? { ok: !1, reason: "unavailable" } : await biometric.verify("Turn on app lock for Plenum") ? (await writeSettings({ mode: "biometric", failures: 0, lockedUntil: 0 }), { ok: !0 }) : { ok: !1, reason: "cancelled" };
+    return settings = null, !biometric || !await biometric.available() ? { ok: !1, reason: "unavailable" } : await biometric.verify("Turn on app lock for Plenum") ? (await writeSettings({ mode: "biometric", failures: 0, lockedUntil: 0 }), memory?.mark(), { ok: !0 }) : { ok: !1, reason: "cancelled" };
   }
   async function unlockBiometricInner() {
-    return settings = null, (await readSettings()).mode !== "biometric" ? { ok: !1, reason: "mode" } : await biometric.verify() ? (locked = !1, { ok: !0, keys: await plainKeys(null) }) : { ok: !1, reason: "cancelled" };
+    return settings = null, (await readSettings()).mode !== "biometric" ? { ok: !1, reason: "mode" } : await biometric.verify() ? (locked = !1, memory?.mark(), { ok: !0, keys: await plainKeys(null) }) : { ok: !1, reason: "cancelled" };
   }
   async function setPinInner(pin) {
     if (settings = null, !isValidPin(pin)) return { ok: !1, reason: "format" };
@@ -2770,7 +2835,7 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
       }
       await store.meta.remove("pin"), await store.meta.remove(DEVICE_META);
     } else s.mode === "passkey" && await store.meta.remove("passkey");
-    return await writeSettings({ mode: "off", failures: 0, lockedUntil: 0 }), locked = !1, pinKeyHeld = null, { ok: !0 };
+    return await writeSettings({ mode: "off", failures: 0, lockedUntil: 0 }), locked = !1, pinKeyHeld = null, memory?.clear(), { ok: !0 };
   }
   return api;
 }
@@ -2824,7 +2889,10 @@ function validatePayload(p) {
     offer: p.offer,
     ttl,
     carriers,
-    sas: "6"
+    sas: "6",
+    // Wave 5 (brb): what the computer offered this for: 'browser' (Add a browser, the code page at /pair/) or 'phone' (Add phone, and every
+    // older link). It names the review screen's name field only; it is not part of the handshake (the prologue does not take it).
+    form: p.form === "browser" ? "browser" : "phone"
   };
 }
 function pageCandidates(pageUrl, payload) {
@@ -3092,7 +3160,7 @@ function createDebugLog({ now = () => Date.now(), capacity = 500 } = {}) {
 
 // mobile/shell/push.js
 init_core();
-var ID = /^[A-Za-z0-9_.-]{1,80}$/, FIRST_LINE_MAX = 200;
+var ID = /^[A-Za-z0-9_.-]{1,80}$/, TAG = /^plenum(?:-[0-9a-f]{32})?$/, FIRST_LINE_MAX = 200, PLACES = Object.freeze(["stop", "home", "waiting", "chat", "today", "accounts", "services"]), ROUTE_KINDS = Object.freeze(["waiting", "handover", "chat", "settings", "home", "today", "accounts", "services"]);
 function pushAvailable(env = globalThis) {
   let nav = env.navigator;
   return !!(env.isSecureContext && nav && "serviceWorker" in nav && env.PushManager && env.Notification);
@@ -3101,33 +3169,46 @@ function cleanLine(value) {
   return String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, FIRST_LINE_MAX);
 }
 function parseNotificationHash(hash) {
-  let text = String(hash ?? "").replace(/^#/, ""), named = /&computer=([A-Za-z0-9_.-]{1,80})$/.exec(text);
-  if (named) {
-    let link = parseNotificationHash(text.slice(0, named.index));
-    return link ? { ...link, computer: named[1] } : null;
+  let text = String(hash ?? "").replace(/^#/, "");
+  if (!text) return null;
+  let parts = text.split("&"), head = parts.shift(), extra = {};
+  for (let part of parts) {
+    let m = /^(line|nt|computer)=(.*)$/.exec(part);
+    if (!m || extra[m[1]] !== void 0) return null;
+    extra[m[1]] = m[2];
   }
-  if (text === "stop") return { kind: "stop" };
-  if (text === "home") return { kind: "home" };
-  if (text === "waiting") return { kind: "waiting" };
-  if (text === "chat") return { kind: "chat" };
-  if (text === "settings=limit") return { kind: "settings", section: "limit" };
-  let m = /^(deny|approve|waiting|handover)=([A-Za-z0-9_.-]{1,80})(?:&line=([^&]*))?$/.exec(text);
-  if (m && ID.test(m[2])) {
-    if (m[1] === "approve") {
-      let line = "";
-      try {
-        line = cleanLine(decodeURIComponent(m[3] ?? ""));
-      } catch {
-        line = "";
-      }
-      return { kind: "approve", id: m[2], line };
+  if (extra.computer !== void 0 && !ID.test(extra.computer) || extra.nt !== void 0 && !TAG.test(extra.nt)) return null;
+  let link = headLink(head);
+  if (!link) return null;
+  if (link.kind === "approve") {
+    let line = "";
+    try {
+      line = cleanLine(decodeURIComponent(extra.line ?? ""));
+    } catch {
+      line = "";
     }
-    return m[3] !== void 0 ? null : { kind: m[1], id: m[2] };
-  }
-  return m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(text), m ? { kind: "chat", project: m[1] } : null;
+    link.line = line;
+  } else if (extra.line !== void 0)
+    return null;
+  return extra.nt !== void 0 && (link.nt = extra.nt), extra.computer !== void 0 && (link.computer = extra.computer), link;
+}
+function headLink(head) {
+  if (PLACES.includes(head)) return { kind: head };
+  if (head === "settings=limit") return { kind: "settings", section: "limit" };
+  let m = /^(deny|approve|waiting|handover|today)=([A-Za-z0-9_.-]{1,80})$/.exec(head);
+  return m && ID.test(m[2]) ? { kind: m[1], id: m[2] } : (m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(head), m ? { kind: "chat", project: m[1] } : null);
 }
 function isRouteLink(link) {
-  return !!link && ["waiting", "handover", "chat", "settings", "home"].includes(link.kind);
+  return !!link && ROUTE_KINDS.includes(link.kind);
+}
+async function endpointHash(url, subtle = globalThis.crypto?.subtle) {
+  if (typeof url != "string" || !url || typeof subtle?.digest != "function") return null;
+  try {
+    let digest = new Uint8Array(await subtle.digest("SHA-256", new TextEncoder().encode(url)));
+    return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
 }
 async function subscribeWebPush({ registration, applicationServerKey, request, deviceId, notification, env = globalThis } = {}) {
   if (!pushAvailable(env) || !registration?.pushManager) return { ok: !1, state: "unsupported", status: 0 };
@@ -3174,11 +3255,7 @@ function bytesFromB64u(text) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-var ANDROID_CHANNELS = Object.freeze([
-  Object.freeze({ id: "plenum-approvals", name: "Approvals and your turn", importance: 4 }),
-  Object.freeze({ id: "plenum-finished", name: "Finished and failed runs", importance: 3 }),
-  Object.freeze({ id: "plenum-limits", name: "Spend and plan limits", importance: 3 })
-]), ENDPOINT_WAIT_MS = 15e3;
+var ANDROID_CHANNELS = Object.freeze(NOTIFICATION_CHANNEL_LIST.map((c) => Object.freeze({ id: c.id, name: c.name, importance: c.importance, description: c.description }))), APPROVALS_CHANNEL = NOTIFICATION_CHANNELS.approvals, ENDPOINT_WAIT_MS = 15e3, DEFAULT_REGISTRATION = Object.freeze({ instance: "default", messageForDistributor: "Plenum" });
 function unifiedPushSubscription(event) {
   let endpoint = parseEndpointEvent(event);
   return endpoint.keys ? { subscription: { kind: "unifiedpush", endpoint: endpoint.url, keys: { p256dh: endpoint.keys.pubKey, auth: endpoint.keys.auth } } } : null;
@@ -3198,13 +3275,26 @@ function notificationFor(payload) {
       destructive: a.action !== "approve",
       foreground: !1
     })),
-    extra: { tap: payload.tap, routes, line: payload.firstLine ?? "", computer: payload.ids?.computer ?? "" }
+    extra: { tap: payload.tap, routes, line: payload.firstLine ?? "", computer: payload.ids?.computer ?? "", tag: payload.tag }
   };
+}
+function noticeFor(payload) {
+  let title = String(payload?.title ?? ""), body = String(payload?.body ?? ""), text = title && title !== "Plenum" ? `${title}: ${body}` : body, tone = payload?.kind === "failed" || payload?.kind === "limit" ? "warn" : payload?.kind === "finished" ? "ok" : "info";
+  return { text, tone, kind: String(payload?.kind ?? "") };
 }
 function notificationId(tag) {
   let h = 0;
   for (let ch of String(tag ?? "plenum")) h = h * 31 + ch.charCodeAt(0) | 0;
   return Math.abs(h) % 2147483e3 + 1;
+}
+function rawObject(text) {
+  if (typeof text != "string" || text.trimStart()[0] !== "{") return null;
+  try {
+    let value = JSON.parse(text);
+    return value && typeof value == "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 function createAndroidPush({
   native,
@@ -3214,12 +3304,58 @@ function createAndroidPush({
   onLink = () => {
   },
   pendingStore = null,
+  postedStore = null,
+  computerOf: computerOf2 = null,
+  onNotice = () => {
+  },
+  isShowing = () => !1,
+  onReceived = () => {
+  },
+  onState = () => {
+  },
+  seenStore = null,
+  now = () => Date.now(),
   log = () => {
   },
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (id) => clearTimeout(id)
 } = {}) {
-  let up = native?.UnifiedPush ?? null, local = native?.LocalNotifications ?? null, started = !1, waiting = null, lastEndpoint = null, failure = null, posted = !1, pending = null, types = /* @__PURE__ */ new Set();
+  let up = native?.UnifiedPush ?? null, local = native?.LocalNotifications ?? null, started = !1, waiters = /* @__PURE__ */ new Set(), lastEndpoint = null, lastBody = null, failure = null, postedFor = {}, postedKnown = !1, pending = null, pendingOpen = !0, renewing = !1, types = /* @__PURE__ */ new Set(), shownLocal = /* @__PURE__ */ new Map(), seen = /* @__PURE__ */ new Map(), SEEN_MAX = 100, SEEN_KINDS = Object.freeze(["approval", "handover", "needs"]), here = () => String(computerOf2?.() ?? "");
+  function isPosted() {
+    let key = here();
+    return key ? !!postedFor[key] : Object.keys(postedFor).length > 0;
+  }
+  async function mayRenewHere() {
+    if (typeof computerOf2 != "function") return !0;
+    let key = here();
+    if (!key) return !1;
+    if (postedFor[key]) return !0;
+    if (postedKnown) return !1;
+    let kept = await savedState();
+    return !!kept.distributor && kept.saved;
+  }
+  async function saveSeen() {
+    try {
+      await seenStore?.save({ v: 1, tags: Object.fromEntries(seen) });
+    } catch {
+    }
+  }
+  async function noteSeen(payload) {
+    if (!(!SEEN_KINDS.includes(payload?.kind) || typeof payload.tag != "string" || !TAG.test(payload.tag) || payload.tag === "plenum")) {
+      for (seen.delete(payload.tag), seen.set(payload.tag, { kind: payload.kind, computer: String(payload.ids?.computer ?? ""), approval: String(payload.ids?.approval ?? "") }); seen.size > SEEN_MAX; ) seen.delete(seen.keys().next().value);
+      await saveSeen();
+    }
+  }
+  async function savePosted() {
+    postedKnown = !0;
+    try {
+      await postedStore?.save({ v: 1, computers: { ...postedFor } });
+    } catch {
+    }
+  }
+  async function markPosted(url) {
+    postedFor = { ...postedFor, [here()]: { hash: await endpointHash(url), at: now() } }, await savePosted();
+  }
   async function post(body) {
     let request = requestOf?.();
     if (typeof request != "function") return { ok: !1, status: 0 };
@@ -3234,6 +3370,26 @@ function createAndroidPush({
       return { ok: !1, status: 0 };
     }
   }
+  function waitEndpoint() {
+    let done = null;
+    return { promise: new Promise((resolve) => {
+      let timer = setTimer(() => done({ ok: !1, reason: "timeout" }), ENDPOINT_WAIT_MS);
+      done = (value) => {
+        clearTimer(timer), waiters.delete(done), resolve(value);
+      }, waiters.add(done);
+    }), cancel: () => done?.({ ok: !1, reason: "failed" }) };
+  }
+  function settle(value) {
+    for (let w of Array.from(waiters)) w(value);
+  }
+  async function accepted(body) {
+    failure = null, pending = null, pendingOpen = !0;
+    try {
+      await pendingStore?.clear();
+    } catch {
+    }
+    await markPosted(body.subscription.endpoint);
+  }
   async function onEndpoint(event) {
     let body = null;
     try {
@@ -3242,37 +3398,80 @@ function createAndroidPush({
       body = null;
     }
     if (!body) {
-      failure = "endpoint", waiting?.resolve({ ok: !1, reason: "endpoint" });
+      failure = "endpoint", settle({ ok: !1, reason: "endpoint" });
       return;
     }
-    lastEndpoint = body.subscription.endpoint, pending = body;
+    let asked = waiters.size > 0;
+    lastEndpoint = body.subscription.endpoint, lastBody = body, pendingOpen = asked || pending !== null && pendingOpen, pending = body;
     try {
-      await pendingStore?.save(body);
+      await pendingStore?.save(pendingOpen ? body : { ...body, from: "renew" });
     } catch {
     }
-    let out = await post(body);
-    if (posted = out.ok, out.ok) {
-      failure = null, pending = null;
+    if (!pendingOpen && !await mayRenewHere()) {
       try {
-        await pendingStore?.clear();
+        onState();
       } catch {
       }
+      return;
     }
-    waiting?.resolve(out.ok ? { ok: !0, reason: null } : { ok: !1, reason: "failed" });
+    let out = await post(body);
+    if (out.ok)
+      await accepted(body);
+    else {
+      let key = here(), hash = await endpointHash(lastEndpoint);
+      if (postedFor[key] && postedFor[key].hash !== hash) {
+        let { [key]: _gone, ...rest } = postedFor;
+        postedFor = rest, await savePosted();
+      }
+    }
+    settle(out.ok ? { ok: !0, reason: null } : { ok: !1, reason: "failed" });
+    try {
+      onState();
+    } catch {
+    }
   }
   async function showLocal(payload) {
     if (!local?.schedule) return;
     let note = notificationFor(payload);
-    note.actionTypeId && !types.has(note.actionTypeId) && (types.add(note.actionTypeId), await local.registerActionTypes?.({ types: [{ id: note.actionTypeId, actions: note.actions }] })), await local.schedule({
+    note.actionTypeId && !types.has(note.actionTypeId) && (types.add(note.actionTypeId), await local.registerActionTypes?.({ types: [{ id: note.actionTypeId, actions: note.actions }] }));
+    let id = notificationId(payload.tag);
+    await local.schedule({
       notifications: [{
-        id: notificationId(payload.tag),
+        id,
         title: note.title,
         body: note.body,
         channelId: note.channelId,
         actionTypeId: note.actionTypeId,
         extra: note.extra
       }]
-    });
+    }), shownLocal.set(payload.tag, { id, channelId: note.channelId });
+  }
+  async function clear({ tag = null, channel = null } = {}) {
+    let safeTag = typeof tag == "string" && TAG.test(tag) ? tag : null, done = !1;
+    try {
+      safeTag && typeof up?.cancel == "function" ? (await up.cancel({ tag: safeTag }), done = !0) : !safeTag && typeof up?.cancelAll == "function" && (await up.cancelAll(channel ? { channel } : {}), done = !0);
+    } catch {
+      done = !1;
+    }
+    let ids = [];
+    for (let [t, shown] of Array.from(shownLocal))
+      (safeTag ? t === safeTag : !channel || shown.channelId === channel) && (ids.push({ id: shown.id }), shownLocal.delete(t));
+    if (ids.length && typeof local?.cancel == "function")
+      try {
+        await local.cancel({ notifications: ids }), done = !0;
+      } catch {
+      }
+    let forgot = !1;
+    for (let [t, entry] of Array.from(seen))
+      (safeTag ? t === safeTag : !channel || channelForKind(entry.kind) === channel) && (seen.delete(t), forgot = !0);
+    return forgot && await saveSeen(), done;
+  }
+  async function clearApprovals({ computer = "", approval = null } = {}) {
+    let from = String(computer ?? ""), tags = [];
+    for (let [t, entry] of seen)
+      entry.kind !== "approval" || entry.computer !== from || approval && entry.approval !== String(approval) || tags.push(t);
+    for (let t of tags) await clear({ tag: t }).catch(() => !1);
+    return tags.length;
   }
   async function onMessage(event) {
     let parsed = null;
@@ -3281,9 +3480,36 @@ function createAndroidPush({
     } catch {
       return;
     }
-    if (parsed.payload && isVisible())
+    let raw = rawObject(parsed.text);
+    if (parsed.clear === !0 || parsed.payload?.kind === "clear" || raw?.v === 1 && raw.kind === "clear") {
+      let tag = parsed.payload?.kind === "clear" ? parsed.payload.tag : raw?.tag;
+      typeof tag == "string" && TAG.test(tag) && tag !== "plenum" && await clear({ tag }).catch(() => !1);
+      return;
+    }
+    let payload = parsed.payload;
+    if (!payload) return;
+    try {
+      onReceived(now());
+    } catch {
+    }
+    if (await noteSeen(payload).catch(() => {
+    }), !isVisible() || parsed.shown === !0) return;
+    if (!(payload.kind === "approval" || payload.kind === "handover" || payload.kind === "test") || payload.silent === !0 || raw?.silent === !0) {
       try {
-        await showLocal(parsed.payload);
+        onNotice(noticeFor(payload));
+      } catch {
+      }
+      return;
+    }
+    let showing = !1;
+    try {
+      showing = isShowing(payload) === !0;
+    } catch {
+      showing = !1;
+    }
+    if (!showing)
+      try {
+        await showLocal(payload);
       } catch (err) {
         log(`push: local notification ${err?.code ?? "failed"}`);
       }
@@ -3291,24 +3517,54 @@ function createAndroidPush({
   function onAction(event) {
     let extra = event?.notification?.extra ?? {}, id = String(event?.actionId ?? "tap"), route = id === "tap" ? extra.tap : extra.routes?.[id];
     if (typeof route != "string") return;
-    let link = routeForAction({ action: id === "tap" ? "tap" : id, route }, extra.line ? String(extra.line) : ""), computer = id !== "tap" && typeof extra.computer == "string" ? extra.computer.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) : "";
-    onLink(String(link).replace(/^\//, ""), computer);
+    let where = id !== "tap" && typeof extra.tag == "string" && !/&nt=/.test(route) ? { tag: extra.tag } : void 0, link = String(routeForAction({ action: id === "tap" ? "tap" : id, route }, extra.line ? String(extra.line) : "", where)).replace(/^\//, ""), computer = id !== "tap" && typeof extra.computer == "string" ? extra.computer.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) : "";
+    onLink(link, computer);
   }
-  return {
+  async function savedState() {
+    try {
+      let s = await up.getState();
+      return { distributor: s?.distributor ?? null, saved: Array.isArray(s?.registrations) && s.registrations.includes(DEFAULT_REGISTRATION.instance), endpoint: s?.endpoints?.[DEFAULT_REGISTRATION.instance]?.url ?? null };
+    } catch {
+      return { distributor: null, saved: !1, endpoint: null };
+    }
+  }
+  async function register() {
+    let vapid = vapidOf();
+    await up.register({ ...DEFAULT_REGISTRATION, ...vapid ? { vapid } : {} });
+  }
+  let api = {
     // Channels, action types and listeners. Safe to call again; a plugin that is missing does nothing.
     async start() {
       if (started || !up) return !1;
       started = !0;
       try {
-        for (let c of ANDROID_CHANNELS) await local?.createChannel?.({ id: c.id, name: c.name, importance: c.importance, visibility: 0 });
+        for (let c of ANDROID_CHANNELS) await local?.createChannel?.({ id: c.id, name: c.name, description: c.description, importance: c.importance, visibility: 0 });
         if (await up.addListener("endpoint", onEndpoint), await up.addListener("message", onMessage), await up.addListener("registrationFailed", (event) => {
-          failure = String(event?.reason ?? "INTERNAL_ERROR"), waiting?.resolve({ ok: !1, reason: "registration" });
+          failure = String(event?.reason ?? "INTERNAL_ERROR"), settle({ ok: !1, reason: "registration" });
         }), await up.addListener("unregistered", () => {
-          posted = !1, lastEndpoint = null, pending = null, Promise.resolve(pendingStore?.clear?.()).catch(() => {
+          postedFor = {}, lastEndpoint = null, lastBody = null, pending = null, pendingOpen = !0, savePosted().catch(() => {
+          }), Promise.resolve(pendingStore?.clear?.()).catch(() => {
           });
         }), await local?.addListener?.("localNotificationActionPerformed", onAction), !pending && pendingStore) {
           let kept = await pendingStore.load().catch(() => null);
-          kept?.subscription?.kind === "unifiedpush" && typeof kept.subscription.endpoint == "string" && (pending = kept);
+          if (kept?.subscription?.kind === "unifiedpush" && typeof kept.subscription.endpoint == "string") {
+            let { from, ...body } = kept;
+            pending = body, pendingOpen = from !== "renew";
+          }
+        }
+        if (seenStore) {
+          let record = await Promise.resolve(seenStore.load()).catch(() => null);
+          if (record && typeof record == "object" && record.tags && typeof record.tags == "object")
+            for (let [tag, entry] of Object.entries(record.tags).slice(-SEEN_MAX))
+              TAG.test(tag) && entry && SEEN_KINDS.includes(entry.kind) && seen.set(tag, { kind: entry.kind, computer: String(entry.computer ?? ""), approval: String(entry.approval ?? "") });
+        }
+        if (postedStore) {
+          let record = await Promise.resolve(postedStore.load()).catch(() => null);
+          if (record && typeof record == "object" && record.computers && typeof record.computers == "object") {
+            postedKnown = !0;
+            for (let [id, entry] of Object.entries(record.computers))
+              entry && typeof entry == "object" && (postedFor[id] = { hash: typeof entry.hash == "string" ? entry.hash : null, at: Number(entry.at) || 0 });
+          }
         }
       } catch (err) {
         return log(`push: start ${err?.code ?? "failed"}`), !1;
@@ -3320,10 +3576,24 @@ function createAndroidPush({
       if (!up) return { supported: !1, distributor: null, registered: !1, failure };
       try {
         let s = await up.getState();
-        return { supported: s?.supported !== !1, distributor: s?.distributor ?? null, registered: posted, endpoint: !!lastEndpoint || Object.keys(s?.endpoints ?? {}).length > 0, failure };
+        return { supported: s?.supported !== !1, distributor: s?.distributor ?? null, registered: isPosted(), endpoint: !!lastEndpoint || Object.keys(s?.endpoints ?? {}).length > 0, failure };
       } catch {
         return { supported: !1, distributor: null, registered: !1, failure };
       }
+    },
+    // state() plus what the status row needs (wave 4): permission (Android's own switch for Plenum: true, false, or null when the app cannot
+    // say) and saved (the push app registration is kept).
+    async status() {
+      let base = await api.state();
+      if (!up) return { ...base, permission: null, saved: !1 };
+      let permission = null;
+      try {
+        typeof up.getNotificationPermission == "function" && (permission = (await up.getNotificationPermission())?.granted === !0);
+      } catch {
+        permission = null;
+      }
+      let { saved } = await savedState(), installed = base.distributor ? !0 : await api.hasDistributor();
+      return { ...base, permission, saved, installed };
     },
     // The system chooser for the push app (when more than one is installed, or none is chosen).
     async chooseDistributor() {
@@ -3337,7 +3607,8 @@ function createAndroidPush({
     // Turn on: the permissions (after a tap), a push app, then register. Resolves once the computer has the subscription.
     async enable() {
       if (!up) return { ok: !1, reason: "unavailable" };
-      await this.start();
+      await api.start();
+      let wait = null;
       try {
         if ((await up.requestNotificationPermission())?.granted === !1) return { ok: !1, reason: "denied" };
         await local?.requestPermissions?.();
@@ -3354,31 +3625,96 @@ function createAndroidPush({
               if ((await up.pickDistributor())?.ok === !1) return { ok: !1, reason: "no-distributor" };
             }
         }
-        let answer = new Promise((resolve) => {
-          let timer = setTimer(() => resolve({ ok: !1, reason: "timeout" }), ENDPOINT_WAIT_MS);
-          waiting = { resolve: (value) => {
-            clearTimer(timer), waiting = null, resolve(value);
-          } };
-        }), vapid = vapidOf();
-        return await up.register({ instance: "default", messageForDistributor: "Plenum", ...vapid ? { vapid } : {} }), await answer;
+        return wait = waitEndpoint(), await register(), await wait.promise;
       } catch (err) {
-        return waiting = null, { ok: !1, reason: err?.code === "VAPID_REQUIRED" ? "vapid" : "failed" };
+        return wait?.cancel(), { ok: !1, reason: err?.code === "VAPID_REQUIRED" ? "vapid" : "failed" };
       }
     },
     // B-129: an endpoint the computer did not get (no channel when the push app gave it, or the computer refused) is sent again. app.js calls this at
     // every HELLO. The computer replaces the phone's subscription with each body, so a second send is harmless. Nothing is sent after a turn off.
+    // Wave 4 (m2): an endpoint that came by itself (a renewal) goes only to a computer that already holds this phone's endpoint.
     async resend() {
-      if (posted || !pending) return { ok: posted, reason: null };
-      let out = await post(pending);
-      if (posted = out.ok, out.ok) {
-        pending = null, failure = null;
-        try {
-          await pendingStore?.clear();
-        } catch {
-        }
-      }
-      return { ok: out.ok, reason: out.ok ? null : "failed" };
+      if (!pending) return { ok: isPosted(), reason: null };
+      if (!pendingOpen && !await mayRenewHere()) return { ok: isPosted(), reason: null };
+      let body = pending, out = await post(body);
+      return out.ok && await accepted(body), { ok: out.ok, reason: out.ok ? null : "failed" };
     },
+    // Wave 4 (m2), at every start and HELLO: when a push app and the 'default' registration are kept, register again, so the push app hands
+    // the endpoint and its key set to this listener once more and it goes to the computer (onEndpoint). Resolves true when it asked.
+    async renew() {
+      if (!up || renewing) return !1;
+      renewing = !0;
+      try {
+        let kept = await savedState();
+        return !kept.distributor || !kept.saved ? !1 : (await register(), !0);
+      } catch (err) {
+        return log(`push: renew ${err?.code ?? "failed"}`), !1;
+      } finally {
+        renewing = !1;
+      }
+    },
+    // Wave 4 (m2): the computer says it does not hold this phone's endpoint (or holds another). The push app is asked again (never the copy
+    // this run kept: a computer that dropped an address the push service called gone would only drop it again), and the endpoint it hands
+    // goes to this computer. Resolves { ok, reason, hash }: hash is the first 16 hex of the endpoint that went (app.js tells a repair that
+    // sent the same address again apart from one that sent a new one).
+    async repair() {
+      if (!up) return { ok: !1, reason: "unavailable" };
+      let key = here();
+      if (postedFor[key]) {
+        let { [key]: _gone, ...rest } = postedFor;
+        postedFor = rest, await savePosted();
+      }
+      if (!(await savedState()).distributor) return { ok: !1, reason: "no-distributor" };
+      let wait = waitEndpoint();
+      try {
+        await register();
+      } catch {
+        return wait.cancel(), { ok: !1, reason: "failed" };
+      }
+      let out = await wait.promise;
+      return out.ok ? { ...out, hash: postedFor[key]?.hash ?? await endpointHash(lastEndpoint) } : out;
+    },
+    // Wave 4 (m2): whether this phone takes notifications to be on for the computer the channel goes to: that computer accepted its endpoint.
+    // An app from before the record (none was ever written) counts the kept push app registration instead.
+    async believedOn() {
+      if (!up) return !1;
+      if (isPosted()) return !0;
+      if (postedKnown) return !1;
+      let kept = await savedState();
+      return !!kept.distributor && kept.saved;
+    },
+    // The computer says it holds this phone's endpoint (hash matches): the record notes it, so the next check knows.
+    async adopt(hash) {
+      if (typeof hash != "string" || !hash || isPosted()) return !1;
+      let mine = await api.endpointHash();
+      return !mine || mine !== hash ? !1 : (postedFor = { ...postedFor, [here()]: { hash, at: now() } }, await savePosted(), !0);
+    },
+    // The first 16 hex of sha256 of this phone's endpoint (the one of this run, else the one the plugin kept), or null.
+    async endpointHash() {
+      return lastEndpoint ? endpointHash(lastEndpoint) : up ? endpointHash((await savedState()).endpoint) : null;
+    },
+    // Whether a push app is installed (or chosen) now, and whether Android allows Plenum's notifications now: the re-checks when Plenum comes
+    // back to the front after "Get ntfy" or "Open notification settings".
+    async hasDistributor() {
+      if (!up) return !1;
+      try {
+        if ((await up.getState())?.distributor) return !0;
+        let list = await up.getDistributors();
+        return !!list?.saved || Array.isArray(list?.distributors) && list.distributors.length > 0;
+      } catch {
+        return !1;
+      }
+    },
+    async permitted() {
+      if (!up || typeof up.getNotificationPermission != "function") return !1;
+      try {
+        return (await up.getNotificationPermission())?.granted === !0;
+      } catch {
+        return !1;
+      }
+    },
+    clear,
+    clearApprovals,
     // Turn off: the computer forgets the subscription and the push app registration ends.
     async disable() {
       if (!up) return { ok: !1, reason: "unavailable" };
@@ -3387,7 +3723,7 @@ function createAndroidPush({
         await up.unregister({ instance: "default" });
       } catch {
       }
-      posted = !1, lastEndpoint = null, pending = null;
+      postedFor = {}, lastEndpoint = null, lastBody = null, pending = null, pendingOpen = !0, await savePosted();
       try {
         await pendingStore?.clear();
       } catch {
@@ -3397,7 +3733,58 @@ function createAndroidPush({
     // Test hooks: the handlers the listeners call.
     handlers: { onEndpoint, onMessage, onAction }
   };
+  return api;
 }
+
+// mobile/shell/screens/copy2.js
+var PART2_IDS = Object.freeze([
+  "pair-review",
+  "computers",
+  "install-ios",
+  "install-android",
+  "lan-web",
+  "connected",
+  "rename",
+  "forget",
+  "settings",
+  "settings-connection",
+  "settings-notify",
+  "settings-lock",
+  "phone-lock-off",
+  "settings-appearance",
+  "settings-dictation",
+  "debug",
+  "about",
+  "legal",
+  "demo-home",
+  "demo-run",
+  "demo-diff",
+  "demo-artifact",
+  // Wave 5 (brb): the code page at /pair/ and the card for a computer another tab of this browser holds.
+  "claim",
+  "other-tab"
+]);
+var CLAIM_ERRORS = Object.freeze({
+  wrong: "That code does not match. Check it on your computer and try again.",
+  none: "No browser is being added right now. On your computer, click Add a browser, then type the new code.",
+  locked: "Too many tries. On your computer, click New code, then type it here.",
+  "too-many": "Too many tries in a minute. Wait a minute, then try again.",
+  network: "Plenum on your computer did not answer. Check that it is running and that this is the address the Add a browser window shows."
+});
+var LAYOUT_LABEL = Object.freeze({ auto: "Automatic", phone: "Phone", wide: "Computer" });
+var ROW_MENU = Object.freeze({ connect: "Connect", ways: "Ways to reach it", rename: "Rename on this phone", forget: "Forget this computer" }), STATUS = Object.freeze({ online: "Online", asleep: "Asleep", unreachable: "Not reachable" });
+var INSTALL_IOS_STEPS = Object.freeze(["Tap Share.", "Tap Add to Home Screen.", "Open Plenum from the Home Screen."]);
+var WAYS_CARRIER = Object.freeze({ lan: "the same network", tailscale: "Tailscale", relay: "your relay" });
+var NOTIFY_PERMISSION = Object.freeze({ granted: "Allowed", denied: "Blocked", default: "Not asked", unknown: "Not asked" });
+var NOTIFY_FIX_TEXT = Object.freeze({
+  "no-distributor": "Plenum sends notifications through a small free app called ntfy. Install it, then come back and tap Turn on again.",
+  denied: "Notifications are blocked for Plenum in Android's settings.",
+  "denied-web": "Notifications are blocked for Plenum on this phone. Allow them in the phone's settings for Plenum, then tap Turn on again.",
+  timeout: "ntfy did not answer. Open ntfy once, then try again.",
+  failed: "Plenum could not turn notifications on. Check that the phone is connected to {computer}, then try again."
+});
+var NOTIFY_TEST_ON_WAY = "A test notification is on its way.";
+var LEGAL_ROWS = Object.freeze({ license: "License Agreement", privacy: "Privacy Notice", third: "Third-party notices" });
 
 // mobile/shell/device.js
 function isLanPage(win) {
@@ -3419,8 +3806,12 @@ function appKindFor(win) {
 }
 function pageKindFor(win) {
   let root = win?.document?.documentElement;
-  return !root || typeof root.hasAttribute != "function" || root.hasAttribute("data-shell-page") ? "shell" : typeof root.getAttribute == "function" && root.getAttribute("data-surface") === "phone" ? "ui" : "shell";
+  if (!root || typeof root.hasAttribute != "function" || root.hasAttribute("data-shell-page")) return "shell";
+  let surface = typeof root.getAttribute == "function" ? root.getAttribute("data-surface") : null;
+  return surface === "phone" || surface === "wide" ? "ui" : "shell";
 }
+var LAYOUTS = Object.freeze(["phone", "wide"]);
+var BRAND_NAMES = Object.freeze([[/edge/i, "Edge"], [/opera/i, "Opera"], [/firefox/i, "Firefox"], [/safari/i, "Safari"], [/google chrome|^chrome$/i, "Chrome"]]);
 
 // lib/remote/ui-manifest.mjs
 var MANIFEST_PATH = "/_bridge/ui-manifest", SHELL_BASE = "/shell/", SHELL_ENTRY = "shell.js", UI_STATIC_PATHS = Object.freeze(["/", "/app.js", "/markdown.js", "/music.js", "/style.css", "/icon.png", "/mark.svg", "/ext.js"]), UI_PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; worker-src 'self'; base-uri 'none'; form-action 'self'";
@@ -3469,7 +3860,7 @@ function rewriteIndex(html, ctx = {}) {
 }
 
 // mobile/shell/ui-loader.js
-var CACHE_PREFIX = "plenum-ui-", ACTIVE_CACHE = "plenum-ui-active", ACTIVE_PATH = "/__plenum/active.json", SHA_HEADER = "x-plenum-sha256", SIZE_HEADER = "x-plenum-size", MAX_FILE_BYTES = 16 * 1024 * 1024, MAX_MANIFEST_BYTES = 1024 * 1024, BOOT_FILE = "shell/boot.js", SHELL_FILES = Object.freeze([BOOT_FILE, "shell/shell.js", "shell/channel.worker.js", "shell/styles.css"]), utf82 = new TextEncoder(), utf8Decode = new TextDecoder(), HEX64 = /^[0-9a-f]{64}$/, UiError = class extends Error {
+var CACHE_PREFIX = "plenum-ui-", ACTIVE_CACHE = "plenum-ui-active", ACTIVE_PATH = "/__plenum/active.json", SHA_HEADER = "x-plenum-sha256", SIZE_HEADER = "x-plenum-size", MAX_FILE_BYTES = 16 * 1024 * 1024, MAX_MANIFEST_BYTES = 1024 * 1024, BOOT_FILE = "shell/boot.js", SHELL_FILES = Object.freeze([BOOT_FILE, "shell/shell.js", "shell/channel.worker.js", "shell/styles.css"]), VERSION_FILE = "version.json", utf82 = new TextEncoder(), utf8Decode = new TextDecoder(), HEX64 = /^[0-9a-f]{64}$/, UiError = class extends Error {
   constructor(code, message) {
     super(message ?? code), this.name = "UiError", this.code = code;
   }
@@ -3587,6 +3978,17 @@ async function bundledShellFiles(readBundled) {
   }
   return out;
 }
+async function bundledShellSha(readBundled) {
+  if (!readBundled) return null;
+  try {
+    let bytes = await readBundled(VERSION_FILE);
+    if (!bytes || !bytes.byteLength || bytes.byteLength > 64 * 1024) return null;
+    let value = JSON.parse(utf8Decode.decode(bytes)), sha = typeof value?.shellSha256 == "string" ? value.shellSha256 : "";
+    return HEX64.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
 function androidStorage({ files, webView, root = "plenum-ui" }) {
   let base = (name) => `${root}/${name}`, slotOn = (name) => ({
     async get(path) {
@@ -3597,21 +3999,32 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
       await files.write(`${base(name)}/${fileNameFor(path)}`, bytes);
     }
   });
-  async function activate(record, { readBundled, shellBase } = {}) {
+  async function activate(record, { readBundled, shellBase, beforeServe = null } = {}) {
     let dir = base(record.cacheName), index = await files.read(`${dir}/index.html`);
     if (!index) throw new UiError("storage", "The index is missing.");
     for (let file of await bundledShellFiles(readBundled)) await files.write(`${dir}/${fileNameFor(file.path)}`, file.bytes);
     let html = rewriteIndex(utf8Decode.decode(index), { shellBase });
-    await files.write(`${dir}/index.html`, utf82.encode(html)), await webView?.persistServerBasePath({ path: dir }), await webView?.setServerBasePath({ path: dir });
+    await files.write(`${dir}/index.html`, utf82.encode(html)), await beforeServe?.(), await webView?.persistServerBasePath({ path: dir }), await webView?.setServerBasePath({ path: dir });
+  }
+  async function readActive() {
+    let bytes = await files.read(`${root}/active.json`), record = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
+    return record ? { ...record, computerId: computerOf(record.computerId) } : null;
+  }
+  async function writeActive(record) {
+    await files.write(`${root}/active.json`, utf82.encode(JSON.stringify(record)));
+  }
+  async function activateWithShell(record, opts = {}) {
+    let shellSha256 = await bundledShellSha(opts.readBundled);
+    await activate(record, {
+      ...opts,
+      beforeServe: async () => {
+        shellSha256 && shellSha256 !== record.shellSha256 && await writeActive({ ...record, shellSha256 });
+      }
+    });
   }
   return {
-    async readActive() {
-      let bytes = await files.read(`${root}/active.json`), record = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
-      return record ? { ...record, computerId: computerOf(record.computerId) } : null;
-    },
-    async writeActive(record) {
-      await files.write(`${root}/active.json`, utf82.encode(JSON.stringify(record)));
-    },
+    readActive,
+    writeActive,
     async openSlot(name) {
       return slotOn(name);
     },
@@ -3619,10 +4032,20 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
       await files.removeDir(base(name));
     },
     activate,
+    // "Use the copy in this app" (ui-host.js useCopy): the copy on the phone is served again, with this app's shell files.
+    activateCopy: activateWithShell,
     // A complete record the WebView does not serve (its persist or set was lost) is activated again. A WebView without
     // getServerBasePath is left alone.
+    // w4-m1: a record the WebView does serve is activated again too when the bundled version.json has another shellSha256 than the record
+    // keeps (the app was rebuilt and installed over: its shell files in the UI folder are the old app's). Same sha, or no bundle to read
+    // (the Android UI page cannot read the app's www): nothing is copied.
     async ensureActive(record, opts = {}) {
-      return !webView?.getServerBasePath || (await webView.getServerBasePath())?.path === base(record.cacheName) ? !1 : (await activate(record, opts), !0);
+      if (!webView?.getServerBasePath) return !1;
+      if ((await webView.getServerBasePath())?.path === base(record.cacheName)) {
+        let bundled = await bundledShellSha(opts.readBundled);
+        if (!bundled || bundled === record.shellSha256) return !1;
+      }
+      return await activateWithShell(record, opts), !0;
     },
     async dropSlotsExcept(name) {
       let dirs = await files.listDirs?.(root) ?? [];
@@ -3662,7 +4085,7 @@ function createUiLoader({
     let reload = shouldReload({ loadedHash, nextHash: prev.hash, reloadedFor: prev.reloadedFor ?? null }), owner = computerOf(computerId), moved = computerOf(prev.computerId) !== owner, record = prev;
     (reload || moved) && (record = { ...prev, computerId: owner, ...reload ? { reloadedFor: prev.hash } : {} }, await storage.writeActive(record));
     try {
-      await storage.ensureActive?.(prev, { readBundled, shellBase });
+      await storage.ensureActive?.(record, { readBundled, shellBase });
     } catch (err) {
       log(`ui: ${err.code ?? "error"}`);
     }
@@ -3689,13 +4112,21 @@ function createUiLoader({
           verifyBytes(bytes, entry), await slot.put(path, bytes, entry), changed.push(path);
         }
       }
-      for (let file of await bundledShellFiles(readBundled))
+      let shellFiles = await bundledShellFiles(readBundled);
+      for (let file of shellFiles)
         await slot.put(file.path, file.bytes, { type: contentTypeFor(fileNameFor(file.path)), sha256: sha256Hex(file.bytes), size: file.bytes.byteLength });
+      if (readBundled && previousSlot)
+        for (let rel of SHELL_FILES) {
+          let path = `/${rel}`;
+          if (shellFiles.some((f) => f.path === path)) continue;
+          let old = await previousSlot.get(path).catch(() => null);
+          old?.bytes?.byteLength && await slot.put(path, old.bytes, { type: contentTypeFor(fileNameFor(path)), sha256: sha256Hex(old.bytes), size: old.bytes.byteLength });
+        }
     } catch (err) {
       throw await storage.dropSlot(cacheName).catch(() => {
       }), log(`ui: ${err.code ?? "error"}`), err;
     }
-    let reload = shouldReload({ loadedHash, nextHash: next.hash, reloadedFor: prev?.reloadedFor ?? null }), record = {
+    let reload = shouldReload({ loadedHash, nextHash: next.hash, reloadedFor: prev?.reloadedFor ?? null }), shellSha256 = await bundledShellSha(readBundled) ?? (typeof prev?.shellSha256 == "string" ? prev.shellSha256 : null), record = {
       hash: next.hash,
       generation: next.generation,
       desktopVersion: next.desktopVersion,
@@ -3704,7 +4135,8 @@ function createUiLoader({
       reloadedFor: reload ? next.hash : prev?.reloadedFor ?? null,
       files: next.files,
       pulledAt: now(),
-      computerId: computerOf(computerId)
+      computerId: computerOf(computerId),
+      shellSha256
     };
     return await storage.writeActive(record), await storage.activate?.(record, { readBundled, shellBase }), await storage.dropSlotsExcept(cacheName), { status: "updated", hash: next.hash, generation: next.generation, changed, reload, record };
   }
@@ -3858,6 +4290,14 @@ function createUiHost({
       root: UI_ROOT
     });
   }
+  async function androidCopy() {
+    try {
+      let storage = androidStore(), record = await storage.readActive();
+      return record?.complete === !0 && typeof record.cacheName == "string" && record.cacheName ? { storage, record } : null;
+    } catch {
+      return null;
+    }
+  }
   function buildLoader() {
     let channel = channelOf();
     if (!channel) throw new UiError("offline", "The phone is not connected.");
@@ -3957,12 +4397,22 @@ function createUiHost({
       }
     },
     // Whether a complete copy of the UI is on the phone, for "Use the copy in this app".
+    // w4-m1: on Android the copy is the complete active record in the app-data folder (loadedHash answers for the web cache only).
     async hasCopy() {
-      return kind === "ios" ? !0 : kind === "lan" ? !1 : await this.loadedHash() !== null;
+      return kind === "ios" ? !0 : kind === "lan" ? !1 : kind === "android" ? await androidCopy() !== null : await this.loadedHash() !== null;
     },
     // Uses the copy that is already on the phone, without asking the computer.
     async useCopy() {
-      return kind === "ios" ? this.show({}) : kind === "web" && await this.loadedHash() !== null && await workerControls() ? (this.rememberShellPage(), location().replace("/"), { ok: !0, status: "copy", navigated: !0 }) : { ok: !1, cause: "worker", code: "worker" };
+      if (kind === "ios") return this.show({});
+      if (kind === "android")
+        try {
+          let copy = await androidCopy();
+          if (!copy) throw new UiError("storage", "There is no copy of the screens on this phone.");
+          return await copy.storage.activateCopy(copy.record, { readBundled: bundledReader(env.fetch.bind(env), location().href), shellBase: "/shell/" }), { ok: !0, status: "copy", navigated: !0 };
+        } catch (error) {
+          return log(`ui: ${error?.code ?? "error"}`), { ok: !1, cause: causeOf(error), code: error?.code ?? "error" };
+        }
+      return kind === "web" && await this.loadedHash() !== null && await workerControls() ? (this.rememberShellPage(), location().replace("/"), { ok: !0, status: "copy", navigated: !0 }) : { ok: !1, cause: "worker", code: "worker" };
     },
     // From the UI page back to the shell's screens. link (a pairing link, #settings, #computers, #connect=<id>) rides along: in the address on web
     // and LAN pages (the '#...' part only), in the linkStore for the apps (the shell page takes it out once, within two minutes).
@@ -4109,6 +4559,13 @@ function pushValues(known) {
     typeof known?.[key] == "boolean" && (out[key] = known[key]);
   return out;
 }
+var ANDROID_NOTIFY_LABEL = Object.freeze({
+  on: "On, through ntfy",
+  onOther: "On, through your push app",
+  needsApp: "Needs the ntfy app",
+  blocked: "Blocked in Android settings",
+  off: "Off"
+});
 function normalisePrefs(raw) {
   let p = raw && typeof raw == "object" ? raw : {};
   return {
@@ -4225,8 +4682,10 @@ if (typeof document < "u" && document.documentElement?.hasAttribute?.("data-shel
     }
   });
 }
-var ACTIVE_META = "active", PREFS_META = "prefs", DEMO_COMPUTER = Object.freeze({ id: "demo", name: "Demo computer", carriers: [], lastCarrier: null, lastSeen: null, pairedAt: null, counter: 0 }), utf83 = new TextEncoder(), utf8Read = new TextDecoder(), STOP_RETRY_MS = 60 * 1e3, APPROVE_META = "approve", STOP_NOTICE = /* @__PURE__ */ new Set(["done", "queued", "failed"]), APPROVE_OFF_META = "approve-off-pending", UP_PENDING_META = "up-pending", STOP_META = "pending-stop", LINK_META = "shell-link", LINK_TTL_MS = 120 * 1e3, NOTIFICATION_LINK_MAX_AGE_MS = 60 * 1e3, NOTIFICATION_OLD = "That notification is more than a minute old. Open the approval to answer it.", OPEN_SHELL_HASHES = Object.freeze(["", "#settings", "#computers"]), FACADE_PLUGINS = Object.freeze(["App", "TextZoom", "Haptics", "Dictation", "IsolatedPreview", "Browser", "Share", "Filesystem"]);
-var SW_REGISTRATION_WAIT_MS = 3e3, CARD_CHANGED = "That card changed. Open it to answer.", RECORD_ID = /^[0-9a-f]{64}$/, UNKNOWN_COMPUTER = "That computer is not paired on this phone. Answer it at that computer.", UNKNOWN_COMPUTER_STOP = "That computer is not paired on this phone. Press Stop at that computer.", STOP_NO_KEY = "This phone cannot read its Stop key, so it cannot send Stop from here. Press Stop on your computer.";
+var ACTIVE_META = "active", PREFS_META = "prefs", DEMO_COMPUTER = Object.freeze({ id: "demo", name: "Demo computer", carriers: [], lastCarrier: null, lastSeen: null, pairedAt: null, counter: 0 }), utf83 = new TextEncoder(), utf8Read = new TextDecoder(), STOP_RETRY_MS = 60 * 1e3, APPROVE_META = "approve", STOP_NOTICE = /* @__PURE__ */ new Set(["done", "queued", "failed"]), APPROVE_OFF_META = "approve-off-pending", UP_PENDING_META = "up-pending", UP_POSTED_META = "up-posted", PUSH_LAST_META = "push-last-at", PUSH_REPAIRED_META = "push-repaired", UP_SEEN_META = "up-seen", PUSH_REPAIRS_META = "push-repairs", REPAIR_SAME_MS = 1440 * 60 * 1e3, STOP_META = "pending-stop", LINK_META = "shell-link", LINK_TTL_MS = 120 * 1e3, NOTIFICATION_LINK_MAX_AGE_MS = 60 * 1e3, NOTIFICATION_OLD = "That notification is more than a minute old. Open the approval to answer it.", OPEN_SHELL_HASHES = Object.freeze(["", "#settings", "#computers"]), FACADE_PLUGINS = Object.freeze(["App", "TextZoom", "Haptics", "Dictation", "IsolatedPreview", "Browser", "Share", "Filesystem"]);
+var SW_REGISTRATION_WAIT_MS = 3e3, updatedLine = (name) => `Plenum on ${String(name || "your computer").slice(0, 60)} was updated. Connected again.`, UPDATED_LINE_PATTERN = /^Plenum on [^\n]{1,60} was updated\. Connected again\.$/, NOTE_KEY = "plenum-note", NOTE_TTL_MS = 60 * 1e3, PAGE_SWITCH_FRESH_MS = 60 * 1e3, THEME_KEY = "plenum-theme";
+typeof document < "u" && document.documentElement?.hasAttribute?.("data-shell-page") && !globalThis.__PLENUM_SHELL_NO_AUTOSTART__ && earlyTheme(globalThis);
+var CARD_CHANGED = "That card changed. Open it to answer.", RECORD_ID = /^[0-9a-f]{64}$/, UNKNOWN_COMPUTER = "That computer is not paired on this phone. Answer it at that computer.", UNKNOWN_COMPUTER_STOP = "That computer is not paired on this phone. Press Stop at that computer.", STOP_NO_KEY = "This phone cannot read its Stop key, so it cannot send Stop from here. Press Stop on your computer.";
 function modeFor(search, devBuild = DEV_BUILD) {
   let params = new URLSearchParams(String(search ?? ""));
   return devBuild === !0 && params.has("selftest") ? "selftest" : params.has("demo") ? "demo" : "normal";
@@ -4261,10 +4720,17 @@ function safeState(state) {
       dictationOnDevice: s.prefs?.dictationOnDevice
     },
     intent: s.intent ?? null,
-    device: { platform: s.device?.platform, app: s.device?.app, appVersion: s.device?.appVersion, protocol: s.device?.protocol }
+    device: { platform: s.device?.platform, app: s.device?.app, appVersion: s.device?.appVersion, protocol: s.device?.protocol },
+    // Wave 5 (brb): another tab of this browser holds this computer (boot.js draws the card with Use it here, which is connect(computer)).
+    // The field is there only while that is so: the listed fields of plan C6b are unchanged otherwise.
+    ...s.tab ? { tab: { state: s.tab.state, computer: s.tab.computer } } : {}
   });
 }
+function barsForPage(plugin) {
+  return typeof plugin?.setStyle != "function" ? null : Object.freeze({ setStyle: (options) => plugin.setStyle({ style: options?.style === "DARK" ? "DARK" : "LIGHT" }) });
+}
 function makeFacade(shell, plugins) {
+  let bars = barsForPage(plugins?.SystemBars);
   return Object.freeze({
     state: () => safeState(shell.state()),
     subscribe: (fn) => shell.subscribe((state) => fn(safeState(state))),
@@ -4279,7 +4745,7 @@ function makeFacade(shell, plugins) {
     openShell: (hash) => OPEN_SHELL_HASHES.includes(hash) ? shell.openShell(hash) : Promise.resolve(!1),
     takeRoute: () => shell.takeRoute(),
     log: (line) => shell.pageLog(line),
-    plugin: (name) => FACADE_PLUGINS.includes(name) ? plugins?.[name] ?? null : null
+    plugin: (name) => name === "SystemBars" ? bars : FACADE_PLUGINS.includes(name) ? plugins?.[name] ?? null : null
   });
 }
 function createLinkStore(meta, now = () => Date.now()) {
@@ -4398,6 +4864,113 @@ async function registerServiceWorker(env = globalThis) {
     return null;
   }
 }
+var TAB_CHANNEL = "plenum-tab", TAB_ASK_MS = 300;
+function createTabGuard({ env = globalThis, BroadcastChannelCtor = env?.BroadcastChannel, tabId = null, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  let bc = null;
+  try {
+    bc = typeof BroadcastChannelCtor == "function" ? new BroadcastChannelCtor(TAB_CHANNEL) : null;
+  } catch {
+    bc = null;
+  }
+  if (!bc) return null;
+  try {
+    bc.unref?.();
+  } catch {
+  }
+  let self2 = tabId ?? (() => {
+    try {
+      let bytes = new Uint8Array(8);
+      return env.crypto.getRandomValues(bytes), Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    } catch {
+      return Math.random().toString(16).slice(2);
+    }
+  })(), held = null, onTaken = () => {
+  }, waiting = /* @__PURE__ */ new Map(), askSeq = 0, post = (msg) => {
+    try {
+      bc.postMessage({ ...msg, tab: self2 });
+    } catch {
+    }
+  };
+  return bc.onmessage = (event) => {
+    let m = event?.data;
+    if (!(!m || typeof m != "object" || m.tab === self2 || typeof m.computer != "string")) {
+      if (m.op === "ask" && held === m.computer) post({ op: "busy", to: m.tab, ask: m.ask, computer: m.computer });
+      else if (m.op === "busy" && m.to === self2) waiting.get(m.ask)?.(!0);
+      else if (m.op === "take" && held === m.computer) {
+        held = null;
+        try {
+          onTaken(m.computer);
+        } catch {
+        }
+      }
+    }
+  }, {
+    id: self2,
+    // Resolves true when another tab of this browser holds the computer now.
+    ask(computer) {
+      let ask = ++askSeq;
+      return new Promise((resolve) => {
+        let timer = null, done = (value) => {
+          waiting.has(ask) && (waiting.delete(ask), timer !== null && clearTimer(timer), resolve(value));
+        };
+        waiting.set(ask, done), timer = setTimer(() => done(!1), TAB_ASK_MS), timer?.unref?.(), post({ op: "ask", ask, computer: String(computer) });
+      });
+    },
+    take(computer) {
+      post({ op: "take", computer: String(computer) });
+    },
+    hold(computer) {
+      held = computer ? String(computer) : null;
+    },
+    holding: () => held,
+    onTaken(fn) {
+      onTaken = typeof fn == "function" ? fn : () => {
+      };
+    },
+    close() {
+      held = null;
+      for (let done of [...waiting.values()]) done(!1);
+      try {
+        bc.close();
+      } catch {
+      }
+    }
+  };
+}
+function isClaimPage(env = globalThis) {
+  return /^\/pair\/(index\.html)?$/.test(String(env?.location?.pathname ?? ""));
+}
+async function persistStorage(env = globalThis) {
+  if (isNative(env) || env?.isSecureContext !== !0) return !1;
+  let storage = env?.navigator?.storage;
+  if (typeof storage?.persist != "function") return !1;
+  let ua = String(env?.navigator?.userAgent ?? "");
+  if (!((Array.isArray(env?.navigator?.userAgentData?.brands) ? env.navigator.userAgentData.brands.map((b) => String(b?.brand ?? "")) : []).some((b) => /chromium/i.test(b)) || /\bChrome\//.test(ua) && !/\bFirefox\//.test(ua)) || /\bFirefox\//.test(ua)) return !1;
+  try {
+    return typeof storage.persisted == "function" && await storage.persisted() === !0 ? !1 : (await storage.persist(), !0);
+  } catch {
+    return !1;
+  }
+}
+function pagesHere(records, host) {
+  let out = [];
+  for (let record of Array.isArray(records) ? records : []) {
+    let path = null;
+    for (let c of Array.isArray(record?.carriers) ? record.carriers : []) {
+      for (let url of Array.isArray(c?.urls) ? c.urls : c?.url ? [c.url] : []) {
+        try {
+          let u = new URL(String(url)), m = /^\/b\/([0-9a-f]{32})$/.exec(u.pathname);
+          m && (u.protocol === "ws:" || u.protocol === "wss:") && u.host === host && (path = `/p/${m[1]}/`);
+        } catch {
+        }
+        if (path) break;
+      }
+      if (path) break;
+    }
+    path && out.push({ id: String(record.id ?? ""), name: String(record.name ?? "") || "your computer", path });
+  }
+  return out;
+}
 var NO_SECURE_STORAGE = Object.freeze({
   async getItem() {
     throw new Error("secure storage is not available");
@@ -4443,13 +5016,30 @@ function createShell({
   },
   devBuild = DEV_BUILD,
   storage = "ok",
-  parkedStop = null
+  parkedStop = null,
+  // w4-m1: { put(text) } where the "was updated" line waits for the UI page the shell page hands over to, and initialNote, the line that page
+  // took out at start (runStart: sessionStorage, the line has no secret in it). Both optional.
+  noteCarry = null,
+  initialNote = null,
+  // Wave 4 (m3): the app's SystemBars plugin on the shell page of the Android app (null elsewhere: the UI page's shim sets the bars there),
+  // the page's prefers-color-scheme query (a MediaQueryList, or null), and { put(theme) }, which shows the chosen theme ('dark', 'light' or
+  // null for Follow phone) and keeps a copy the shell page reads synchronously at its next start (earlyTheme). All optional.
+  systemBars = null,
+  colorScheme = null,
+  themeCarry = null,
+  // Wave 5 (brb): createTabGuard() (two tabs of one browser), null where there is none. claimPage: the code page at /pair/ (it connects nothing,
+  // and its state carries the computers paired through this host). host: location.host, for that list. persist: persistStorage after the
+  // first pairing (runStart passes the page's).
+  tabGuard = null,
+  claimPage = !1,
+  host = "",
+  persist = null
 } = {}) {
   if (!store) throw new TypeError("createShell needs a store");
   let computers = [], activeId = null, channel = null, channelState = { status: "idle", carrier: null, desktopName: "", lastSeen: null, since: 0, nextRetryAt: null, failedRounds: 0, failure: null }, hello = null, stopCtl = null, stopView = { state: "idle", ack: null, error: null, text: "", seq: 0 }, notice = null, noticeSeq = 0, stopSeq = 0, pendingLink = null, pendingPair = null, forceUi = !1, screenRequest = null, screenSeq = 0, pairing = null, pairingFlow = null, lockStatus = { mode: "off", locked: !1, failures: 0, waitSec: 0 }, lockStop = { ready: !1, computerName: "" }, lockedCtl = null, lockedFor = null, selftest = null, booted = !1, lockKnown = () => {
   }, lockRead = new Promise((resolve) => {
     lockKnown = resolve;
-  }), lockUnreadable = !1, loaded = !1, started = !1, prefs = normalisePrefs(null), pushKnown = null, approveStored = !1, hiddenAt = null, pairedSeq = 0, pairedId = null, ui = { state: "idle", cause: null, progress: null, hasCopy: !1 }, loadedUiHash, refreshingUi = !1, holdUi = !1, leaving = !1, intent = initialIntent && typeof initialIntent == "object" ? { ...initialIntent, seq: 1, taken: !1 } : null, intentSeq = intent ? 1 : 0, dictationState = null, androidPushState = null, replay = mode === "demo" ? createReplay(session_default) : null, unlockedKeys = /* @__PURE__ */ new Map(), subs = /* @__PURE__ */ new Set(), wall = () => typeof stopClock?.now == "function" ? stopClock.now() : Date.now(), parked = parkedStop ?? createParkedStop(store.meta, wall), stopPressedAt = null, stopComputer = "";
+  }), lockUnreadable = !1, loaded = !1, started = !1, prefs = normalisePrefs(null), pushKnown = null, approveStored = !1, hiddenAt = null, updateAskedBy = null, pairedSeq = 0, pairedId = null, ui = { state: "idle", cause: null, progress: null, hasCopy: !1 }, loadedUiHash, refreshingUi = !1, holdUi = !1, leaving = !1, intent = initialIntent && typeof initialIntent == "object" ? { ...initialIntent, seq: 1, taken: !1 } : null, intentSeq = intent ? 1 : 0, dictationState = null, androidPushState = null, pushLastAt = null, pushRepaired = !1, fixWaiting = null, lastEnableReason = null, notifySetup = null, notifySeq = 0, rechecking = !1, tab = null, claimHere = [], replay = mode === "demo" ? createReplay(session_default) : null, unlockedKeys = /* @__PURE__ */ new Map(), subs = /* @__PURE__ */ new Set(), wall = () => typeof stopClock?.now == "function" ? stopClock.now() : Date.now(), parked = parkedStop ?? createParkedStop(store.meta, wall), stopPressedAt = null, stopComputer = "";
   function notePress(id) {
     stopView.state === "sending" || stopView.state === "queued" || (stopPressedAt = wall(), stopComputer = id ?? "");
   }
@@ -4467,8 +5057,53 @@ function createShell({
       save: (body) => store.meta.put(UP_PENDING_META, body),
       clear: () => store.meta.remove(UP_PENDING_META)
     },
+    postedStore: {
+      load: () => store.meta.get(UP_POSTED_META),
+      save: (record) => store.meta.put(UP_POSTED_META, record)
+    },
+    seenStore: {
+      load: () => store.meta.get(UP_SEEN_META),
+      save: (record) => store.meta.put(UP_SEEN_META, record)
+    },
+    computerOf: () => activeId ?? "",
+    // Plenum in front: a finished run, a failure, a limit or a list of things is the toast, not a system notification.
+    onNotice: (note) => {
+      say(note.text, note.tone), refresh();
+    },
+    isShowing: (payload) => cardShowing(payload),
+    onReceived: (at) => {
+      pushLastAt = at, store.meta.put(PUSH_LAST_META, at).catch(() => {
+      }), androidPushState && (androidPushState = { ...androidPushState, lastAt: at }, refresh());
+    },
+    // A renewal at start or at a HELLO posts later, when the push app answers: the status row is read again then.
+    onState: () => {
+      readAndroidPush().then(refresh, () => {
+      });
+    },
     log: (line) => debug.log(line, "warn")
-  }) : null, view = () => ({
+  }) : null;
+  function cardShowing(payload) {
+    let doc = pushEnv?.document, id = String(payload?.ids?.approval ?? "");
+    if (!doc || doc.visibilityState === "hidden" || typeof doc.querySelector != "function" || !/^[A-Za-z0-9_.-]{1,80}$/.test(id)) return !1;
+    try {
+      let node = doc.querySelector(`[data-approval-id="${id}"]`);
+      return node ? typeof node.getClientRects != "function" || node.getClientRects().length > 0 : !1;
+    } catch {
+      return !1;
+    }
+  }
+  async function readAndroidPush() {
+    if (!androidPush) return;
+    let st = await androidPush.status().catch(() => null);
+    st && (androidPushState = { ...st, lastAt: pushLastAt, lastReason: lastEnableReason });
+  }
+  async function clearNotification(link, computer = "") {
+    if (!androidPush || !link) return !1;
+    if (link.nt) return androidPush.clear({ tag: link.nt }).catch(() => !1);
+    let done = await androidPush.clear({ tag: "plenum" }).catch(() => !1);
+    return (link.kind === "deny" || link.kind === "approve") && link.id && await androidPush.clearApprovals({ computer: computer || link.computer || activeId || "", approval: link.id }).catch(() => 0), done;
+  }
+  let view = () => ({
     mode,
     route: route(),
     page: pageKind,
@@ -4482,7 +5117,7 @@ function createShell({
     stop: { ...stopView },
     lockStop: { ...lockStop },
     storage: storage === "unavailable" ? "unavailable" : "ok",
-    pairing: pairing ? { ...pairing, ...pairing.review ? { review: { name: pairing.review.name, hosts: pairing.review.hosts.map((h) => ({ ...h })) } } : {} } : null,
+    pairing: pairing ? { ...pairing, ...pairing.review ? { review: { name: pairing.review.name, hosts: pairing.review.hosts.map((h) => ({ ...h })), ...pairing.review.form === "browser" ? { form: "browser" } : {} } } : {} } : null,
     selftest,
     debugLines: debug.lines().length,
     prefs: { ...prefs },
@@ -4496,7 +5131,11 @@ function createShell({
     intent: intent ? { ...intent } : null,
     screenRequest: screenRequest ? { ...screenRequest } : null,
     dictation: dictationState ? { ...dictationState } : null,
-    androidPush: androidPushState ? { ...androidPushState } : null
+    androidPush: androidPushState ? { ...androidPushState } : null,
+    pushRepaired,
+    notifySetup: notifySetup ? { ...notifySetup } : null,
+    tab: tab ? { ...tab } : null,
+    claim: claimPage ? { paired: claimHere.map((c) => ({ ...c })) } : null
   }), snapshot = view(), refresh = () => {
     replay && (hello = demoHello(replay.view())), snapshot = view();
     for (let fn of Array.from(subs))
@@ -4604,7 +5243,7 @@ function createShell({
         return done || (leaving = !1), done ? { ok: !0, reason: null, opening: !0 } : { ok: !1, reason: "unavailable" };
       }
     }
-    let opened = await connectNow(id);
+    let opened = await connectNow(id, { take: !0 });
     return refresh(), opened;
   }
   async function stopOn(id, project = null) {
@@ -4619,14 +5258,24 @@ function createShell({
     channel = ch, bindStop(ch, name);
     let live = () => channel === ch;
     ch.onState((s) => {
-      live() && (channelState = { ...s }, s.status !== "connected" && (hello = null), refresh());
+      if (live()) {
+        if (channelState = { ...s }, s.status !== "connected" && (hello = null), s.status === "update-desktop") updateAskedBy = ch.id ?? activeId;
+        else if (s.status === "connected" && updateAskedBy && updateAskedBy === (ch.id ?? activeId)) {
+          updateAskedBy = null;
+          let line = updatedLine(s.desktopName || name);
+          say(line, "ok");
+          try {
+            noteCarry?.put(line);
+          } catch {
+          }
+        }
+        refresh();
+      }
     }), ch.onEvent((event) => {
       live() && (event && event.type === "phone" && event.kind === "revoked" && refresh(), event && event.type === "phone" && event.kind === "tier" && hello && typeof event.tier == "string" && (!hello.deviceId || event.id === hello.deviceId) && (hello = { ...hello, tier: event.tier, ...Array.isArray(event.caps) ? { caps: event.caps.filter((c) => typeof c == "string") } : {} }, refresh()));
     }), ch.onHello((h) => {
-      live() && (hello = h, refresh(), loadPush(), retryApproveOff(), (Array.isArray(h?.carriers) ? loadComputers() : refreshLockStop()).then(refresh).catch(() => {
-      }), androidPush?.resend().then(async () => {
-        androidPushState = await androidPush.state(), refresh();
-      }).catch(() => {
+      live() && (hello = h, refresh(), sendPresence(), syncPush(h).catch(() => {
+      }), retryApproveOff(), (Array.isArray(h?.carriers) ? loadComputers() : refreshLockStop()).then(refresh).catch(() => {
       }), afterHello());
     }), refresh();
   }
@@ -4640,9 +5289,68 @@ function createShell({
     }
   }
   async function loadPush() {
-    if (replay || !channel) return;
+    if (replay || !channel) return null;
     let out = await postJson("/api/phones/push", {});
-    out.ok && out.json?.push && typeof out.json.push == "object" && (pushKnown = { ...out.json.push }, refresh());
+    return out.ok && out.json?.push && typeof out.json.push == "object" && (pushKnown = { ...out.json.push }, refresh()), out;
+  }
+  async function syncPush(h) {
+    if (replay) return;
+    let ch = channel;
+    androidPush && await androidPush.resend().catch(() => null);
+    let out = await loadPush();
+    if (!channel || channel !== ch) return;
+    let json = out?.ok ? out.json : null, subscribed = typeof json?.subscribed == "boolean" ? json.subscribed : typeof json?.push?.subscribed == "boolean" ? json.push.subscribed : null, held = typeof json?.endpoint == "string" && /^[0-9a-f]{16}$/.test(json.endpoint) ? json.endpoint : null;
+    androidPush ? (await checkAndroidPush(subscribed, held).catch(() => {
+    }), h?.pending && h.pending.approvals === 0 && await androidPush.clearApprovals({ computer: activeId ?? "" }).catch(() => 0), await readAndroidPush(), refresh()) : subscribed === !1 && await repostWebPush().catch(() => {
+    });
+  }
+  async function checkAndroidPush(subscribed, held) {
+    if (!await androidPush.believedOn()) return;
+    let mine = held ? await androidPush.endpointHash() : null;
+    if (subscribed === !1 || held && mine && held !== mine) {
+      let fixed = await androidPush.repair();
+      fixed.ok ? await notePushRepaired(fixed.hash ?? null) : debug.log(`push: repair ${fixed.reason ?? "failed"}`, "warn");
+      return;
+    }
+    subscribed === !0 && held && await androidPush.adopt(held), await androidPush.renew();
+  }
+  async function repostWebPush() {
+    let key = typeof hello?.vapidPublicKey == "string" ? hello.vapidPublicKey : null;
+    if (!activeId || !channel || !key || notifications?.permission !== "granted" || !serviceWorker) return;
+    let forId = activeId, record = await store.get(forId).catch(() => null), endpoint = typeof record?.pushEndpoint == "string" ? record.pushEndpoint : "";
+    if (!endpoint && record?.pushLost !== !0) return;
+    let registration = await registrationOf(serviceWorker).catch(() => null);
+    if (!registration?.pushManager) return;
+    let held = await Promise.resolve(registration.pushManager.getSubscription?.()).catch(() => null);
+    if (held && (!endpoint || held.endpoint !== endpoint || await Promise.resolve(held.unsubscribe?.()).catch(() => !1) !== !0))
+      return;
+    await store.patchComputer(forId, { pushEndpoint: null, pushLost: !0 }).catch(() => {
+    });
+    let out = await subscribeWebPush({
+      registration,
+      applicationServerKey: key,
+      request: channel.request,
+      deviceId: typeof hello?.deviceId == "string" && hello.deviceId ? hello.deviceId : forId,
+      notification: notifications,
+      env: pushEnv
+    });
+    if (out.ok && out.endpoint) {
+      await store.patchComputer(forId, { pushEndpoint: out.endpoint, pushLost: null }).catch(() => {
+      }), await notePushRepaired(await endpointHash(out.endpoint), forId);
+      return;
+    }
+    out.state !== "failed" && await store.patchComputer(forId, { pushLost: null }).catch(() => {
+    }), debug.log(`push: could not make a new subscription (${out.state})`, "warn");
+  }
+  async function notePushRepaired(hash = null, forId = activeId ?? "") {
+    let key = String(forId ?? ""), kept = await store.meta.get(PUSH_REPAIRS_META).catch(() => null), repairs = kept && typeof kept == "object" && !Array.isArray(kept) ? { ...kept } : {}, last = repairs[key], again = !!hash && last?.hash === hash && wall() - (Number(last.at) || 0) < REPAIR_SAME_MS;
+    if (repairs[key] = { hash: hash ?? null, at: wall() }, await store.meta.put(PUSH_REPAIRS_META, repairs).catch(() => {
+    }), again) {
+      debug.log("push: the computer dropped this phone's notifications again; the same address went again", "warn");
+      return;
+    }
+    pushRepaired = !0, debug.log("push: the computer had lost this phone's notifications; sent again", "info"), await store.meta.put(PUSH_REPAIRED_META, !0).catch(() => {
+    }), refresh();
   }
   async function keepApprove(on) {
     approveStored = on === !0, replay || await store.meta.put(APPROVE_META, approveStored).catch(() => {
@@ -4652,19 +5360,22 @@ function createShell({
     let link = pendingLink;
     if (!link) return null;
     let parsed = parseNotificationHash(link.text);
-    return lockStatus.locked || lockUnreadable ? parsed?.kind !== "stop" ? null : (pendingLink = null, api.stop(null, link.computer ?? parsed.computer ?? "")) : (pendingLink = null, (parsed?.kind === "approve" || parsed?.kind === "deny") && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS ? (say(NOTIFICATION_OLD, "warn"), emitRoute({ kind: "waiting", id: parsed.id }), { ok: !1, reason: "expired", kind: parsed.kind }) : api.handleHash(link.text, link.computer ?? ""));
+    return lockStatus.locked || lockUnreadable ? parsed?.kind !== "stop" ? null : (pendingLink = null, api.stop(null, link.computer ?? parsed.computer ?? "")) : (pendingLink = null, (parsed?.kind === "approve" || parsed?.kind === "deny") && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS ? (say(NOTIFICATION_OLD, "warn"), emitRoute({ kind: "waiting", id: parsed.id }), await clearNotification(parsed, link.computer ?? parsed.computer ?? ""), { ok: !1, reason: "expired", kind: parsed.kind }) : api.handleHash(link.text, link.computer ?? ""));
   }
   async function retryApproveOff() {
     replay || await store.meta.get(APPROVE_OFF_META).catch(() => null) !== !0 || !(await postJson("/api/phones/push", { approveFromNotifications: !1 })).ok || (await keepApprove(!1), await store.meta.remove(APPROVE_OFF_META).catch(() => {
     }), refresh());
   }
   let connectSeq = 0;
-  async function connectNow(id) {
+  async function connectNow(id, { take = !1 } = {}) {
     let seq = ++connectSeq, record = await store.get(id);
     if (!record) return { ok: !1, reason: "unknown" };
     let keyed = keyedRecord(record);
     if (!keyed) return { ok: !1, reason: "locked" };
-    if (channel && (retireChannel(channel), channel = null), hello = null, activeId = id, await store.meta.put(ACTIVE_META, id).catch(() => {
+    if (tabGuard && !take && tabGuard.holding() !== id && await tabGuard.ask(id))
+      return seq !== connectSeq ? { ok: !1, reason: "superseded" } : (channel && (retireChannel(channel), channel = null), hello = null, activeId = id, tab = { state: "elsewhere", computer: id }, channelState = { ...channelState, status: "closed", desktopName: String(keyed.name ?? "") }, refresh(), { ok: !1, reason: "other-tab" });
+    if (seq !== connectSeq) return { ok: !1, reason: "superseded" };
+    if (tabGuard && (take && tabGuard.take(id), tabGuard.hold(id)), tab = null, channel && (retireChannel(channel), channel = null), hello = null, activeId = id, await store.meta.put(ACTIVE_META, id).catch(() => {
     }), await refreshLockStop(), seq !== connectSeq) return { ok: !1, reason: "superseded" };
     let ch = openChannel({
       computer: keyed,
@@ -4692,6 +5403,18 @@ function createShell({
     }
   }
   let shellRequest = (ch) => (spec, body, opts) => ch.request(spec, body, { ...opts ?? {}, scope: "shell" });
+  function pageVisible() {
+    return pushEnv?.document?.visibilityState !== "hidden";
+  }
+  function sendPresence(visible = pageVisible()) {
+    let ch = channel;
+    if (!(!ch || replay || typeof ch.request != "function"))
+      try {
+        Promise.resolve(ch.request({ method: "POST", path: "/_bridge/presence", headers: { "content-type": "application/json" } }, JSON.stringify({ visible: visible === !0 }), { scope: "shell" })).then((answer) => answer?.cancel?.(), () => {
+        });
+      } catch {
+      }
+  }
   function whenConnected(ms = 8e3) {
     return channel ? hello ? Promise.resolve(!0) : new Promise((resolve) => {
       let timer = null, off = () => {
@@ -4705,8 +5428,34 @@ function createShell({
   }
   async function savePrefs(next) {
     return prefs = normalisePrefs(next), await store.meta.put(PREFS_META, prefs).catch(() => {
-    }), refresh();
+    }), applyTheme(), refresh();
   }
+  function themeNow() {
+    return prefs.theme === "dark" || prefs.theme === "light" ? prefs.theme : colorScheme?.matches === !0 ? "dark" : "light";
+  }
+  let appliedBars = null;
+  function applyBars() {
+    if (typeof systemBars?.setStyle != "function") return;
+    let style = themeNow() === "dark" ? "DARK" : "LIGHT";
+    if (style !== appliedBars) {
+      appliedBars = style;
+      try {
+        Promise.resolve(systemBars.setStyle({ style })).catch(() => {
+          appliedBars === style && (appliedBars = null);
+        });
+      } catch {
+        appliedBars = null;
+      }
+    }
+  }
+  function applyTheme() {
+    applyBars();
+    try {
+      themeCarry?.put(prefs.theme === "dark" || prefs.theme === "light" ? prefs.theme : null);
+    } catch {
+    }
+  }
+  typeof colorScheme?.addEventListener == "function" ? colorScheme.addEventListener("change", () => applyBars()) : typeof colorScheme?.addListener == "function" && colorScheme.addListener(() => applyBars());
   let appliedHide = null;
   async function applyPrivacy() {
     if (device.platform !== "android" || !native?.PlenumPrivacy?.setHideInSwitcher) return;
@@ -4730,7 +5479,28 @@ function createShell({
     }
   }
   async function loadAndroidPush() {
-    androidPush && (await androidPush.start(), androidPushState = await androidPush.state(), refresh());
+    if (!androidPush) return;
+    await androidPush.start();
+    let last = await store.meta.get(PUSH_LAST_META).catch(() => null);
+    pushLastAt = Number.isFinite(last) && last > 0 ? last : null, pushRepaired = await store.meta.get(PUSH_REPAIRED_META).catch(() => null) === !0, await readAndroidPush(), refresh(), mode === "normal" && await androidPush.renew().catch(() => !1);
+  }
+  async function turnOnNotifications({ auto = !1 } = {}) {
+    let out = await api.enableNow(), testSent = !1;
+    return out.ok && !replay && (testSent = (await postJson("/api/phones/test-push", {})).ok, testSent && say(NOTIFY_TEST_ON_WAY, "ok")), lastEnableReason = out.ok ? null : out.reason, androidPush && (fixWaiting = !out.ok && (out.reason === "no-distributor" || out.reason === "denied") ? out.reason : null, await readAndroidPush()), notifySeq += 1, notifySetup = { seq: notifySeq, ok: out.ok, reason: out.ok ? null : out.reason, auto, testSent }, refresh(), out;
+  }
+  async function recheckNotifications() {
+    if (!(!androidPush || !fixWaiting || rechecking || lockStatus.locked)) {
+      rechecking = !0;
+      try {
+        if (!(fixWaiting === "no-distributor" ? await androidPush.hasDistributor() : await androidPush.permitted())) {
+          await readAndroidPush(), refresh();
+          return;
+        }
+        fixWaiting = null, await turnOnNotifications({ auto: !0 });
+      } finally {
+        rechecking = !1;
+      }
+    }
   }
   function afterHello() {
     if (!(!uiHost || replay || mode !== "normal")) {
@@ -4787,6 +5557,9 @@ function createShell({
   function emitRoute(link) {
     intentSeq += 1, intent = { ...link, seq: intentSeq, taken: !1 }, pageKind === "shell" && onIntent({ ...link }), refresh();
   }
+  tabGuard?.onTaken((computer) => {
+    computer === activeId && (connectSeq += 1, channel && (retireChannel(channel), channel = null), hello = null, tab = { state: "moved", computer }, channelState = { ...channelState, status: "closed" }, refresh());
+  }), typeof initialNote == "string" && UPDATED_LINE_PATTERN.test(initialNote) && say(initialNote, "ok");
   let api = {
     state: () => snapshot,
     subscribe(fn) {
@@ -4804,9 +5577,9 @@ function createShell({
     // Launch: reads the lock, the saved computers, the saved active computer and the phone's own preferences. Idempotent.
     async boot() {
       if (booted) return snapshot;
-      booted = !0, prefs = normalisePrefs(await store.meta.get(PREFS_META).catch(() => null)), approveStored = await store.meta.get(APPROVE_META).catch(() => null) === !0;
+      booted = !0, prefs = normalisePrefs(await store.meta.get(PREFS_META).catch(() => null)), applyTheme(), approveStored = await store.meta.get(APPROVE_META).catch(() => null) === !0;
       try {
-        lock && (await lock.lockOnLaunch(), lockStatus = { ...lockStatus, ...await lock.status() });
+        lock && (await lock.lockOnLaunch({ freshMs: lockAfter(prefs.lockAfter).ms || PAGE_SWITCH_FRESH_MS }), lockStatus = { ...lockStatus, ...await lock.status() });
       } catch {
         lockUnreadable = !0, lockStatus = { ...lockStatus, mode: "unknown", locked: !0 };
       } finally {
@@ -4819,6 +5592,14 @@ function createShell({
       }
       if (loaded = !0, applyPrivacy(), loadDictation(), loadAndroidPush(), mode === "demo")
         return computers = [{ ...DEMO_COMPUTER }], activeId = DEMO_COMPUTER.id, channelState = { ...channelState, status: "connected", carrier: "lan", desktopName: "Demo computer", since: Date.now() }, refresh();
+      if (claimPage) {
+        let records = [];
+        for (let c of computers) {
+          let record = await store.get(c.id).catch(() => null);
+          record && records.push(record);
+        }
+        return claimHere = pagesHere(records, host), refresh();
+      }
       let saved = await store.meta.get(ACTIVE_META).catch(() => null);
       if (lockStatus.locked) return refresh();
       if (mode === "selftest" || computers.length) {
@@ -4847,7 +5628,8 @@ function createShell({
       } catch (err) {
         return pairing = { state: "failed", code: null, tried: [], reason: err?.code ?? "not-plenum" }, refresh(), { ...pairing };
       }
-      pairing = { state: "starting", code: null, tried: [], reason: null }, refresh();
+      let form = payload.form === "browser" ? { form: "browser" } : {};
+      pairing = { state: "starting", code: null, tried: [], reason: null, ...form }, refresh();
       let wrapped = null, typed = cleanName(options?.name), flow = startPairing({
         payload,
         store,
@@ -4860,7 +5642,7 @@ function createShell({
           return kept !== record && (wrapped = { id: record.id, key: b64uToBytes(record.myPriv) }), kept;
         },
         onState: (s) => {
-          pairing = { ...s }, refresh();
+          pairing = { ...s, ...form }, refresh();
         }
       });
       pairingFlow = flow;
@@ -4868,7 +5650,8 @@ function createShell({
       if (pairingFlow === flow && (pairingFlow = null), final.state === "allowed") {
         await loadComputers();
         let id = final.computerId ?? computers.at(-1)?.id;
-        return pairing = null, pairedSeq += 1, pairedId = id ?? null, holdUi = !0, wrapped && unlockedKeys.set(wrapped.id, wrapped.key), id && !lockStatus.locked && await connectNow(id), refresh(), { ...final, computerId: id ?? null };
+        return pairing = null, pairedSeq += 1, pairedId = id ?? null, holdUi = !0, wrapped && unlockedKeys.set(wrapped.id, wrapped.key), computers.length === 1 && typeof persist == "function" && Promise.resolve().then(persist).catch(() => {
+        }), id && !lockStatus.locked && await connectNow(id, { take: !0 }), refresh(), { ...final, computerId: id ?? null };
       }
       return refresh(), { ...final };
     },
@@ -4879,7 +5662,7 @@ function createShell({
         if (uiFor !== "any" && uiFor !== id)
           return await api.openShell(`#connect=${id}`), { ok: !0, reason: "opening" };
       }
-      let result = await connectNow(id);
+      let result = await connectNow(id, { take: !0 });
       return refresh(), result;
     },
     async stop(project = null, computer = "") {
@@ -4892,13 +5675,18 @@ function createShell({
       let named = RECORD_ID.test(String(computer ?? "")) ? String(computer) : "";
       if (lockStatus.locked || lockUnreadable) return lockedStop(project, named);
       if (named && (named !== activeId || !channel)) return stopOn(named, project);
+      if (tab && !channel && tab.computer) {
+        let opened = await connectNow(tab.computer, { take: !0 });
+        if (!opened.ok)
+          return say("Could not reach your computer from this tab. Press Stop in the other tab or on your computer.", "warn"), refresh(), { ...stopView, state: "idle", reason: opened.reason ?? "failed" };
+      }
       if (!stopCtl) return { ...stopView, state: "idle", text: "Nothing to stop: no computer is connected." };
       notePress(activeId);
       let out = await stopCtl.press(project);
       return refresh(), out;
     },
     async forget(id) {
-      return replay ? { ...refresh(), ok: !1, reason: "demo" } : (activeId === id && (connectSeq += 1, channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }), activeId = null, await store.meta.remove(ACTIVE_META).catch(() => {
+      return replay ? { ...refresh(), ok: !1, reason: "demo" } : (activeId === id && (connectSeq += 1, tabGuard?.hold(null), tab = null, channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }), activeId = null, await store.meta.remove(ACTIVE_META).catch(() => {
       })), unlockedKeys.delete(id), await store.remove(id), await loadComputers(), { ...refresh(), ok: !0, reason: null });
     },
     // Phone settings: the name on this phone only (the computer keeps its own).
@@ -4946,11 +5734,36 @@ function createShell({
     // Web: the permission, then the push subscription, which the computer keeps: "Allowed" means a subscription is on the computer. The
     // computer's VAPID public key comes in its HELLO (vapidPublicKey); without it nothing is subscribed and the answer says so.
     // Android: UnifiedPush through the person's push app (push.js createAndroidPush); the endpoint it gives goes to the computer.
+    // Wave 4 (m2): on success the test notification goes out too (turnOnNotifications), and a missing push app or a blocked permission is
+    // checked again when Plenum comes back to the front.
     async enableNotifications() {
-      if (replay) return { ok: !0, reason: null };
+      return replay ? { ok: !0, reason: null } : turnOnNotifications();
+    },
+    // Wave 4 (m2): Android's notification settings for Plenum (the PlenumPrivacy plugin). An app without that method answers unavailable, and
+    // the screen says where to find the page. Plenum checks the permission again when it comes back to the front.
+    async openNotificationSettings() {
+      let privacy = native?.PlenumPrivacy;
+      if (!privacy || typeof privacy.openNotificationSettings != "function") return { ok: !1, reason: "unavailable" };
+      try {
+        return (await privacy.openNotificationSettings())?.opened === !1 ? { ok: !1, reason: "unavailable" } : (androidPush && (fixWaiting = "denied"), { ok: !0, reason: null });
+      } catch {
+        return { ok: !1, reason: "unavailable" };
+      }
+    },
+    // After "Get ntfy": Plenum checks for the push app when it comes back to the front.
+    awaitPushApp() {
+      return androidPush ? (fixWaiting = "no-distributor", { ok: !0, reason: null }) : { ok: !1, reason: "unavailable" };
+    },
+    // Phone settings showed the "turned them back on" line: it is not shown again.
+    ackPushRepaired() {
+      return pushRepaired ? (pushRepaired = !1, store.meta.remove(PUSH_REPAIRED_META).catch(() => {
+      }), refresh(), { ok: !0, reason: null }) : { ok: !0, reason: null };
+    },
+    // The one turn-on for every platform; turnOnNotifications wraps it. Kept in the api for the closures it reads.
+    async enableNow() {
       if (androidPush) {
         let out2 = await androidPush.enable();
-        return androidPushState = await androidPush.state(), refresh(), { ok: out2.ok === !0, reason: out2.ok === !0 ? null : out2.reason ?? "failed" };
+        return { ok: out2.ok === !0, reason: out2.ok === !0 ? null : out2.reason ?? "failed" };
       }
       let key = typeof hello?.vapidPublicKey == "string" ? hello.vapidPublicKey : null;
       if (!key || !channel || !serviceWorker || !notifications) return { ok: !1, reason: "unavailable" };
@@ -4964,7 +5777,7 @@ function createShell({
         notification: notifications,
         env: pushEnv
       });
-      return out.ok && out.endpoint && forId && await store.patchComputer(forId, { pushEndpoint: out.endpoint }).catch(() => {
+      return out.ok && out.endpoint && forId && await store.patchComputer(forId, { pushEndpoint: out.endpoint, pushLost: null }).catch(() => {
       }), refresh(), out.ok ? { ok: !0, reason: null } : out.state === "denied" ? { ok: !1, reason: "denied" } : out.state === "other-computer" ? { ok: !1, reason: "other-computer" } : out.state === "unsupported" ? { ok: !1, reason: "unavailable" } : { ok: !1, reason: "failed" };
     },
     notificationPermission() {
@@ -4974,18 +5787,21 @@ function createShell({
     async chooseDistributor() {
       if (!androidPush) return { ok: !1, reason: "unavailable" };
       let out = await androidPush.chooseDistributor();
-      return androidPushState = await androidPush.state(), refresh(), out;
+      return await readAndroidPush(), refresh(), out;
     },
     // Turn the notifications of this phone off at the computer (the subscription is dropped there).
     async disableNotifications() {
       if (replay) return { ok: !0, reason: null };
       if (androidPush) {
         let out2 = await androidPush.disable();
-        return androidPushState = await androidPush.state(), refresh(), out2;
+        return fixWaiting = null, await readAndroidPush(), refresh(), out2;
       }
       let out = await postJson("/api/phones/push", { subscription: null });
       if (out.ok && activeId) {
-        let record = await store.get(activeId).catch(() => null), endpoint = typeof record?.pushEndpoint == "string" ? record.pushEndpoint : "", key = typeof hello?.vapidPublicKey == "string" ? hello.vapidPublicKey : null;
+        let record = await store.get(activeId).catch(() => null), endpoint = typeof record?.pushEndpoint == "string" ? record.pushEndpoint : "";
+        record?.pushLost === !0 && await store.patchComputer(activeId, { pushLost: null }).catch(() => {
+        });
+        let key = typeof hello?.vapidPublicKey == "string" ? hello.vapidPublicKey : null;
         if (endpoint || key) {
           let registration = await registrationOf(serviceWorker).catch(() => null);
           await dropWebPush({ registration, endpoint, applicationServerKey: endpoint ? null : key }) && endpoint && await store.patchComputer(activeId, { pushEndpoint: null }).catch(() => {
@@ -5024,7 +5840,7 @@ function createShell({
       return await savePrefs({ ...prefs, ...patch ?? {} }), applyPrivacy(), { ok: !0, reason: null };
     },
     cancelConnect() {
-      return connectSeq += 1, channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }, activeId = null, store.meta.remove(ACTIVE_META).catch(() => {
+      return connectSeq += 1, tabGuard?.hold(null), tab = null, channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }, activeId = null, store.meta.remove(ACTIVE_META).catch(() => {
       }), refreshLockStop().then(refresh)), refresh(), { ok: !0, reason: null };
     },
     // Drops a pairing in progress, and a pairing link that waits for review.
@@ -5038,9 +5854,13 @@ function createShell({
       return pairing = null, refresh(), { ok: !0, reason: null };
     },
     // The person pressed Pair on the review screen: the parked link starts pairing. Resolves the final pairing state, or { ok: false, reason: 'none' }.
-    async confirmPair() {
+    // Wave 5 (brb): options.name is the name typed on the review screen of a browser offer (form 'browser'); a phone offer has no field.
+    async confirmPair(options = {}) {
       let parked2 = pendingPair;
-      return parked2 ? (pendingPair = null, api.pair(parked2.text)) : { ok: !1, reason: "none" };
+      if (!parked2) return { ok: !1, reason: "none" };
+      pendingPair = null;
+      let name = parked2.form === "browser" ? cleanName(options?.name) : "";
+      return api.pair(parked2.text, name ? { name } : {});
     },
     // A line from the UI page's console (the facade's log): redacted, kept in the phone's own console and, when connected, sent to the computer.
     pageLog(line) {
@@ -5086,19 +5906,30 @@ function createShell({
     // (F4: locking without a lock used to close the channel and leave the phone locked until it was relaunched).
     async lockNow() {
       let status = lock ? await lock.status() : { mode: "off" };
-      return !lock || status.mode === "off" ? { ok: !1, reason: "no-lock" } : (channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }), connectSeq += 1, unlockedKeys.clear(), await refreshLockStop(), lock.lock(), lockStatus = { ...lockStatus, ...await lock.status(), locked: !0 }, refresh(), { ok: !0, reason: null });
+      return !lock || status.mode === "off" ? { ok: !1, reason: "no-lock" } : (channel && (retireChannel(channel), channel = null, hello = null, channelState = { ...channelState, status: "closed" }), connectSeq += 1, tabGuard?.hold(null), unlockedKeys.clear(), await refreshLockStop(), lock.lock(), lockStatus = { ...lockStatus, ...await lock.status(), locked: !0 }, refresh(), { ok: !0, reason: null });
     },
     // The page went to the background or came back. The lock comes on after the time the person chose (prefs.lockAfter, five
     // minutes by default); "Immediately" locks on every return. The channel reconnects at once on return.
     async visibility(visible) {
-      if (!visible)
+      if (sendPresence(visible === !0), !visible)
         return hiddenAt = wall(), refresh();
       let away = hiddenAt == null ? null : wall() - hiddenAt;
       if (hiddenAt = null, lock) {
         let after = lockAfter(prefs.lockAfter).ms;
         lockStatus.mode !== "off" && away !== null && away >= after && !lockStatus.locked && await api.lockNow();
       }
-      return channel?.reconnect(), refresh();
+      return channel?.reconnect({ reason: "resume", hiddenMs: away }), fixWaiting && recheckNotifications().catch(() => {
+      }), refresh();
+    },
+    // Wave 4 (m3): the page is being left (pagehide: on the apps, a switch between the shell page and the UI page). While unlocked in biometric
+    // mode the app keeps the time in its memory, so the next page starts unlocked (lock.js keepUnlocked). Nothing is stored by the page.
+    leavingPage() {
+      return !lock || lockStatus.locked || typeof lock.keepUnlocked != "function" ? !1 : lock.keepUnlocked();
+    },
+    // w4-m1: the phone's network came back or changed (the Network plugin's networkStatusChange with connected true, or the page's 'online'
+    // event; wireNetwork). The channel tries at once and dials beside the probe of a session that is up, whose socket may be on the old network.
+    networkChanged() {
+      return replay || !channel || lockStatus.locked ? !1 : (channel.reconnect({ reason: "network" }), !0);
     },
     async runSelftest(options = {}) {
       if (!channel) return { ok: !1, passed: 0, total: 5, steps: [], reason: "not connected" };
@@ -5117,7 +5948,15 @@ function createShell({
     // link waits for the unlock.
     // computerHint (B-117) is the computer a notification came from (the service worker's message carries it apart from the fragment; a
     // fragment may also end in &computer=<id>). Stop all, Deny and Approve act on that computer, not on whichever one is open.
+    // Wave 4 (m2): once a Stop, Deny or Approve from a notification is handled, whatever its outcome, that notification is taken down (the one
+    // named by the route's &nt=<tag>, else every approval notification). One that waits behind the lock, or that went to the shell page to be
+    // answered there, stays until it is handled.
     async handleHash(hash, computerHint = "") {
+      let out = await api.runHash(hash, computerHint), link = parseNotificationHash(String(hash ?? ""));
+      return androidPush && link && ["stop", "deny", "approve"].includes(link.kind) && out?.reason !== "locked" && out?.reason !== "opening" && out?.opening !== !0 && await clearNotification(link, computerHint || link.computer || ""), out;
+    },
+    // The link itself (handleHash takes the notification down after it).
+    async runHash(hash, computerHint = "") {
       let text = String(hash ?? "");
       if (pageKind === "shell" && (text === "#settings" || text === "#computers"))
         return booted && await lockRead, lockStatus.locked || lockUnreadable ? (pendingLink = { text, at: wall() }, { ok: !1, reason: "locked" }) : (screenSeq += 1, screenRequest = { screen: text.slice(1), seq: screenSeq }, refresh(), { ok: !0, reason: null, kind: "screen" });
@@ -5128,11 +5967,11 @@ function createShell({
         if (!computers.some((c) => c.id === connectId)) return { ok: !1, reason: "unknown", kind: "connect" };
         if (forceUi = !0, channel && activeId === connectId)
           return hello && afterHello(), { ok: !0, reason: null, kind: "connect" };
-        let opened = await connectNow(connectId);
+        let opened = await connectNow(connectId, { take: !0 });
         return opened.ok || (forceUi = !1), refresh(), { ...opened, kind: "connect" };
       }
       let isPair = text.includes("pair=") || /^plenum:\/\/pair#/.test(text), parsed = parseNotificationHash(text), link = parsed ? { ...parsed } : null, hinted = String(computerHint ?? "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) || link?.computer || "";
-      link && delete link.computer;
+      link && (delete link.computer, delete link.nt);
       let named = !isPair && RECORD_ID.test(hinted) && ["stop", "deny", "approve"].includes(link?.kind) ? hinted : "";
       if (!isPair && !link) return { ok: !1, reason: "no link" };
       if (booted && await lockRead, lockStatus.locked || lockUnreadable)
@@ -5150,12 +5989,12 @@ function createShell({
           return pairing = { state: "failed", code: null, tried: [], reason: err?.code ?? "not-plenum" }, refresh(), { ...pairing };
         }
         let hosts = [], addHost = (kind, url) => {
-          let host = hostLabel(url);
-          host && !hosts.some((h) => h.kind === kind && h.host === host) && hosts.push({ kind, host });
+          let host2 = hostLabel(url);
+          host2 && !hosts.some((h) => h.kind === kind && h.host === host2) && hosts.push({ kind, host: host2 });
         };
         for (let c of usableCarriers(payload.carriers)) for (let url of c.urls) addHost(c.kind, url);
         for (let c of pageCandidates(pageUrl, payload)) carrierUrlOk(c.kind, c.url) && addHost(c.kind, c.url);
-        return hosts.length ? (pendingPair = { text: bare }, pairing = { state: "review", code: null, tried: [], reason: null, review: { name: cleanName(payload.name) || "Plenum computer", hosts } }, refresh(), { ok: !0, reason: null, kind: "review" }) : (pairing = { state: "failed", code: null, tried: [], reason: "no-carrier" }, refresh(), { ...pairing });
+        return hosts.length ? (pendingPair = { text: bare, form: payload.form }, pairing = { state: "review", code: null, tried: [], reason: null, review: { name: cleanName(payload.name) || "Plenum computer", hosts, form: payload.form } }, refresh(), { ok: !0, reason: null, kind: "review" }) : (pairing = { state: "failed", code: null, tried: [], reason: "no-carrier" }, refresh(), { ...pairing });
       }
       if (named && !computers.some((c) => c.id === named))
         return say(link.kind === "stop" ? UNKNOWN_COMPUTER_STOP : UNKNOWN_COMPUTER, "warn"), refresh(), { ok: !1, reason: "unknown-computer", kind: link.kind };
@@ -5246,11 +6085,56 @@ function linkOfUrl(url) {
   let text = String(url ?? ""), app = /^plenum:\/\/app\/?(?:\?[^#]*)?(#.*)$/.exec(text);
   return app ? app[1] : /^plenum:\/\/pair#/.test(text) ? text : null;
 }
+var LAUNCH_KEY = "plenum-launch-done", LAUNCH_KEEP = 20;
+async function launchHash(url, env = globalThis) {
+  let text = String(url ?? "");
+  try {
+    let subtle = env?.crypto?.subtle;
+    if (subtle?.digest) {
+      let digest = new Uint8Array(await subtle.digest("SHA-256", new TextEncoder().encode(text)));
+      return Array.from(digest.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch {
+  }
+  let h1 = 2166136261, h2 = 16777619;
+  for (let i = 0; i < text.length; i++)
+    h1 = Math.imul(h1 ^ text.charCodeAt(i), 16777619) >>> 0, h2 = Math.imul(h2 ^ text.charCodeAt(text.length - 1 - i), 2166136261) >>> 0;
+  return `f${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`;
+}
+function launchMemory(env) {
+  let session = () => {
+    try {
+      return env?.sessionStorage ?? null;
+    } catch {
+      return null;
+    }
+  }, read = () => {
+    try {
+      let list = JSON.parse(session()?.getItem(LAUNCH_KEY) ?? "[]");
+      return Array.isArray(list) ? list.filter((k) => typeof k == "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    has: (key) => read().includes(key),
+    add(key) {
+      try {
+        let list = read().filter((k) => k !== key);
+        list.push(key), session()?.setItem(LAUNCH_KEY, JSON.stringify(list.slice(-LAUNCH_KEEP)));
+      } catch {
+      }
+    }
+  };
+}
 function wireAppPlugin({ appPlugin, shell, env, pageKind, platform = null }) {
-  let opened = /* @__PURE__ */ new Set(), launchRan = !1, wanted = (link) => !!link && !(platform === "ios" && link.startsWith("#"));
+  let opened = /* @__PURE__ */ new Set(), launchRan = !1, memory = launchMemory(env), remember = (url) => {
+    launchHash(url, env).then((key) => memory.add(key), () => {
+    });
+  }, wanted = (link) => !!link && !(platform === "ios" && link.startsWith("#"));
   return appPlugin?.addListener && (appPlugin.addListener("appUrlOpen", (event) => {
     let url = String(event?.url ?? ""), link = linkOfUrl(url);
-    wanted(link) && (opened.add(url), shell.handleHash(link).catch(() => {
+    wanted(link) && (opened.add(url), remember(url), shell.handleHash(link).catch(() => {
     }));
   }), pageKind === "shell" && appPlugin.addListener("backButton", () => {
     let event = typeof env?.CustomEvent == "function" ? new env.CustomEvent("plenum-back", { cancelable: !0 }) : null;
@@ -5260,12 +6144,147 @@ function wireAppPlugin({ appPlugin, shell, env, pageKind, platform = null }) {
       launchRan = !0;
       try {
         let launched = await appPlugin.getLaunchUrl(), url = String(launched?.url ?? ""), link = linkOfUrl(url);
-        wanted(link) && !opened.has(url) && shell.handleHash(link).catch(() => {
+        if (!wanted(link) || opened.has(url)) return;
+        let key = await launchHash(url, env);
+        if (memory.has(key)) return;
+        memory.add(key), shell.handleHash(link).catch(() => {
         });
       } catch {
       }
     }
   };
+}
+var NETWORK_QUIET_MS = 1500;
+function wireNetwork({ network = null, env = null, shell, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let removed = !1, lastAsked = -1 / 0, pending = null, ask = () => {
+    lastAsked = now();
+    try {
+      shell?.networkChanged?.();
+    } catch {
+    }
+  }, changed = () => {
+    if (removed || pending) return;
+    let wait = lastAsked + NETWORK_QUIET_MS - now();
+    if (wait <= 0) {
+      ask();
+      return;
+    }
+    pending = setTimer(() => {
+      pending = null, removed || ask();
+    }, wait);
+  }, onOnline = () => changed();
+  env?.addEventListener?.("online", onOnline);
+  let handle = null, last = null, heard = !1, statusOf = (status) => ({ connected: status?.connected === !0, type: String(status?.connectionType ?? "") });
+  if (network?.getStatus)
+    try {
+      Promise.resolve(network.getStatus()).then((status) => {
+        !heard && status && typeof status == "object" && (last = statusOf(status));
+      }, () => {
+      });
+    } catch {
+    }
+  if (network?.addListener)
+    try {
+      Promise.resolve(network.addListener("networkStatusChange", (status) => {
+        heard = !0;
+        let next = statusOf(status), prev = last;
+        last = next, !(!next.connected || !prev) && (!prev.connected || prev.type !== next.type) && changed();
+      })).then((h) => {
+        handle = h ?? null, removed && handle?.remove?.();
+      }, () => {
+      });
+    } catch {
+    }
+  return () => {
+    if (removed = !0, pending) {
+      try {
+        clearTimer(pending);
+      } catch {
+      }
+      pending = null;
+    }
+    env?.removeEventListener?.("online", onOnline);
+    try {
+      handle?.remove?.();
+    } catch {
+    }
+  };
+}
+function createNoteCarry(env) {
+  let session = () => {
+    try {
+      return env?.sessionStorage ?? null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    put(text) {
+      try {
+        session()?.setItem(NOTE_KEY, JSON.stringify({ text: String(text), at: Date.now() }));
+      } catch {
+      }
+    },
+    take() {
+      try {
+        let raw = session()?.getItem(NOTE_KEY);
+        if (!raw) return null;
+        session().removeItem(NOTE_KEY);
+        let value = JSON.parse(raw);
+        return Number.isFinite(value?.at) && Date.now() - value.at >= 0 && Date.now() - value.at < NOTE_TTL_MS && typeof value.text == "string" && UPDATED_LINE_PATTERN.test(value.text) ? value.text : null;
+      } catch {
+        return null;
+      }
+    }
+  };
+}
+function schemeQuery(env) {
+  try {
+    return env?.matchMedia?.("(prefers-color-scheme: dark)") ?? null;
+  } catch {
+    return null;
+  }
+}
+function showEarlyTheme(doc, theme) {
+  let style = doc?.documentElement?.style;
+  if (!style) return !1;
+  let value = theme === "dark" || theme === "light" ? theme : "";
+  try {
+    return typeof style.setProperty == "function" ? value ? style.setProperty("color-scheme", value) : style.removeProperty?.("color-scheme") : style.colorScheme = value, !0;
+  } catch {
+    return !1;
+  }
+}
+function createThemeCarry(env) {
+  let local = () => {
+    try {
+      return env?.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    put(theme) {
+      let value = theme === "dark" || theme === "light" ? theme : null;
+      showEarlyTheme(env?.document, value);
+      let ls = local();
+      if (ls)
+        try {
+          if ((ls.getItem(THEME_KEY) ?? null) === value) return;
+          value ? ls.setItem(THEME_KEY, value) : ls.removeItem(THEME_KEY);
+        } catch {
+        }
+    }
+  };
+}
+function earlyTheme(env = globalThis) {
+  let saved = null;
+  try {
+    saved = env?.localStorage?.getItem(THEME_KEY) ?? null;
+  } catch {
+    saved = null;
+  }
+  return saved !== "dark" && saved !== "light" ? null : showEarlyTheme(env?.document, saved) ? saved : null;
 }
 function takeAttachSlot(env) {
   let f = env?.__plenumAttachShell;
@@ -5307,7 +6326,7 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
   }
   if (framed || sameOriginOpener)
     return give(null), null;
-  let { device, caps, native } = deviceFor(env), cap = env.Capacitor, pageKind = pageKindFor(env), lan = isLanPage(env), bridge = hasNativeBridge(env), plugins = null, pluginFailure = !1;
+  let { device, caps, native } = deviceFor(env), cap = env.Capacitor, pageKind = pageKindFor(env), lan = isLanPage(env), bridge = hasNativeBridge(env), claimPage = !native && pageKind === "shell" && isClaimPage(env), plugins = null, pluginFailure = !1;
   if (native)
     try {
       plugins = await loadPlugins(env);
@@ -5324,14 +6343,16 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
     store,
     now: () => Date.now(),
     biometric: createBiometricGate({ plugin: biometricPlugin }),
-    passkey: native ? null : createPasskeyGate({ credentials: env.navigator?.credentials, PublicKeyCredentialCtor: env.PublicKeyCredential, rpId: env.location?.hostname })
+    passkey: native ? null : createPasskeyGate({ credentials: env.navigator?.credentials, PublicKeyCredentialCtor: env.PublicKeyCredential, rpId: env.location?.hostname }),
+    // Wave 4 (m3): the Android app remembers a biometric unlock in its memory (PlenumPrivacy), so a page switch does not ask again.
+    memory: native && device.platform === "android" && plugins?.PlenumPrivacy ? createUnlockMemory({ plugin: plugins.PlenumPrivacy }) : null
   }), params = new URLSearchParams(String(env.location?.search ?? "")), mode = modeFor(env.location?.search, devBuild), stay = params.has(SHELL_QUERY), linkStore = createLinkStore(store.meta), parkedStop = createParkedStop(store.meta);
   try {
     env.sessionStorage?.removeItem(SHELL_LINK_KEY);
   } catch {
   }
-  !native && pageKind === "shell" && registerServiceWorker(env);
-  let shell = null, kind = native ? device.platform === "android" ? "android" : "ios" : lan ? "lan" : "web", uiHost = mode === "normal" && env.location && (!native || plugins) ? createUiHost({ env, kind, native: plugins, channelOf: () => shell?.channel ?? null, log: (line) => shell?.debug.log(line, "warn"), linkStore, stopHandoff: { pending: () => shell?.pendingStop?.() ?? null, park: (pending) => parkedStop.put(pending), unpark: () => parkedStop.unpark() } }) : null, initialIntent = null;
+  !native && pageKind === "shell" && !claimPage && registerServiceWorker(env);
+  let shell = null, kind = native ? device.platform === "android" ? "android" : "ios" : lan ? "lan" : "web", uiHost = mode === "normal" && !claimPage && env.location && (!native || plugins) ? createUiHost({ env, kind, native: plugins, channelOf: () => shell?.channel ?? null, log: (line) => shell?.debug.log(line, "warn"), linkStore, stopHandoff: { pending: () => shell?.pendingStop?.() ?? null, park: (pending) => parkedStop.put(pending), unpark: () => parkedStop.unpark() } }) : null, initialIntent = null;
   try {
     let saved = pageKind === "ui" ? env.sessionStorage?.getItem("plenum-intent") : null;
     saved && (env.sessionStorage.removeItem("plenum-intent"), initialIntent = JSON.parse(saved));
@@ -5339,7 +6360,9 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
     initialIntent = null;
   }
   let initialLink = null;
-  native && plugins && pageKind === "shell" && (initialLink = await linkStore.take()), shell = createShell({
+  native && plugins && pageKind === "shell" && (initialLink = await linkStore.take());
+  let noteCarry = createNoteCarry(env), initialNote = pageKind === "ui" ? noteCarry.take() : null;
+  shell = createShell({
     store,
     lock,
     device,
@@ -5370,10 +6393,25 @@ async function runStart(env, { loadPlugins, devBuild, attach, give }) {
     },
     devBuild,
     storage: secureStorage === NO_SECURE_STORAGE ? "unavailable" : "ok",
-    parkedStop
+    parkedStop,
+    noteCarry,
+    initialNote,
+    // Wave 4 (m3): on the shell page the status bar follows Plenum's theme from here (on the UI page, boot.js does it), and the chosen theme is
+    // kept for the next start of the shell page.
+    systemBars: native && pageKind === "shell" ? plugins?.SystemBars ?? null : null,
+    colorScheme: pageKind === "shell" ? schemeQuery(env) : null,
+    themeCarry: pageKind === "shell" ? createThemeCarry(env) : null,
+    // Wave 5 (brb): two tabs of one browser on one computer (not on the apps, not on the code page), the code page itself, and the
+    // browser's keep-my-keys request after the first pairing.
+    tabGuard: !native && !claimPage && mode === "normal" ? createTabGuard({ env }) : null,
+    claimPage,
+    host: String(env.location?.host ?? ""),
+    persist: native ? null : () => persistStorage(env)
   }), secureStorage === NO_SECURE_STORAGE && shell.debug.log("storage: unavailable", "warn"), devBuild && (env.plenumShellCore = shell, env.plenumNative = plugins), attach?.(makeFacade(shell, plugins)), give(shell), env.addEventListener?.("visibilitychange", () => {
     shell.visibility(env.document?.visibilityState !== "hidden");
-  }), env.addEventListener?.("pagehide", () => shell.visibility(!1)), env.addEventListener?.("hashchange", () => {
+  }), env.addEventListener?.("pagehide", () => {
+    shell.leavingPage(), shell.visibility(!1);
+  }), wireNetwork({ network: plugins?.Network ?? null, env, shell }), env.addEventListener?.("hashchange", () => {
     let hash = String(env.location?.hash ?? "");
     hash.length > 1 && (clearAddressHash(env), shell.handleHash(hash).catch(() => {
     }));
@@ -5395,26 +6433,43 @@ typeof document < "u" && typeof window < "u" && !globalThis.__PLENUM_SHELL_NO_AU
 export {
   CARD_CHANGED,
   DEV_BUILD,
+  LAUNCH_KEEP,
+  LAUNCH_KEY,
+  NETWORK_QUIET_MS,
   NOTIFICATION_OLD,
+  PAGE_SWITCH_FRESH_MS,
   STOP_NO_KEY,
+  TAB_ASK_MS,
+  TAB_CHANNEL,
+  THEME_KEY,
   UNKNOWN_COMPUTER,
   UNKNOWN_COMPUTER_STOP,
+  UPDATED_LINE_PATTERN,
   cleanName,
   clearAddressHash,
   createLinkStore,
   createParkedStop,
   createShell,
+  createTabGuard,
   deviceFor,
+  earlyTheme,
   hasNativeBridge,
+  isClaimPage,
+  launchHash,
   linkOfUrl,
   makeFacade,
   modeFor,
+  pagesHere,
+  persistStorage,
   registerServiceWorker,
   registrationOf,
   safeState,
+  showEarlyTheme,
   startShell,
+  updatedLine,
   wantsNativePlugins,
-  wireAppPlugin
+  wireAppPlugin,
+  wireNetwork
 };
 /*! Bundled license information:
 

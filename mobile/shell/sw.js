@@ -10,8 +10,9 @@
 //     lock set-up and pairing (the shell page) open from the UI page and from a notification.
 //   - The artifact iframe: GET /api/artifacts/view is answered by the page (boot.js holds the channel): the worker sends the
 //     request to a window client and returns the answer with its headers (the Content-Security-Policy included).
-//   - Web Push: a push is always shown. If its payload cannot be read it still shows "Plenum", so the browser never revokes the
-//     permission for a push that showed nothing. The payload is lib/remote/push.mjs buildPushText: { kind, title, body, tag, tap, actions:
+//   - Web Push: a push is always shown, except a 'clear' (wave 4), which closes the notifications with its tag and shows nothing. If its
+//     payload cannot be read it still shows "Plenum", so the browser never revokes the permission for a push that showed nothing. A payload
+//     with silent: true shows without sound. The payload is lib/remote/push.mjs buildPushText: { kind, title, body, tag, tap, actions:
 //     [{ action, title, route }], ids: { computer, project, approval }, firstLine? }. A tap opens payload.tap (#waiting=<id>, #handover=<id>,
 //     #chat=<project>, #settings=limit, #home); an action opens its route (#deny=<id>, #stop, #approve=<id> with &line=<the first line>).
 //     The browser shows at most Notification.maxActions buttons (2 on Chrome): Stop all is always kept, then Approve when the payload has
@@ -186,12 +187,33 @@ export function chooseActions(list, max) {
   return valid.filter(a => keep.includes(a));
 }
 
+// Wave 4 (m2): a 'clear' push is the computer taking a card or a notice back. It shows nothing; the notifications with its tag close.
+const CLEAR_TAG = /^plenum-[0-9a-f]{32}$/;
+export async function clearPush(data, env) {
+  const tag = typeof data?.tag === 'string' && CLEAR_TAG.test(data.tag) ? data.tag : '';
+  if (!tag || typeof env.registration?.getNotifications !== 'function') return 0;
+  let closed = 0;
+  try {
+    for (const note of await env.registration.getNotifications({ tag })) {
+      note?.close?.();
+      closed += 1;
+    }
+  } catch {
+    return closed;
+  }
+  return closed;
+}
+
 export async function showPush(event, env) {
   let data = null;
   try {
     data = event.data ? event.data.json() : null;
   } catch {
     data = null;
+  }
+  if (data && typeof data === 'object' && data.kind === 'clear') {
+    await clearPush(data, env);
+    return;
   }
   const title = text(data?.title, FALLBACK_TITLE, 60);
   const body = text(data?.body, FALLBACK_BODY, 200);
@@ -216,6 +238,8 @@ export async function showPush(event, env) {
     },
     actions: chosen.map(a => ({ action: a.action, title: text(a.title, a.action, 20) })),
   };
+  // Wave 4: a push the computer marked silent (quiet hours) shows without a sound or a buzz.
+  if (data?.silent === true) options.silent = true;
   try {
     await env.registration.showNotification(title, options);
   } catch {

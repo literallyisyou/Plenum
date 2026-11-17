@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The theme's colours. The phone's own colours come from the shared tokens in the page (MOBILE-UI 4), not from here. -->
+<!-- The theme's colours. The phone's own colours come from the shared tokens in the page (MOBILE-UI 4), not from here.
+     plenum_background is the page's light background (#f6f6fb); values-night/colors.xml gives the dark one (#0a0a11). The splash
+     screen and the window behind the WebView use it, so a start or a page switch never flashes another colour. -->
 <resources>
     <color name="colorPrimary">#3F51B5</color>
     <color name="colorPrimaryDark">#303F9F</color>
     <color name="colorAccent">#FF4081</color>
+    <color name="plenum_background">#F6F6FB</color>
 </resources>

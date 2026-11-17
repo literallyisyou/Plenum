@@ -1,8 +1,11 @@
-// Capacitor plugin module: isolated artifact preview (mob-13). No third-party dependency. minSdk, compileSdk and
+// Capacitor plugin module: isolated artifact preview (mob-13). No third-party dependency (androidx.core only, from Google). minSdk, compileSdk and
 // targetSdk come from the app's variables.gradle (26, 36, 36).
 
 buildscript {
-    ext.kotlin_version = '2.2.10'
+    // The app's root build.gradle puts one Kotlin Gradle plugin on the classpath (variables.gradle kotlin_version); this module
+    // uses that version when it is there, so the plugin is not loaded in three versions, and its own pin when built alone.
+    def own_kotlin_version = '2.2.10'
+    ext.kotlin_version = rootProject.ext.has('kotlin_version') ? rootProject.ext.kotlin_version : own_kotlin_version
     repositories {
         google()
         mavenCentral()
@@ -18,6 +21,11 @@ buildscript {
 
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
+
+ext {
+    // androidx.core for ViewCompat and WindowInsetsCompat (the preview's title bar keeps clear of the status bar, the cutout and the keyboard).
+    androidxCoreVersion = project.hasProperty('androidxCoreVersion') ? rootProject.ext.androidxCoreVersion : '1.17.0'
+}
 
 android {
     namespace = "com.literallyisyou.plenum.isolatedpreview"
@@ -50,4 +58,5 @@ repositories {
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation project(':capacitor-android')
+    implementation "androidx.core:core:$androidxCoreVersion"
 }

@@ -12,7 +12,7 @@ import * as C from './copy.js';
 import * as C2 from './copy2.js';
 import * as S from './settings.js';
 import { clock, fill } from './copy.js';
-import { frame, mark, para } from './views.js';
+import { frame, mark, notifyFix, para } from './views.js';
 
 const section = label => el('p', { class: 'sh-section', text: label });
 
@@ -60,18 +60,90 @@ const msgNode = text => (text ? el('p', { class: 'sh-msg', role: 'status', text 
 // ---- pair-review (C6e, D5): a pairing link opened from outside the app. Pair starts it; Cancel drops it. Nothing is stored before Pair. ----
 function pairReview(ctx, io) {
   const hosts = Array.isArray(ctx.review?.hosts) ? ctx.review.hosts : [];
+  // Wave 5 (brb): a browser offer (Add a browser) asks for this browser's name, as Welcome does; it suggests the browser's own ("Edge on Windows").
+  let nameField = null;
+  if (ctx.browserOffer) {
+    const input = el('input', { class: 'sh-input', id: 'sh-name', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: '64', 'aria-describedby': 'sh-name-help' });
+    input.value = io.local.phoneName ?? ctx.phoneName;
+    input.addEventListener('input', () => { io.local.phoneName = input.value; });
+    nameField = el('div', { class: 'sh-field' },
+      el('label', { class: 'sh-label', for: 'sh-name', text: C2.BROWSER_NAME_LABEL }),
+      input,
+      el('p', { class: 'sh-help', id: 'sh-name-help', text: 'Your computer shows this name.' }));
+  }
   return frame(ctx, io, {
     title: C2.PAIR_REVIEW_TITLE(ctx.review?.name || 'Plenum computer'),
     body: [
-      para(C2.PAIR_REVIEW_LEAD, 'sh-note'),
-      para(C2.PAIR_REVIEW_HOSTS, 'sh-label'),
+      para(ctx.browserOffer ? C2.PAIR_REVIEW_LEAD_BROWSER : C2.PAIR_REVIEW_LEAD, 'sh-note'),
+      para(ctx.browserOffer ? C2.PAIR_REVIEW_HOSTS_BROWSER : C2.PAIR_REVIEW_HOSTS, 'sh-label'),
       ...hosts.map(h => para(`${C.CARRIER_LABEL[h.kind]}: ${h.host}`, 'sh-note')),
-      para(C2.PAIR_REVIEW_NOTE, 'sh-help'),
+      nameField,
+      para(ctx.browserOffer ? C2.PAIR_REVIEW_NOTE_BROWSER : C2.PAIR_REVIEW_NOTE, 'sh-help'),
     ],
     actions: [
       button(C2.PAIR_REVIEW_CANCEL, { kind: 'ghost', onClick: () => io.act.cancelPair() }),
       button(C2.PAIR_REVIEW_PAIR, { kind: 'primary', onClick: () => io.act.confirmPair() }),
     ],
+  });
+}
+
+// ---- claim (wave 5, brb): the code page at /pair/. A browser on another computer types the code the computer's Add a browser window shows;
+// Continue sends it to the computer, which answers with the pairing link, and the page goes there (the review screen). A browser that is
+// already paired through this address is offered its Plenum first, with Pair again for the form. ----
+function claim(ctx, io) {
+  const paired = ctx.claim?.paired ?? [];
+  const plain = ctx.lan ? para(C2.CLAIM_PLAIN_HTTP, 'sh-msg sh-warn') : null;
+  if (paired.length && !ctx.claimForm) {
+    const first = paired[0];
+    return frame(ctx, io, {
+      title: C2.CLAIM_TITLE,
+      body: [para(C2.CLAIM_PAIRED(first.name), 'sh-note'), plain],
+      actions: [
+        button(C2.CLAIM_AGAIN, { kind: 'ghost', onClick: () => io.act.claimAgain() }),
+        button(C2.CLAIM_OPEN, { kind: 'primary', onClick: () => io.act.openPaired(first.path) }),
+      ],
+    });
+  }
+  const input = el('input', {
+    class: 'sh-input sh-code-input',
+    id: 'sh-claim',
+    type: 'text',
+    inputmode: 'text',
+    autocomplete: 'one-time-code',
+    autocapitalize: 'characters',
+    spellcheck: 'false',
+    maxlength: '40',
+    'aria-describedby': 'sh-claim-help sh-claim-err',
+  });
+  input.value = io.local.claimCode ?? '';
+  input.addEventListener('input', () => { io.local.claimCode = input.value; });
+  const send = () => { io.act.claim(input.value); };
+  input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault?.(); send(); } });
+  const error = ctx.claimError ? (C2.CLAIM_ERRORS[ctx.claimError] ?? C2.CLAIM_ERRORS.network) : null;
+  // The field has the focus when the screen opens, so the code can be typed at once.
+  io.later(() => { input.focus?.({ preventScroll: true }); }, 0);
+  return frame(ctx, io, {
+    title: C2.CLAIM_TITLE,
+    body: [
+      para(C2.CLAIM_LEAD, 'sh-note'),
+      el('div', { class: 'sh-field' },
+        el('label', { class: 'sh-label', for: 'sh-claim', text: C2.CLAIM_LABEL }),
+        input,
+        el('p', { class: 'sh-help', id: 'sh-claim-help', text: C2.CLAIM_HELP })),
+      el('p', { class: 'sh-msg', id: 'sh-claim-err', role: 'alert' }, error),
+      plain,
+    ],
+    actions: [button(C2.CLAIM_CONTINUE, { kind: 'primary', disabled: ctx.claimBusy === true, onClick: send })],
+  });
+}
+
+// ---- other-tab (wave 5, brb): another tab of this browser holds this computer. Use it here moves it to this tab. ----
+function otherTab(ctx, io) {
+  const moved = ctx.tab?.state === 'moved';
+  return frame(ctx, io, {
+    title: moved ? C2.TAB_MOVED : C2.TAB_ELSEWHERE,
+    body: [],
+    actions: [button(C2.TAB_USE_HERE, { kind: 'primary', onClick: () => io.act.useHere() })],
   });
 }
 
@@ -88,7 +160,7 @@ function computers(ctx, io) {
       ? el('div', { class: 'sh-rowmenu' },
         button(C2.ROW_MENU.connect, { kind: 'ghost', onClick: () => io.act.connect(c.id) }),
         button(C2.ROW_MENU.ways, { kind: 'ghost', onClick: () => { io.local.waysFor = c.id; io.go('settings-connection'); } }),
-        button(C2.ROW_MENU.rename, { kind: 'ghost', onClick: () => { io.local.renameId = c.id; io.go('rename'); } }),
+        button(ctx.browser ? C2.RENAME_TITLE_BROWSER : C2.ROW_MENU.rename, { kind: 'ghost', onClick: () => { io.local.renameId = c.id; io.go('rename'); } }),
         button(C2.ROW_MENU.forget, { kind: 'danger', onClick: () => { io.local.forgetId = c.id; io.go('forget'); } }))
       : null;
     return el('li', { class: 'sh-computer' },
@@ -106,7 +178,7 @@ function computers(ctx, io) {
         }, '⋯')),
       menu);
   });
-  const gear = el('button', { type: 'button', class: 'sh-icon', 'aria-label': C2.SETTINGS_TITLE, on: { click: () => io.go('settings') } }, '⚙');
+  const gear = el('button', { type: 'button', class: 'sh-icon', 'aria-label': ctx.browser ? C2.SETTINGS_TITLE_BROWSER : C2.SETTINGS_TITLE, on: { click: () => io.go('settings') } }, '⚙');
   return frame(ctx, io, {
     title: C2.COMPUTERS_TITLE,
     trailing: gear,
@@ -165,7 +237,7 @@ function connected(ctx, io) {
     ctx.uiAvailable && !ctx.reconnecting ? button('Open Plenum', { kind: 'primary', onClick: () => io.act.openUi() }) : null,
     vm.computers.length > 1 ? button('Computers', { kind: 'ghost', onClick: () => io.go('computers') }) : null,
     button('Ways to reach', { kind: 'ghost', onClick: () => io.go('settings-connection') }),
-    button('Phone settings', { kind: ctx.uiAvailable && !ctx.reconnecting ? 'ghost' : 'primary', onClick: () => io.go('settings') }),
+    button(ctx.browser ? C2.SETTINGS_TITLE_BROWSER : 'Phone settings', { kind: ctx.uiAvailable && !ctx.reconnecting ? 'ghost' : 'primary', onClick: () => io.go('settings') }),
   ];
   if (ctx.reconnecting) {
     return frame(ctx, io, {
@@ -197,13 +269,13 @@ function rename(ctx, io) {
   input.value = io.local.renameValue ?? current?.name ?? '';
   input.addEventListener('input', () => { io.local.renameValue = input.value; });
   return frame(ctx, io, {
-    title: C2.RENAME_TITLE,
+    title: ctx.browser ? C2.RENAME_TITLE_BROWSER : C2.RENAME_TITLE,
     back: true,
     body: [
       el('div', { class: 'sh-field' },
         el('label', { class: 'sh-label', for: 'sh-rename', text: 'Name' }),
         input,
-        para(C2.RENAME_HELP, 'sh-help')),
+        para(ctx.browser ? C2.RENAME_HELP_BROWSER : C2.RENAME_HELP, 'sh-help')),
       msgNode(io.local.renameNote ?? null),
     ],
     actions: [
@@ -225,7 +297,7 @@ function forget(ctx, io) {
   const root = frame(ctx, io, {
     title: C2.fillName(C2.FORGET_TITLE, name),
     back: true,
-    body: [para(C2.fillName(C2.FORGET_BODY, name), 'sh-note'), msgNode(io.local.forgetNote ?? null)],
+    body: [para(C2.fillName(ctx.browser ? C2.FORGET_BODY_BROWSER : C2.FORGET_BODY, name), 'sh-note'), msgNode(io.local.forgetNote ?? null)],
     actions: [
       cancel = button(C2.CANCEL, { kind: 'ghost', onClick: () => io.back() }),
       button(C2.FORGET_CONFIRM, {
@@ -253,17 +325,19 @@ function settings(ctx, io) {
   }));
   const lockValue = vm.lock.mode === 'off' ? 'Off' : `${vm.lock.label} · ${S.lockAfter(vm.prefs.lockAfter).label}`;
   return frame(ctx, io, {
-    title: C2.SETTINGS_TITLE,
+    title: ctx.browser ? C2.SETTINGS_TITLE_BROWSER : C2.SETTINGS_TITLE,
     back: true,
     body: [
       section(C2.SETTINGS_COMPUTERS),
       el('div', { class: 'sh-rows' }, computerRows, row(C2.PAIR_ANOTHER_SHORT, null, () => io.go('how'))),
-      section(C2.SETTINGS_THIS_PHONE),
+      section(ctx.browser ? C2.SETTINGS_THIS_BROWSER : C2.SETTINGS_THIS_PHONE),
       el('div', { class: 'sh-rows' },
         row(C2.NOTIFY_TITLE, vm.notify.label, () => io.go('settings-notify')),
         row(C2.LOCK_TITLE, lockValue, () => io.go('settings-lock')),
         row(C2.APPEARANCE_TITLE, S.THEME_LABEL[vm.prefs.theme], () => io.go('settings-appearance')),
         vm.native ? row(C2.DICTATION_TITLE, 'On this phone', () => io.go('settings-dictation')) : null),
+      // Wave 4 (m2): shown once, after Plenum turned this phone's notifications back on by itself.
+      ctx.repairLine ? el('p', { class: 'sh-msg sh-info', role: 'status', text: ctx.repairLine }) : null,
       section(C2.SETTINGS_HELP),
       el('div', { class: 'sh-rows' },
         row('Debug console', null, () => io.go('debug')),
@@ -359,9 +433,9 @@ function settingsNotify(ctx, io) {
     para(fill(C2.APPROVE_NOTIFY_TEXT, ctx.computer), 'sh-note'),
     para(C2.APPROVE_BLOCKED_TEXT, 'sh-help'),
   ];
-  // Android (M15): the push app UnifiedPush goes through, and a way to choose it. The line says what the phone has now.
+  // Android (M15): the push app notifications come through, and a way to choose it. The line says what the phone has now.
   const up = vm.unifiedPush;
-  const androidLine = up ? para(S.unifiedPushLine(up.distributor ?? null), 'sh-note') : null;
+  const androidLine = up ? para(S.unifiedPushLine(up.distributor ?? null, { installed: up.installed === true }), 'sh-note') : null;
   const chooseApp = up?.supported
     ? button('Choose app', { kind: 'ghost', onClick: () => io.act.chooseDistributor() })
     : null;
@@ -371,7 +445,11 @@ function settingsNotify(ctx, io) {
     body: [
       section(C2.NOTIFY_ON_PHONE),
       el('div', { class: 'sh-rows' }, row(C2.NOTIFY_ON_PHONE, vm.notify.label, () => io.act.enableNotifications())),
+      vm.notify.last ? para(vm.notify.last, 'sh-help') : null,
       vm.notify.hint ? para(vm.notify.hint, 'sh-help') : null,
+      // Wave 4 (m2): why the last turn-on stopped and what to do, and the one-time line after Plenum turned them back on by itself.
+      notifyFix(ctx, io, ctx.notifyReason ?? null),
+      ctx.repairLine ? el('p', { class: 'sh-msg sh-info', role: 'status', text: ctx.repairLine }) : null,
       section(fill(C2.NOTIFY_KEPT, ctx.computer)),
       el('div', { class: 'sh-switches' }, pushRows, approveRow, approve.visible ? el('div', { class: 'sh-notes' }, notes) : null),
       androidLine,
@@ -557,6 +635,11 @@ function settingsAppearance(ctx, io) {
         : null,
       vm.haptics.visible ? null : para(C2.APPEARANCE_HAPTICS_IOS, 'sh-help'),
       para(fill(C2.APPEARANCE_NOTE, ctx.computer), 'sh-help'),
+      // Wave 5 (brb): in a browser, which layout the computer's screens use on this device (device.js LAYOUT_KEY).
+      vm.layout ? section(C2.LAYOUT_TITLE) : null,
+      vm.layout ? radioGroup(C2.LAYOUT_TITLE, ['auto', 'phone', 'wide'].map(id => ({ id, label: C2.LAYOUT_LABEL[id] })), vm.layout, id => io.act.setLayout(id)) : null,
+      vm.layout ? para(C2.LAYOUT_NOTE, 'sh-help') : null,
+      vm.layout ? msgNode(ctx.layoutNote ?? null) : null,
     ],
   });
 }
@@ -750,6 +833,8 @@ const PART2_BUILDERS = Object.freeze({
   'demo-diff': demoDiff,
   'demo-artifact': demoArtifact,
   'pin-set': pinSet,
+  claim,
+  'other-tab': otherTab,
 });
 
 export const PART2_SCREEN_BUILDERS = PART2_BUILDERS;

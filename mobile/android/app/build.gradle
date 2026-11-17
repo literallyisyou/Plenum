@@ -6,11 +6,30 @@
 // the local debug key, as usual. Partial settings fail the build.
 //
 // Versions: release.yml passes -PplenumVersionCode=<int> (major*10000 + minor*100 + patch, from the tag) and -PplenumVersionName=<text>
-// on its gradlew line. Without them (a local build) the defaults are 1 and 1.0, which the stores refuse for a second upload.
+// on its gradlew line. Without them (a local build, scripts/build-android.mjs) every build gets a higher versionCode than the one
+// before and a versionName that names the day, so Capacitor's Bridge.isNewBinary() sees a new binary after each reinstall and
+// copies the new web UI in, instead of keeping the old copied UI folder (wave 4, k1: "I reinstalled and nothing changed").
 
 apply plugin: 'com.android.application'
 
 def signingEnv = System.getenv('ANDROID_KEYSTORE_PATH')
+
+// The local versionCode: whole minutes since 1 Jan 1970, minus 29,000,000 minutes (that offset is 19 Feb 2025, 21:20 UTC).
+//   16 Nov 2026 00:00 UTC is 29,913,120 minutes since 1970, so a build that day is about 913,120: positive, rising by 1 a minute.
+//   Android's ceiling is 2,100,000,000; at 525,960 minutes a year the code reaches it after (2,100,000,000 - 913,120) / 525,960,
+//   about 3,990 years. The minute count itself fits an int (2,147,483,647) until about the year 6053.
+// Two builds in the same minute share a code; the versionName below still differs only by the minute, which is fine for one phone.
+def plenumLocalVersionCode = { ->
+    int code = (int) (System.currentTimeMillis() / 60000L) - 29000000
+    if (code < 1 || code >= 2100000000) throw new GradleException("The local versionCode came out as ${code}; check the computer's clock.")
+    return code
+}
+// The local versionName: mobile/package.json's version + '-dev.' + the build's date and time, for example 0.5.0-dev.261116.1432.
+def plenumLocalVersionName = { ->
+    def pkg = new groovy.json.JsonSlurper().parse(rootProject.file('../package.json'))
+    def stamp = new java.text.SimpleDateFormat('yyMMdd.HHmm').format(new Date())
+    return "${pkg.version}-dev.${stamp}".toString()
+}
 
 android {
     namespace = "com.literallyisyou.plenum"
@@ -19,8 +38,8 @@ android {
         applicationId "com.literallyisyou.plenum"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode (project.hasProperty('plenumVersionCode') ? Integer.parseInt(project.property('plenumVersionCode').toString()) : 1)
-        versionName (project.hasProperty('plenumVersionName') ? project.property('plenumVersionName').toString() : "1.0")
+        versionCode (project.hasProperty('plenumVersionCode') ? Integer.parseInt(project.property('plenumVersionCode').toString()) : plenumLocalVersionCode())
+        versionName (project.hasProperty('plenumVersionName') ? project.property('plenumVersionName').toString() : plenumLocalVersionName())
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

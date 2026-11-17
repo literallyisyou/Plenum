@@ -4,8 +4,10 @@
 // made since the server started (planAlert: { seq, id, level, title, text, at } or null, the way needsYou is carried). A new one becomes a
 // desktop notification when the Plenum window is not in front; when it is in front the page's alerts strip already shows it. The words are
 // the server's own (alert.text, made once for the page, the notification and the phone): they name the businesses and what happens to
-// each, and never carry a prompt, a reply or a path. A click shows the window. It is never a dialog and never stops a run.
+// each, and never carry a prompt, a reply or a path. A click shows the window with the Plan use pop-up open. It is never a dialog and never
+// stops a run.
 // The owner's switch is the plan watch's own (Alerts in the Plan use pop-up): with it off the server makes no alert, so none arrives here.
+// The desktop settings have no switch of their own for it (only finishedAlerts, keepAwake, approvalAlerts and trayOnClose), so none is read.
 // New means a different alert id that was raised later than the one last seen, not a larger seq: seq counts from 1 again after the server
 // restarts, and the first state after this shell starts only sets what "new" means.
 const LEVELS = new Set(['short', 'out']);
@@ -41,7 +43,7 @@ function onState(shell, st) {
   if (win && win.isFocused()) return;
   if (!shell.Notification.isSupported()) return;
   note = new shell.Notification({ title: oneLine(a.title, 100) || 'Plenum plan use', body: textOf(a) });
-  note.on('click', () => shell.showWindow());
+  note.on('click', () => shell.showWindow({ kind: 'plan-use' }));
   note.show();
 }
 

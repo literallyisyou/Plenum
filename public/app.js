@@ -84,7 +84,7 @@ const el = {
 
 const DEFAULT_HINT = el.hint.textContent;
 // Shown while a run is going: Enter then queues what is typed (see queueFollowUp). The status items beside it say "Working…".
-const BUSY_HINT = 'Esc stops · Enter queues what you type';
+const BUSY_HINT = 'Esc twice stops · Enter queues what you type';
 const MAX_QUEUED = 5;
 // The provider registry (UI-ARCH sections 1 and 10.9). Every model picker, the compare and pipeline group names and the Accounts
 // badges read this one list, so a provider that joins Plenum is one row here, plus its colour token in style.css. The order is the
@@ -508,22 +508,73 @@ function showTokenCard() {
   input.focus();
 }
 
+// What a person reads when a request fails (wave 4 p2). The server's own sentence when it sent one; else one fixed sentence by kind:
+// no answer or a server fault, a refusal, any other problem with the request. Never a status number, never the browser's own words
+// ('Failed to fetch'), never 'undefined'. err.status stays on the error for the code that reads it, and err.fromServer says the
+// message is the server's own.
+const PLAIN_DOWN = 'Plenum did not answer. Try again.';
+const PLAIN_REFUSED = "That was refused. Check the sign-in or the phone's access.";
+const PLAIN_OTHER = 'That could not be done.';
+const ENGINE_WORDS = /failed to fetch|network ?error|network request failed|load failed|fetch failed|econn|etimedout|enotfound|socket hang up|signal is aborted|\[object|unexpected token|not valid json|json\.parse|request failed|is not a function|cannot read prop|\bundefined\b|\bnull\b|\(\d{3}\)|\b(http|status)\s*\d{3}\b/i;
+function plainSentence(status) {
+  const n = Number(status) || 0;
+  if (n === 401 || n === 403) return PLAIN_REFUSED;
+  if (n >= 400 && n < 500) return PLAIN_OTHER;
+  return PLAIN_DOWN;
+}
+function plainError(err, fallback) {
+  const said = typeof err === 'string' ? err : err?.message;
+  const text = typeof said === 'string' ? said.trim() : '';
+  if (text && err?.fromServer === true) return text;
+  const status = Number(err?.status) || 0;
+  if (status) return plainSentence(status);
+  if (err instanceof TypeError || (text && ENGINE_WORDS.test(text))) return PLAIN_DOWN;
+  if (text) return text;
+  return typeof fallback === 'string' && fallback.trim() ? fallback.trim() : PLAIN_OTHER;
+}
+// The error a failed answer becomes: the server's sentence when it sent one, else the fixed one for the status.
+function failedAnswer(res, data) {
+  const said = typeof data?.error === 'string' ? data.error.trim() : '';
+  const e = new Error(said || plainSentence(res.status));
+  e.status = res.status;
+  e.fromServer = Boolean(said);
+  return e;
+}
+// The error for a request that got no answer at all (the connection dropped, the server is down).
+function noAnswer(cause) {
+  const e = new Error(PLAIN_DOWN);
+  e.status = 0;
+  e.fromServer = false;
+  e.cause = cause;
+  return e;
+}
+
 async function api(path, body) {
-  const res = await request(path, body === undefined ? {} : { method: 'POST', body });
+  let res;
+  try {
+    res = await request(path, body === undefined ? {} : { method: 'POST', body });
+  } catch (err) {
+    throw err?.name === 'AbortError' ? err : noAnswer(err);
+  }
   const data = await res.json().catch(() => ({}));
   if (tokenRefused(res)) showTokenCard();
   if (data.terms === true) window.dispatchEvent(new CustomEvent('plenum:terms-required'));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw failedAnswer(res, data);
   return data;
 }
 
 // A download link into /api/ cannot carry the token, so a click on one is turned into a request that does, and the file is saved
 // from memory. The panels' Export buttons make such links (history, prompts, pipelines); the server names the file.
 async function downloadApi(href) {
-  const res = await request(href);
+  let res;
+  try {
+    res = await request(href);
+  } catch (err) {
+    throw noAnswer(err);
+  }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed (${res.status})`);
+    throw failedAnswer(res, data);
   }
   const blob = await res.blob();
   const disposition = res.headers.get('content-disposition') ?? '';
@@ -663,13 +714,107 @@ function trackOpen(store, key, d, fallback) {
   return d;
 }
 
-// ms is how long the toast stays; the default is 3.2 s, or 5.2 s for a problem.
-function toast(message, kind = 'ok', ms) {
-  const t = document.createElement('div');
-  t.className = `toast ${kind}`;
-  t.textContent = message;
-  el.toasts.append(t);
-  setTimeout(() => t.remove(), ms ?? (kind === 'bad' ? 5200 : 3200));
+// A short notice at the top of the window. toast(message, kind = 'ok', ms) as always; the third argument may also be an options object:
+// { ms, key, sticky, action: { label, run } }.
+//  - The same message, or the same key, shown in the last second is not added again.
+//  - A new toast with the key of one still showing replaces it and carries a small count.
+//  - At most three show at once: the oldest one that is not sticky goes first.
+//  - It stays max(3.2 s, 60 ms for each character), a problem ('bad') at least 5.2 s; an explicit ms is used as given. The time stops while
+//    the pointer is over the toast or the focus is in it. A sticky toast stays until it is dismissed. A problem and a sticky toast have a
+//    close button; an action is one button that runs and then closes the toast.
+// The container is a live region and stays click-through; a toast takes the pointer so its text can be selected.
+const TOAST_MAX = 3;
+const TOAST_SAME_MS = 1000;
+const toastsShowing = [];
+const toastsSeen = new Map(); // dedupe id -> when it was last shown
+function toastDismiss(entry) {
+  const at = toastsShowing.indexOf(entry);
+  if (at >= 0) toastsShowing.splice(at, 1);
+  clearTimeout(entry.timer);
+  entry.timer = 0;
+  const hadFocus = entry.node.contains?.(document.activeElement) && document.activeElement !== document.body;
+  entry.node.remove();
+  if (hadFocus) el.input?.focus?.({ preventScroll: true });
+}
+function toastArm(entry, wait) {
+  clearTimeout(entry.timer);
+  entry.timer = 0;
+  if (entry.sticky) return;
+  entry.left = wait;
+  entry.armedAt = Date.now();
+  entry.timer = setTimeout(() => toastDismiss(entry), wait);
+}
+function toast(message, kind = 'ok', opts) {
+  const text = String(message ?? '').trim();
+  if (!text) return;
+  const o = typeof opts === 'number' ? { ms: opts } : (opts && typeof opts === 'object' ? opts : {});
+  const key = typeof o.key === 'string' && o.key ? `k:${o.key}` : `m:${kind}:${text}`;
+  const now = Date.now();
+  if (now - (toastsSeen.get(key) ?? -Infinity) < TOAST_SAME_MS) return;
+  toastsSeen.set(key, now);
+  if (toastsSeen.size > 60) for (const [k, at] of toastsSeen) if (now - at > TOAST_SAME_MS) toastsSeen.delete(k);
+  let count = 1;
+  if (typeof o.key === 'string' && o.key) {
+    const old = toastsShowing.find(t => t.key === key);
+    if (old) {
+      count = old.count + 1;
+      toastDismiss(old);
+    }
+  }
+  const sticky = o.sticky === true;
+  const bad = kind === 'bad';
+  const long = Math.max(3200, 60 * text.length);
+  const ms = Number.isFinite(o.ms) && o.ms > 0 ? o.ms : (bad ? Math.max(5200, long) : long);
+  const node = document.createElement('div');
+  node.className = `toast ${kind}`;
+  const entry = { node, key, count, sticky, ms, timer: 0, left: ms, armedAt: 0, hover: false, focus: false };
+  const body = document.createElement('span');
+  body.className = 'toast-text';
+  body.textContent = text;
+  node.append(body);
+  if (count > 1) node.dataset.count = String(count);
+  const act = o.action && typeof o.action === 'object' && typeof o.action.run === 'function' && o.action.label ? o.action : null;
+  if (act) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-action';
+    b.textContent = String(act.label);
+    b.addEventListener('click', () => {
+      toastDismiss(entry);
+      try { act.run(); } catch (err) { console.error(err); }
+    });
+    node.append(b);
+  }
+  if (bad || sticky) {
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'toast-close';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.addEventListener('click', () => toastDismiss(entry));
+    node.append(x);
+  }
+  // The time stops while the pointer is over the toast or the focus is in it, and goes on with what was left.
+  const pause = () => {
+    if (!entry.timer) return;
+    clearTimeout(entry.timer);
+    entry.timer = 0;
+    entry.left = Math.max(0, entry.left - (Date.now() - entry.armedAt));
+  };
+  const resume = () => {
+    if (entry.hover || entry.focus || entry.timer || entry.sticky) return;
+    toastArm(entry, Math.max(1500, entry.left));
+  };
+  node.addEventListener('mouseenter', () => { entry.hover = true; pause(); });
+  node.addEventListener('mouseleave', () => { entry.hover = false; resume(); });
+  node.addEventListener('focusin', () => { entry.focus = true; pause(); });
+  node.addEventListener('focusout', () => { entry.focus = false; resume(); });
+  toastsShowing.push(entry);
+  el.toasts.append(node);
+  toastArm(entry, ms);
+  while (toastsShowing.length > TOAST_MAX) {
+    const older = toastsShowing.slice(0, -1);
+    toastDismiss(older.find(t => !t.sticky) ?? older[0]);
+  }
 }
 
 // Keeps a chat that stands near its end at its end while a reply grows. The chat glides there (.chat scrolls smoothly), so when the
@@ -681,11 +826,107 @@ function stickBottom() {
   const c = el.chat;
   const top = c.scrollTop;
   const following = stuckAt >= 0 && top >= stuckAt && top > 0;
-  if (following || c.scrollHeight - top - c.clientHeight < 180) {
+  if (following || c.scrollHeight - top - c.clientHeight < JUMP_FAR) {
     stuckAt = top;
     c.scrollTop = c.scrollHeight;
-  } else stuckAt = -1;
+  } else {
+    stuckAt = -1;
+    // New text of a run that is going arrived below the reader: the Jump to latest pill gets its dot.
+    if (busyNow() || foreign) jumpNew = true;
+  }
+  jumpSoon();
 }
+
+// The reader stands away from the end of the chat: they went up (the chat moved up since it last stood at its end), they are more than a
+// few pixels above it, and they are not on the way down to it (stickBottom's glide). Rows that the panels add under the last turns after
+// a drawing make the chat taller without the reader moving: that reader is still at the end. A refresh keeps an away reader's place
+// (refresh, wave 4); a chat that is not laid out (hidden) counts as at its end.
+let readerUp = false;
+let readerTop = 0;
+function noteReader() {
+  const c = el.chat;
+  const top = c.scrollTop;
+  // Going up ends following (stickBottom): neither glide to the end ever moves up, so a reader who pressed Jump to latest and went back
+  // up, still below where they pressed it, is no longer pulled down by a reply or a refresh.
+  if (top < readerTop - 1) {
+    readerUp = true;
+    stuckAt = -1;
+  } else if (readerUp && c.scrollHeight - top - c.clientHeight < 4) readerUp = false;
+  readerTop = top;
+}
+function chatAway() {
+  const c = el.chat;
+  if (!c.clientHeight) return false;
+  noteReader();
+  const top = c.scrollTop;
+  if (stuckAt >= 0 && top >= stuckAt && top > 0) return false;
+  return readerUp && c.scrollHeight - top - c.clientHeight >= 4;
+}
+el.chat.addEventListener('scroll', noteReader, { passive: true });
+
+// Jump to latest (wave 4). Past JUMP_FAR above the end the chat no longer follows a reply that grows (stickBottom), so a small pill floats
+// at the foot of the chat: it takes the chat to its end and following starts again. Its dot says new text of a run that is going arrived
+// below. It lies over the chat in the composer area (absolute, so nothing moves), and goes with that area under the Settings page
+// (settingsInert makes it inert, the stylesheet hides it).
+const JUMP_FAR = 180;
+let jumpBtn = null;
+let jumpNew = false;
+let jumpFrame = 0;
+function jumpPill() {
+  if (jumpBtn || !el.composerWrap) return jumpBtn;
+  jumpBtn = document.createElement('button');
+  jumpBtn.type = 'button';
+  jumpBtn.className = 'jump-latest';
+  jumpBtn.setAttribute('aria-label', 'Jump to latest');
+  jumpBtn.hidden = true;
+  const dot = document.createElement('span');
+  dot.className = 'jl-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  const words = document.createElement('span');
+  words.className = 'jl-text';
+  words.textContent = 'Jump to latest';
+  jumpBtn.append(dot, words);
+  jumpBtn.addEventListener('click', e => jumpToLatest(e));
+  el.composerWrap.prepend(jumpBtn);
+  return jumpBtn;
+}
+// Shows the pill while the reader is more than JUMP_FAR above the end (and not gliding down to it), hides it otherwise.
+function syncJump() {
+  const b = jumpPill();
+  if (!b) return;
+  const c = el.chat;
+  const top = c.scrollTop;
+  const following = stuckAt >= 0 && top >= stuckAt && top > 0;
+  const far = c.clientHeight > 0 && !following && c.scrollHeight - top - c.clientHeight > JUMP_FAR;
+  if (!far) jumpNew = false;
+  if (b.hidden === far) b.hidden = !far;
+  b.classList.toggle('has-new', far && jumpNew);
+}
+// Once a frame at most: a scroll and every piece of a reply ask for it.
+function jumpSoon() {
+  if (jumpFrame) return;
+  jumpFrame = requestAnimationFrame(() => {
+    jumpFrame = 0;
+    syncJump();
+  });
+}
+function jumpToLatest(e) {
+  const c = el.chat;
+  const glide = !window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  jumpNew = false;
+  readerUp = false;
+  // Following again: a reply that grows keeps the chat at its end, during the glide too.
+  stuckAt = c.scrollTop;
+  c.scrollTo({ top: c.scrollHeight, behavior: glide ? 'smooth' : 'instant' });
+  if (!glide) stuckAt = c.scrollTop;
+  if (jumpBtn) {
+    jumpBtn.hidden = true;
+    jumpBtn.classList.remove('has-new');
+  }
+  // From the keyboard (a click with no pointer) the focus goes on to the message box, as the pill it was on is gone.
+  if (e && e.detail === 0 && document.activeElement === jumpBtn) el.input?.focus?.({ preventScroll: true });
+}
+el.chat.addEventListener('scroll', jumpSoon, { passive: true });
 
 function stream() {
   return streamEl;
@@ -1623,12 +1864,13 @@ function welcomeProject(p) {
 
 // ---------- rendering ----------
 
-function renderAll() {
+// keep: the chat keeps the reader's place (renderChat). Only a refresh asks for it; every other caller draws the chat at its end.
+function renderAll({ keep = false } = {}) {
   tellPromptsHealth(S.promptsHealth);
   syncRouteRun();
   renderTop();
   renderProjects();
-  renderChat();
+  renderChat({ keep });
   renderStatus();
   renderBadge();
   renderBoard();
@@ -1661,7 +1903,9 @@ function renderTop() {
   el.projPath.textContent = p ? p.path : '';
   el.projPath.title = p ? p.path : '';
   document.title = p ? `${title} · Plenum` : 'Plenum';
-  if (!el.model.options.length && catalog.length) {
+  // Filled from the catalog once it is there. The state can answer first (loadAll asks for both at once), and then the menu already holds the
+  // saved model (ensureOption below), so "has no options" would never fill it; fillModels registers the menu, so later catalogs reach it.
+  if (catalog.length && !modelMenus.has(el.model)) {
     fillModels(el.model, false);
     fillModels(el.advisor, true);
   }
@@ -1868,6 +2112,8 @@ const CHAT_NEAR_TOP = 1600;
 // makeTurn).
 let drawnList = [];
 let drawnFrom = 0;
+// The thread (or project) whose chat is drawn on screen; a refresh keeps the reader's place only in that same chat.
+let chatScope;
 let turnPlaces = new Map();
 let earlierRow = null;
 let placeToFill = null;
@@ -2094,6 +2340,7 @@ el.chat.addEventListener('scroll', earlierNearTop, { passive: true });
 // keep: the chat is drawn again where the reader is (a council seat that runs again), so everything that was drawn stays drawn and
 // the chat stays where it stands (at its end, or as far down as it was).
 function renderChat({ keep = false } = {}) {
+  chatScope = S.activeProject ? activeScope() : null;
   streamEl = document.createElement('div');
   streamEl.className = 'stream';
   if (!S.activeProject) streamEl.append(welcomeNoProject());
@@ -2130,10 +2377,14 @@ function renderChat({ keep = false } = {}) {
   const place = () => el.chat.scrollTo({ top: atEnd ? el.chat.scrollHeight : at, behavior: 'instant' });
   place();
   stuckAt = -1;
+  // Where the chat stands now is where the page put it: a chat at its end has a reader at the end (chatAway).
+  readerTop = el.chat.scrollTop;
+  if (atEnd) readerUp = false;
   // Once more when the panels have added their rows under the turns (they do so right after this drawing), which makes the chat taller.
   if (keep) queueMicrotask(place);
   // A short end of the chat (little text in its last messages) leaves the reader near the top: more is drawn at once.
   earlierNearTop();
+  jumpSoon();
 }
 
 function renderStatus() {
@@ -2261,6 +2512,16 @@ function autosize() {
 
 function hidePalette() {
   el.palette.hidden = true;
+  syncPaletteAria();
+}
+
+// The command list is a listbox the message box owns (a combobox): it says whether the list is open and which row is highlighted.
+function syncPaletteAria() {
+  const open = !el.palette.hidden;
+  el.input.setAttribute('aria-expanded', String(open));
+  const row = open && paletteItems.length ? el.palette.children[paletteIndex] : null;
+  if (row?.id) el.input.setAttribute('aria-activedescendant', row.id);
+  else el.input.removeAttribute('aria-activedescendant');
 }
 
 // The command name and its arguments, kept on one line so long argument lists never squeeze the description.
@@ -2275,6 +2536,9 @@ function commandHead(c) {
 function paletteRow(c, i) {
   const row = document.createElement('div');
   row.className = `cmd${i === paletteIndex ? ' sel' : ''}`;
+  row.id = `cmd-opt-${i}`;
+  row.setAttribute('role', 'option');
+  row.setAttribute('aria-selected', String(i === paletteIndex));
   const head = commandHead(c);
   // A command found by one of its other words says which one, so the match is not a surprise.
   if (c.via === 'alias') head.append(span('ca', `also /${c.alias}`));
@@ -2324,12 +2588,16 @@ function updatePalette() {
     if (!q) return hidePalette();
     // Nothing matches: say so once. Enter then submits the text as typed, and the arrows do nothing.
     el.palette.replaceChildren(Object.assign(document.createElement('div'), { className: 'cmd cmd-none', textContent: `No command matches /${q}. Type /help for the list.` }));
+    el.palette.children[0].setAttribute('role', 'option');
+    el.palette.children[0].setAttribute('aria-disabled', 'true');
     el.palette.hidden = false;
+    syncPaletteAria();
     return;
   }
   paletteIndex = Math.min(paletteIndex, paletteItems.length - 1);
   el.palette.replaceChildren(...paletteItems.map((c, i) => paletteRow(c, i)));
   el.palette.hidden = false;
+  syncPaletteAria();
 }
 
 // While a command with arguments is typed, the status line shows its usage and what it does, in place of the usual hint.
@@ -2348,7 +2616,11 @@ function commandHint() {
 
 function movePalette(delta) {
   paletteIndex = (paletteIndex + delta + paletteItems.length) % paletteItems.length;
-  [...el.palette.children].forEach((row, i) => row.classList.toggle('sel', i === paletteIndex));
+  [...el.palette.children].forEach((row, i) => {
+    row.classList.toggle('sel', i === paletteIndex);
+    row.setAttribute('aria-selected', String(i === paletteIndex));
+  });
+  syncPaletteAria();
   el.palette.children[paletteIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
 }
 
@@ -2357,16 +2629,23 @@ function movePalette(delta) {
 // Reads a stream of events to its end and hands each one to onEvent. One event that cannot be read (bad JSON), or that onEvent cannot
 // draw (it throws), is logged and skipped, and the reading goes on: one odd event never ends the view of a run that is still going.
 // Resolves to the number of events skipped that way. A stream that breaks (the connection dropped) rejects, and the reader is let go.
-function readSSE(res, onEvent) {
+// For the events channel's watchdog (wave 4): onBytes is told of every piece that arrives, a ping comment or a part of an event included,
+// and an abort of signal ends the reading even where the body does not follow the abort by itself (the phone shell's stream).
+function readSSE(res, onEvent, { onBytes, signal } = {}) {
   return (async () => {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let faults = 0;
+    const stop = () => {
+      reader.cancel().catch(() => {});
+    };
+    signal?.addEventListener?.('abort', stop, { once: true });
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
+        onBytes?.();
         buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         let end;
         while ((end = buffer.indexOf('\n\n')) !== -1) {
@@ -2386,6 +2665,8 @@ function readSSE(res, onEvent) {
       // The stream broke or was stopped: the connection is released, so the server sees the stream close.
       reader.cancel().catch(() => {});
       throw err;
+    } finally {
+      signal?.removeEventListener?.('abort', stop);
     }
     return faults;
   })();
@@ -2425,6 +2706,25 @@ async function refreshQuiet() {
     adoptState(await api('/api/state'));
   } catch {
     // The next change tries again.
+  }
+}
+
+// After this window's run in a thread has ended (Stop included): while the state still says that thread runs, it is read again, after
+// 150 ms, 300 ms, 600 ms, 1.2 s and 2.4 s, until it says the thread is idle. Two things can leave a stale "running" behind, and the
+// thread's Stop button then stays on: a reading the server answered while it was still ending the run, which arrives after the events
+// channel's newer word that the run is over (that word is then undone), and a run that ended while the events channel was down (watchRun
+// does not poll while another run of this window goes on). A new run of this window in the thread, or the server's own word that it is
+// idle, ends the check. A thread the server still runs after the last reading (another window started a run there) is left as it is.
+const ENDED_CHECKS_MS = [150, 300, 600, 1200, 2400];
+async function confirmEnded(scope) {
+  const says = () => (scope === activeScope() ? S.running === true || threadInfo(scope)?.running === true : threadInfo(scope)?.running === true);
+  for (const wait of ENDED_CHECKS_MS) {
+    if (runs.has(scope) || !says()) return;
+    await new Promise(resolve => setTimeout(resolve, wait));
+    if (runs.has(scope) || !says()) return;
+    if (scope === activeScope()) await refresh();
+    else await refreshQuiet();
+    setBusy(busyNow());
   }
 }
 
@@ -2472,7 +2772,7 @@ async function runStream(url, body, onEvent, { tick } = {}) {
       if (tokenRefused(res)) showTokenCard();
       // B-105: a policy refusal (the spend cap; the server marks it with policy: true) is a notice, and its text goes back to the
       // composer. Any other refusal keeps its error line and Retry.
-      const e = new Error(data.error || `Request failed (${res.status})`);
+      const e = failedAnswer(res, data);
       e.policy = data.policy === true;
       // A send the server refused because the License Agreement is not accepted (terms: true) is handled the same way: sending the
       // same message again cannot work until the person has accepted, so it is a notice with no Retry, the text goes back to the
@@ -2518,6 +2818,9 @@ async function runStream(url, body, onEvent, { tick } = {}) {
     // chat on screen alone and refreshes the rest (the tabs, the sidebar, the numbers).
     if (scope === activeScope()) await refresh();
     else await refreshQuiet();
+    // The Stop button must not stay on after its run has ended (wave 5c): the reading above may have been answered before the server
+    // finished the run, and arrived after the events channel said it was over. Not awaited.
+    confirmEnded(scope);
     setBusy(busyNow());
     await loadUpdates();
     // The run is over, however it ended (Stop included): the next queued message, if there is one, starts now.
@@ -2696,8 +2999,12 @@ function turnRenderer(scope = activeScope()) {
           stickBottom();
           break;
         }
-        // A short note from the server, such as a session that had to start again with the transcript.
-        box.append(systemTurn(ev.text));
+        // A short note from the server, such as a session that had to start again with the transcript, or Plenum sending the message
+        // again after a passing failure (server.mjs chatRepair). It is a plain Plenum line, never an error card. A note that comes before
+        // the reply's first text goes above the turn that is still waiting for it, so the chat reads in the order things happened and
+        // the reply that follows is under its note.
+        if (ln.current && !ln.current.text && ln.current.article.parentNode === box) box.insertBefore(systemTurn(ev.text), ln.current.article);
+        else box.append(systemTurn(ev.text));
         // The server sends the Approve all notice once per thread per launch, and the end-of-run refresh would drop it, so it is kept
         // in the notes (drawn after the transcript, and cleared when the next message is sent).
         if (ev.kind === 'approve-all') noteTo(scope, ev.text);
@@ -2821,8 +3128,8 @@ const queueItems = () => followUps.filter(f => f.scope === activeScope());
 function queueFollowUp() {
   const text = el.input.value.trim();
   if (!text || !S.activeProject) return;
-  if (text.startsWith('/')) return toast('Commands run when nothing else is running. Press Esc to stop the run first.', 'bad');
-  if (mode === 'council') return toast('A council question cannot be queued. Wait for this run to end, or press Esc to stop it.', 'bad');
+  if (text.startsWith('/')) return toast('Commands run when nothing else is running. Press Esc twice to stop the run first.', 'bad');
+  if (mode === 'council') return toast('A council question cannot be queued. Wait for this run to end, or press Esc twice to stop it.', 'bad');
   if (text.length > 14_000_000) return toast('That message is too long to send (over 14 million characters). Split it up or attach the file with @path.', 'bad');
   // The text stays in the box when the queue is full.
   if (queueItems().length >= MAX_QUEUED) {
@@ -3034,7 +3341,7 @@ async function stopScope(scope) {
 // Queues text behind that thread's run with queueFollowUp's rules. Returns '' when it is queued, or the reason it is not.
 function queueFor(scope, text) {
   if (!text || !S.activeProject) return 'Type a message first.';
-  if (text.startsWith('/')) return 'Commands run when nothing else is running. Press Esc to stop the run first.';
+  if (text.startsWith('/')) return 'Commands run when nothing else is running. Press Esc twice to stop the run first.';
   if (text.length > 14_000_000) return 'That message is too long to send (over 14 million characters). Split it up or attach the file with @path.';
   if (followUps.filter(f => f.scope === scope).length >= MAX_QUEUED) return `${MAX_QUEUED} messages are already waiting in this thread. Wait for one to start, or clear the queue.`;
   followUps.push({ project: S.activeProject, scope, text, images: [] });
@@ -3075,8 +3382,10 @@ async function watchRun() {
     if (runs.size || events.connected) return;
     const changed = next.running !== S.running || next.activeProject !== S.activeProject || next.messages.length !== S.messages.length;
     if (changed) {
+      // A reader who scrolled up in the same chat keeps the place, as with refresh.
+      const away = chatAway();
       S = next;
-      renderAll();
+      renderAll({ keep: away && chatScope === (S.activeProject ? activeScope() : null) });
     }
     if (!S.running) scheduleDrain();
   } catch {
@@ -3103,7 +3412,7 @@ async function compact() {
     const res = await request('/api/compact', { method: 'POST', body: { project: S.activeProject, thread: scope }, signal: ctl.signal });
     const data = await res.json().catch(() => ({}));
     if (tokenRefused(res)) showTokenCard();
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) throw failedAnswer(res, data);
     S = data;
     if (scope === activeScope()) notes = [];
     toast(`Compacted ${data.compacted} messages into a summary`);
@@ -5182,6 +5491,12 @@ const CONNECTION_LINE = 'Cannot reach the Plenum server';
 // kept file). The person is told once per file, and the server is told it was shown, so a reload does not say it again. renderShell and
 // renderAll call it, which covers the state events, the first load and the fallback poll.
 let toldPromptsFile = null;
+// The note that says the server could not be reached, with what the person can use: the server's own sentence when it sent one.
+function connectionNote(err) {
+  const said = plainError(err);
+  return said === PLAIN_DOWN ? `${CONNECTION_LINE}. Try again.` : `${CONNECTION_LINE}. ${said}`;
+}
+
 function tellPromptsHealth(health) {
   if (!health || typeof health.file !== 'string' || !health.file || health.file === toldPromptsFile) return;
   toldPromptsFile = health.file;
@@ -5189,15 +5504,69 @@ function tellPromptsHealth(health) {
   api('/api/prompts/health/ack', {}).catch(() => {});
 }
 
-async function refresh() {
+// Reads the whole state again and draws the page from it. One reading at a time (wave 4): a call that comes while the state is being read
+// gets that same reading (the promise in flight); one that comes once its answer is being drawn waits for it and reads once more, and at
+// most one such reading waits. A state event that asked for the chat while the reading was under way is checked against what came back,
+// and one more reading follows only when they differ (the answer was older than the event).
+// keep: whether the reader keeps the place in the chat. Left out, it is decided before the reading: a reader more than a few pixels above
+// the end keeps it (chatAway), one at the end stays at the end. keep: false is a jump to the end (the first load, a switch of project or
+// thread). The place is kept only when the same chat is still on screen afterwards; another project or thread opens at its end.
+let refreshFlight = null; // { promise, keep, applying }
+let refreshNext = null;   // the one reading that waits for the one being drawn
+let refreshNextJump = false;
+let lateState = null;     // the last state event that asked for the chat while the state was being read
+function refresh(opts) {
+  const asked = opts && typeof opts === 'object' && typeof opts.keep === 'boolean' ? opts.keep : undefined;
+  if (refreshFlight && !refreshFlight.applying) {
+    if (asked === false) refreshFlight.keep = false;
+    if (opts?.late) lateState = opts.late;
+    return refreshFlight.promise;
+  }
+  if (refreshFlight) {
+    // The waiting reading jumps to the end if any of the calls it stands for asked for that.
+    if (asked === false) refreshNextJump = true;
+    refreshNext ??= refreshFlight.promise.catch(() => {}).then(() => {
+      const jump = refreshNextJump;
+      refreshNext = null;
+      refreshNextJump = false;
+      return refresh(jump ? { keep: false } : undefined);
+    });
+    return refreshNext;
+  }
+  const flight = { keep: asked ?? chatAway(), applying: false, promise: null };
+  refreshFlight = flight;
+  flight.promise = readState(flight).finally(() => {
+    if (refreshFlight === flight) refreshFlight = null;
+  });
+  return flight.promise;
+}
+
+async function readState(flight) {
+  const loaded = stateLoaded;
+  lateState = null;
   try {
-    S = await api('/api/state');
+    const next = await api('/api/state');
+    flight.applying = true;
+    S = next;
     stateLoaded = true;
     notes = notes.filter(n => !n.startsWith(CONNECTION_LINE));
   } catch (err) {
-    if (!notes.some(n => n.startsWith(CONNECTION_LINE))) notes.push(`${CONNECTION_LINE} (${err.message}).`);
+    flight.applying = true;
+    if (!notes.some(n => n.startsWith(CONNECTION_LINE))) notes.push(connectionNote(err));
   }
-  renderAll();
+  renderAll({ keep: flight.keep && loaded && chatScope === (S.activeProject ? activeScope() : null) });
+  const late = lateState;
+  lateState = null;
+  if (late && !stateAgrees(late)) refresh();
+}
+
+// Whether the state that was read says what a state event said about the chat on screen: the same project and thread, and the same
+// number of messages ending with the same one.
+function stateAgrees(next) {
+  if (next.activeProject !== undefined && next.activeProject !== S.activeProject) return false;
+  if (next.activeThread !== undefined && next.activeThread !== S.activeThread) return false;
+  if (typeof next.messageCount !== 'number') return true;
+  return next.messageCount === S.messages.length && (next.lastMessageTs ?? 0) === (S.messages.at(-1)?.ts ?? 0);
 }
 
 // Takes the state the events channel sends (everything but the transcript, plus messageCount and lastMessageTs) and redraws the
@@ -5221,18 +5590,50 @@ function applyState(next, { chat } = {}) {
   }
   renderShell();
   const changed = typeof next.messageCount === 'number' && (next.messageCount !== S.messages.length || (next.lastMessageTs ?? 0) !== (S.messages.at(-1)?.ts ?? 0));
-  if (chat !== false && !activeRun() && !foreign && (switched || threadSwitched || changed)) refresh();
+  const read = chat !== false && !activeRun() && !foreign && (switched || threadSwitched || changed);
+  // Another project or thread opens at its end; a new message in the chat on screen leaves a reader who scrolled up where they are. A
+  // reading already on its way may have been answered before this change, so refresh checks what it brings against this event (late).
+  if (read) refresh(switched || threadSwitched ? { keep: false, late: next } : { late: next });
   if (!S.running && !activeRun()) scheduleDrain();
+  // Whether the state is being read again because of this event (the hello handler does not ask a second time).
+  return read;
 }
 
 // ---------- the events channel ----------
 
 // GET /api/events keeps one stream open per window (lib/events.mjs). The server sends every change on it, so nothing here polls
 // while it is up. A lost stream is reopened after 1, 2, 4, 8, then every 10 seconds, and watchRun covers the gap.
+// The server writes a ping comment on the stream every 15 seconds. A stream that brings nothing at all for CHANNEL_QUIET_MS (a computer
+// that slept, a network that changed under it) is dead though it never ended: it is stopped and opened again (wave 4).
+// The wait before the next try ends early when the server is likely back within reach: the network came back ('online'), the window is
+// seen again, or the phone's shell says its link to the computer is connected (plenumShell.onConnection, on the phone only).
 const eventHandlers = new Map();
 let startedBuild = null;
 let startedAt = 0; // the server process the page last heard from (hello carries it); it changes on every plain restart
 let reconnecting = false;
+const CHANNEL_QUIET_MS = 45_000;
+let channelWake = null; // ends the wait before the next try, while there is one
+function wakeChannel() {
+  channelWake?.();
+}
+window.addEventListener('online', wakeChannel);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') wakeChannel();
+});
+{
+  let shellLink = '';
+  try {
+    if (typeof window.plenumShell?.onConnection === 'function') {
+      window.plenumShell.onConnection(view => {
+        const now = String(view?.state ?? '');
+        if (now === 'connected' && shellLink !== 'connected') wakeChannel();
+        shellLink = now;
+      });
+    }
+  } catch {
+    // A shell without the call: the wait runs its course.
+  }
+}
 
 function fanOut(ev) {
   for (const fn of eventHandlers.get(ev.type) ?? []) {
@@ -5266,19 +5667,45 @@ const events = {
     if (reconnecting) return;
     reconnecting = true;
     for (let fails = 0; ; ) {
+      // The watchdog: when nothing (not even a ping) came for CHANNEL_QUIET_MS, the request is stopped, which ends the reading below.
+      const ctl = new AbortController();
+      let heard = Date.now();
+      let quiet = 0;
+      const watch = () => {
+        const still = Date.now() - heard;
+        if (still >= CHANNEL_QUIET_MS) ctl.abort();
+        else quiet = setTimeout(watch, CHANNEL_QUIET_MS - still);
+      };
+      quiet = setTimeout(watch, CHANNEL_QUIET_MS);
       try {
-        const res = await request('/api/events');
+        const res = await request('/api/events', { signal: ctl.signal });
         if (tokenRefused(res)) showTokenCard();
         if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        heard = Date.now();
         await readSSE(res, ev => {
           fails = 0;
           fanOut(ev);
+        }, {
+          onBytes: () => {
+            heard = Date.now();
+          },
+          signal: ctl.signal,
         });
       } catch {
-        // The stream ended or could not open; it is opened again below.
+        // The stream ended, could not open, or was stopped by the watchdog; it is opened again below.
+      } finally {
+        clearTimeout(quiet);
       }
       setConnected(false);
-      await new Promise(resolve => setTimeout(resolve, [1000, 2000, 4000, 8000, 10000][Math.min(fails, 4)]));
+      await new Promise(resolve => {
+        const done = () => {
+          clearTimeout(timer);
+          if (channelWake === done) channelWake = null;
+          resolve();
+        };
+        const timer = setTimeout(done, [1000, 2000, 4000, 8000, 10000][Math.min(fails, 4)]);
+        channelWake = done;
+      });
       fails += 1;
     }
   },
@@ -5306,8 +5733,9 @@ events.on('hello', ev => {
     for (const id of [...otherLines.keys()]) endOtherRun(id);
   }
   setConnected(true);
-  applyState(ev.state);
-  if (restarted && !activeRun()) refresh();
+  // One reading of the state at most: applyState reads it when the chat changed, and a restart reads it only if that did not.
+  const read = applyState(ev.state);
+  if (restarted && !read && !activeRun()) refresh();
 });
 
 events.on('state', ev => applyState(ev.state));
@@ -5497,8 +5925,11 @@ async function readProviders(refreshCodex) {
   // (offered: false), so the menus are filled again when the list, a label or that mark changed. Each menu keeps the value it had.
   const key = catalog.map(c => `${c.provider}:${c.id}|${c.label}|${c.offered === false ? 'gone' : ''}`).join('\n');
   if (key !== catalogKey) {
+    const first = catalogKey === '';
     catalogKey = key;
     refreshModelMenus();
+    // The state can answer before the status: the chat was drawn with raw model ids, so the first catalog draws it again with names.
+    if (first && stateLoaded) renderChat({ keep: true });
   }
   renderStatus();
   renderTop();
@@ -6486,7 +6917,7 @@ async function restartWith(path, body = {}) {
       toast(desktop ? 'The server did not come back within a minute. Restart it from the Start menu.' : 'The server did not come back within a minute. Start Plenum again with npm start, then open the link it prints.', 'bad');
     }
   } catch (err) {
-    toast(err.message, 'bad');
+    toast(plainError(err), 'bad');
   }
   restarting = false;
   setUpdateButtons(false);
@@ -6499,7 +6930,7 @@ async function discardUpdate(u) {
     refreshDrawer();
     await loadUpdates();
   } catch (err) {
-    toast(err.message, 'bad');
+    toast(plainError(err), 'bad');
   }
 }
 
@@ -6605,7 +7036,7 @@ function renderCommands(body) {
     for (const { row, words } of cards) row.hidden = Boolean(q) && !words.some(w => w.toLowerCase().includes(q));
   });
   body.append(field, ...cards.map(card => card.row));
-  body.append(Object.assign(document.createElement('p'), { textContent: 'Enter sends. Shift+Enter adds a line. Esc stops a run. @path/to/file attaches a file.' }));
+  body.append(Object.assign(document.createElement('p'), { textContent: 'Enter sends. Shift+Enter adds a line. Esc twice stops a run. @path/to/file attaches a file.' }));
 }
 
 // ---------- computer use in the chat: the cards of a run, the notes between its steps and the "Your turn" box ----------
@@ -6644,7 +7075,18 @@ function frameShot(frame) {
   img.className = 'approval-frame';
   img.alt = 'Screenshot the model is acting on';
   frameDataUrl(frame.run, frame.n).then(url => { img.src = url; }, () => { img.replaceWith(quietNote('The screenshot is not available.')); });
-  img.addEventListener('click', () => img.classList.toggle('big'));
+  // Enlarging works from the keyboard too: the picture is a button (Enter or Space), and aria-expanded says whether it is enlarged.
+  img.tabIndex = 0;
+  img.setAttribute('role', 'button');
+  img.setAttribute('aria-label', 'Enlarge the screenshot');
+  img.setAttribute('aria-expanded', 'false');
+  const enlarge = () => img.setAttribute('aria-expanded', String(img.classList.toggle('big')));
+  img.addEventListener('click', enlarge);
+  img.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    enlarge();
+  });
   shot.append(img);
   if (frame.marker && frame.w > 0 && frame.h > 0) {
     const ring = span('approval-marker', '');
@@ -6784,7 +7226,7 @@ async function sendComputer(task, model, settings = {}) {
     openAddForm();
     return toast('Add a project folder first.', 'bad');
   }
-  if (busyNow()) return toast('A reply is running in this project. Wait for it to end, or press Esc to stop it.', 'bad');
+  if (busyNow()) return toast('A reply is running in this project. Wait for it to end, or press Esc twice to stop it.', 'bad');
   const text = String(task ?? '').trim();
   if (!text) return toast('Say what the model should do.', 'bad');
   const { appNames, ...computer } = settings;
@@ -7268,9 +7710,23 @@ new MutationObserver(paneQueueFit).observe(el.paneTabs, { subtree: true, childLi
 // Escape with the focus inside the pane closes its active tab. It stops here, so the composer's Escape (which stops a run) never sees
 // it. Three cases leave it alone: a panel that handled Escape itself (it calls preventDefault), an open drawer (it sits above the
 // pane, so Escape closes the drawer first), and no open tab. The drawer's own Escape handler on the document then runs.
+// A text field that holds text, or a list that is open to choose from, takes the first Escape for itself: the focus leaves it for the pane
+// (what was typed stays) and the next Escape closes the tab, so a stray Escape never throws away a half-written line.
+function holdsText(node) {
+  if (!node) return false;
+  if (node.tagName === 'SELECT') return true;
+  if (node.tagName === 'TEXTAREA') return String(node.value ?? '') !== '';
+  if (node.tagName === 'INPUT') return /^(text|search|url|email|tel|password|number)?$/i.test(node.type ?? '') && String(node.value ?? '') !== '';
+  return Boolean(node.isContentEditable) && String(node.textContent ?? '').trim() !== '';
+}
 el.pane.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || e.defaultPrevented || !paneActive || !el.drawer.hidden) return;
   e.stopPropagation();
+  if (holdsText(e.target)) {
+    if (!el.pane.hasAttribute('tabindex')) el.pane.setAttribute('tabindex', '-1');
+    el.pane.focus({ preventScroll: true });
+    return;
+  }
   paneCloseTab(paneActive);
 });
 
@@ -7399,7 +7855,7 @@ function settingsCard(def, showTitle) {
     get item() { return settingsItem; },
     update: patch => update(patch),
     refresh: () => draw(),
-    toast: (message, kind) => toast(message, kind),
+    toast: (message, kind, opts) => toast(message, kind, opts),
   };
   const draw = () => {
     body.replaceChildren();
@@ -7539,10 +7995,40 @@ function settingsMark(key) {
 function settingsPickGroup(key) {
   const g = settingsGroupEls.find(x => x.key === key);
   if (!g) return;
+  settingsHoldStop?.();
   settingsPicked = key;
   settingsMark(key);
   settingsSyncView();
   el.settingsContent.scrollTop = settingsNarrow.matches ? 0 : Math.max(0, g.group.offsetTop - 12);
+}
+
+// Brings a section's card to the top of the page and keeps it there for a few seconds while the cards above it finish drawing (a card
+// that reads its data after it is drawn, such as Notifications, grows and would push the section out of sight on a phone). The first
+// scroll, tap or key of the reader's own, another group, a search or closing the page lets go at once.
+let settingsHoldStop = null;
+function settingsHoldSection(card) {
+  settingsHoldStop?.();
+  const box = el.settingsContent;
+  const place = () => {
+    if (!settingsShown || !card.isConnected) return stop();
+    const top = card.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 12;
+    box.scrollTop = Math.max(0, top);
+  };
+  const watch = typeof ResizeObserver === 'function' ? new ResizeObserver(() => place()) : null;
+  const holder = card.parentElement;
+  const timer = setTimeout(() => stop(), 4000);
+  const mine = ['wheel', 'touchstart', 'pointerdown', 'keydown'];
+  function stop() {
+    if (settingsHoldStop !== stop) return;
+    settingsHoldStop = null;
+    clearTimeout(timer);
+    watch?.disconnect();
+    for (const type of mine) box.removeEventListener(type, stop, true);
+  }
+  settingsHoldStop = stop;
+  for (const type of mine) box.addEventListener(type, stop, { capture: true, passive: true });
+  if (holder) watch?.observe(holder);
+  place();
 }
 
 // On wide windows the list marks the group the reader has reached.
@@ -7578,6 +8064,7 @@ function settingsInert(on) {
 // row inside that section (a notice's id for Safety); the section gets it as ctx.item while it draws, and nothing else reads it.
 function openSettingsPage(where, item) {
   const target = settingsTarget(where);
+  settingsHoldStop?.();
   closeDrawer();
   if (!settingsShown) {
     settingsFocusBack = document.activeElement;
@@ -7596,8 +8083,14 @@ function openSettingsPage(where, item) {
     settingsItem = null;
   }
   settingsApplySearch();
-  if (target) settingsPickGroup(target);
-  else settingsSpy();
+  if (target) {
+    settingsPickGroup(target);
+    // A section asked for by name (openSettings('services')) is brought into view, not just its group: the cards above it in the
+    // group can push it below the bottom of a phone's window.
+    const name = typeof where === 'string' ? where.trim() : '';
+    const card = name && name !== target ? el.settingsContent.querySelector(`.settings-card[data-section="${CSS.escape(name)}"]`) : null;
+    if (card) settingsHoldSection(card);
+  } else settingsSpy();
   paneSyncChrome();
   el.settingsSearch.focus({ preventScroll: true });
 }
@@ -7605,6 +8098,7 @@ function openSettingsPage(where, item) {
 // Closes the page and gives focus back to what had it.
 function closeSettingsPage() {
   if (!settingsShown) return;
+  settingsHoldStop?.();
   settingsShown = false;
   drawerGen++;
   el.settingsPage.hidden = true;
@@ -7705,7 +8199,10 @@ settingsRegister({
 // The page's controls: the search, the menu of a medium window, the back button of a narrow one, the scroll that marks the group,
 // and the close button. The updates count shows on Settings, since the Updates link left the sidebar.
 el.settingsPage.tabIndex = -1;
-el.settingsSearch.addEventListener('input', () => settingsApplySearch());
+el.settingsSearch.addEventListener('input', () => {
+  settingsHoldStop?.();
+  settingsApplySearch();
+});
 el.settingsPick.addEventListener('change', () => settingsPickGroup(el.settingsPick.value));
 el.settingsClose.addEventListener('click', () => closeSettingsPage());
 el.settingsBack.addEventListener('click', () => {
@@ -8466,6 +8963,13 @@ el.input.addEventListener('input', () => {
   if (el.input.value.startsWith('/')) refreshSavedNames();
 });
 
+// The list goes when the focus leaves the message box. A press on one of its rows does not move the focus (the row's mousedown is
+// prevented), so picking a command still works.
+el.input.addEventListener('focusout', () => hidePalette());
+
+const ESC_STOP_MS = 1500;
+let escapeAt = -Infinity;
+let escapeTimer = 0;
 el.input.addEventListener('keydown', e => {
   // While an input method is composing text, its keys belong to the IME: Enter confirms a conversion and Escape cancels it (B-59).
   if (e.isComposing || e.keyCode === 229) return;
@@ -8480,7 +8984,8 @@ el.input.addEventListener('keydown', e => {
     movePalette(e.key === 'ArrowDown' ? 1 : -1);
     return;
   }
-  if (paletteOpen && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !typedExact && !typedSaved))) {
+  // Tab on a command that is already typed in full goes on to the next control, as Tab does anywhere else.
+  if (paletteOpen && ((e.key === 'Tab' && !typedExact) || (e.key === 'Enter' && !e.shiftKey && !typedExact && !typedSaved))) {
     e.preventDefault();
     pickCommand(paletteIndex);
     return;
@@ -8495,9 +9000,25 @@ el.input.addEventListener('keydown', e => {
       return;
     }
     if (!el.drawer.hidden) return;
+    // A stray Escape must not end a run: the first one says how to stop it, the second within 1.5 s does. The Stop button is one press.
+    if (!activeRun() && !S.running) return;
+    const now = Date.now();
+    if (now - escapeAt > ESC_STOP_MS) {
+      escapeAt = now;
+      el.hint.textContent = 'Press Esc again to stop.';
+      // The hint is hidden in a narrow window, so the same words are also a toast.
+      toast('Press Esc again to stop.', 'ok', { key: 'esc-stop', ms: ESC_STOP_MS });
+      el.hint.classList.remove('hint-args');
+      clearTimeout(escapeTimer);
+      escapeTimer = setTimeout(() => { escapeAt = -Infinity; commandHint(); }, ESC_STOP_MS);
+      return;
+    }
+    escapeAt = -Infinity;
+    clearTimeout(escapeTimer);
     const run = activeRun();
     if (run) run.abort();
     else if (S.running) cancelRun();
+    commandHint();
     return;
   }
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -8693,7 +9214,9 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     cycleRegion(e.shiftKey ? -1 : 1);
   }
-  if (e.key === '/' && !typing && el.drawer.hidden && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  // The message box is hidden behind the Settings page and behind a pane that has taken over the chat column, so the slash is left alone there.
+  const composerHidden = settingsShown || (paneShown && paneExpanded);
+  if (e.key === '/' && !typing && !composerHidden && el.drawer.hidden && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     el.input.focus();
     if (!el.input.value) el.input.value = '/';
@@ -8703,18 +9226,20 @@ document.addEventListener('keydown', e => {
 });
 
 // Reads everything the page shows and opens the events channel.
+// The status, the state and the updates are asked for together, and the events channel opens at the same time; each is drawn as its answer
+// arrives (the status draws the footer and the model menus itself, the state draws the page, the updates the badge). Each has its own
+// error handling, so one that fails leaves the others as they are.
 async function loadAll() {
-  try {
-    await loadProviders();
-  } catch (err) {
-    notes.push(`Cannot load status (${err.message}).`);
-  }
-  // refresh draws the whole page once. What comes after draws its own part (loadUpdates the updates badge, initMusic the music
-  // control), so the page is not drawn a second time: a second draw replaced the chat that was just painted.
-  await refresh();
-  await loadUpdates();
-  initMusic();
+  const status = loadProviders().catch(err => {
+    notes.push(`Plenum's status could not be read. ${plainError(err)}`);
+    // The state may already be drawn: the note is drawn without moving the chat.
+    if (stateLoaded) renderChat({ keep: true });
+  });
+  const state = refresh();
+  const news = loadUpdates();
   events.connect();
+  await Promise.all([status, state.catch(() => {}), news]);
+  initMusic();
 }
 
 async function boot() {
@@ -8808,7 +9333,7 @@ const UI = {
 };
 
 window.MuseUI = {
-  api, request, headers, ready, events, applyState, toast, openDrawer, closeDrawer, refreshDrawer, refresh, renderAll, renderTop, update, copyText,
+  api, request, headers, ready, events, applyState, toast, plainError, openDrawer, closeDrawer, refreshDrawer, refresh, renderAll, renderTop, update, copyText,
   // Named slots (see above) and the shared parts.
   slots: SLOTS,
   ui: UI,

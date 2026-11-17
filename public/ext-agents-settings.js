@@ -185,7 +185,7 @@
   const takenNames = block => new Set(block.types.map(t => t.name));
   const accessOf = t => (!t.files ? 'none' : t.kind === 'edit' ? 'edit' : 'read');
   const accessText = t => (!t.files ? 'No file access' : t.kind === 'edit' ? 'Edits files' : 'Reads files');
-  const returnText = d => (d === 'json' ? 'JSON for /build' : (RETURN_CHOICES.find(c => c[0] === d)?.[1] ?? d));
+  const returnText = d => (d === 'json' ? 'Structured data for the build step' : (RETURN_CHOICES.find(c => c[0] === d)?.[1] ?? d));
   // The nesting choice in force: the saved `nested`, or for a block saved before it existed, what two levels or one meant.
   const nestedOf = block => block.limits.nested ?? (block.limits.depth >= 2 ? 'read' : 'off');
   const summaryOf = block => {

@@ -108,13 +108,13 @@
     const job = MU.request(`/api/files/index?${q.toString()}`)
       .then(async res => {
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : `Request failed (${res.status})`);
+        if (!res.ok) throw new Error('The file list did not load.');
         indexes.set(key, { pid, tid, files: Array.isArray(data.files) ? data.files : [], truncated: data.truncated === true, source: data.source, got: Date.now(), error: null });
       })
       .catch(err => {
         // The message is kept for the list to show. The next time the list opens, the fetch is tried again.
         const kept = indexes.get(key) ?? { pid, tid, files: [], truncated: false, source: null, got: 0 };
-        indexes.set(key, { ...kept, error: err?.message || 'The file list did not load.' });
+        indexes.set(key, { ...kept, error: 'The file list did not load.' });
       })
       .finally(() => {
         pending.delete(key);
@@ -275,7 +275,7 @@
     }
     if (!rows.length) {
       let text;
-      if (have?.error) text = `The file list did not load: ${have.error} Type to try again.`;
+      if (have?.error) text = 'The file list did not load. Type to try again.';
       else if (!have) text = 'Looking for files…';
       else text = `No file or context matches @${query}.`;
       list.append(el('li', 'ext-mentions-note', text));

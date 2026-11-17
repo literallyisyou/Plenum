@@ -129,7 +129,7 @@
 
   function paintRing() {
     const provider = ringProvider(el.model.value);
-    const key = `${el.model.value}|${MU.providers?.anthropic?.route ?? ''}|${quota.at}`;
+    const key = `${el.model.value}|${MU.providers?.anthropic?.route ?? ''}|${quota.at}|${readFailed}`;
     if (key === painted) return;
     painted = key;
     if (!provider) {
@@ -148,7 +148,7 @@
     const state = ['ok', 'warn', 'high'].includes(entry.state) ? entry.state : 'unknown';
     ringWrap.hidden = false;
     ring.className = `ext-quota-ring ${state}`;
-    const text = describe(entry);
+    const text = describe(entry) + (readFailed && quota.at ? ` As of ${clock(quota.at)}.` : '');
     ring.title = text;
     ring.setAttribute('aria-label', text);
     arc.setAttribute('stroke-dasharray', state === 'unknown' ? `0 ${RING_LEN}` : `${((entry.usedPercent ?? 0) / 100) * RING_LEN} ${RING_LEN}`);
@@ -320,17 +320,37 @@
 
   // ---------- reading the quota ----------
 
+  // A read that Plenum refused is said once. Any other failed read keeps the last reading, and the ring says when that was.
+  let readFailed = false;
+  let refusedShown = false;
+  const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function failedRead(res) {
+    if (res && (res.status === 401 || res.status === 403)) {
+      if (!refusedShown) {
+        refusedShown = true;
+        MU.toast('Plenum needs to be opened again from this device.', 'bad');
+      }
+      return;
+    }
+    if (readFailed) return;
+    readFailed = true;
+    paintRing();
+  }
+
   async function loadQuota() {
     try {
       const res = await MU.request('/api/quota');
-      if (!res.ok) return;
+      if (!res.ok) return failedRead(res);
       const data = await res.json();
+      readFailed = false;
+      refusedShown = false;
       quota.providers = data.providers ?? null;
       quota.at = typeof data.at === 'number' ? data.at : Date.now();
       paintRing();
       checkNear();
     } catch {
-      // Offline or the server is busy: the ring keeps the last reading.
+      // Offline or the server is busy: the ring keeps the last reading and says when that was.
+      failedRead(null);
     }
   }
 

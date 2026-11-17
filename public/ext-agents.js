@@ -21,6 +21,8 @@
   const TICK_MS = 1000;
   // The list is read again every second tick (2 s) while a run is going, the tab is on screen, or agents are known to be running.
   const POLL_EVERY = 2;
+  // Not on screen: the events above carry the changes, so a live run is only read again every 30 s as a fallback.
+  const FALLBACK_EVERY = 30;
   // A Stop whose agent has not ended after this long is shown as it was (the server keeps running it, if it cannot stop).
   const STOP_WAIT_MS = 15000;
 
@@ -817,11 +819,16 @@
     }
   });
 
-  // Every second: the clocks and Stop buttons of the rows on screen, and every second poll the list while it matters.
+  // Every second: the clocks and Stop buttons of the rows on screen. The list is read every 2 s only while this pane is shown.
   setInterval(() => {
     if (root && root.isConnected && shown()) patchRows();
     pollTick += 1;
-    if (pollTick % POLL_EVERY === 0 && (MuseUI.state.running || rows.size > 0 || shown())) refresh();
+    const live = MuseUI.state.running || rows.size > 0;
+    if (shown()) {
+      if (pollTick % POLL_EVERY === 0) refresh();
+    } else if (live && pollTick % FALLBACK_EVERY === 0) {
+      refresh();
+    }
   }, TICK_MS);
 
   // The entry points: /agents running opens the tab; the /agents command can stop everything in the project.

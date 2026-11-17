@@ -223,11 +223,11 @@
     try {
       data = JSON.parse(text);
     } catch {
-      MuseUI.toast('That file is not JSON.', 'bad');
+      MuseUI.toast('That file is not one Plenum exported. Choose a file saved from Export.', 'bad');
       return;
     }
     if (!data || typeof data !== 'object' || data.kind !== 'plenum-pipelines' || !Array.isArray(data.pipelines)) {
-      MuseUI.toast('That file is not a Plenum pipelines export.', 'bad');
+      MuseUI.toast('That file is not one Plenum exported. Choose a file saved from Export.', 'bad');
       return;
     }
     try {
@@ -287,7 +287,8 @@
 
   // Asks first, then deletes, and shows the server's list.
   async function removePipeline(p, button) {
-    if (!confirm(`Delete the pipeline "${p.name}"? This cannot be undone.`)) return;
+    const sure = await MuseUI.confirm({ title: 'Delete pipeline', body: `Delete the pipeline "${p.name}"? This cannot be undone.`, action: 'Delete pipeline', tone: 'danger', focusCancel: true });
+    if (sure !== true) return;
     const project = MuseUI.state.activeProject;
     button.disabled = true;
     try {

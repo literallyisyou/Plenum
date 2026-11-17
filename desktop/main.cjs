@@ -23,13 +23,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { createKeyVault, stripKeys } = require('./keyvault.cjs');
 const { tooltipFor } = require('./alerts.cjs');
-const { createSseParser } = require('./sse.cjs');
+const { createSseParser, runEventType, runIdOf } = require('./sse.cjs');
 const { loadHandlers, handleMessage, runHooks } = require('./handler-loader.cjs');
 const { createSupervisor, smokeMode, RESTART_EXIT_CODE } = require('./server-supervisor.cjs');
 const { createLog, makeRedactor } = require('./log.cjs');
 const { createRegistryEnv } = require('./registry-env.cjs');
 const { createChooser } = require('./error-box.cjs');
 const { parseTable, doomedWithout } = require('./process-tree.cjs');
+const { createQuietReader } = require('./notify-quiet.cjs');
 
 // When the shell started, for the start lines in the log (the server answered after, the window loaded after).
 const SHELL_STARTED = Date.now();
@@ -126,6 +127,8 @@ const trayItems = new Map();
 const TRAY_ITEM_ORDER = ['update', 'phones'];
 // How many phones the server reports as connected (its phones-indicator message). The tray shows them while there are some.
 let phonesConnected = 0;
+// The words of that tray item: 'Phones (n connected)', or 'Phones and browsers (n connected)' once a browser is among them (wave 5).
+let phonesLabel = '';
 // Set once a handler has taken over the error box for a failed start, so the 30-second wait and the server's exit cannot each show
 // another box for the same failure.
 let startFailureHandled = false;
@@ -205,6 +208,23 @@ function callHooks(name, ...args) {
   runHooks(handlers, name, [desktopShell, ...args], { log: writeLog });
 }
 
+// Calls every handler's event hook with one event of the events channel (see EVENT_RUN_TYPES below for which ones). The loader
+// (desktop/handler-loader.cjs) does not route this hook, so the modules that loaded are asked here, in file order, as runStartFailed does.
+// A hook that throws, or whose promise rejects, is logged and skipped; the others still run.
+function callEventHooks(ev) {
+  for (const { file, mod } of handlerModules) {
+    const fn = mod.hooks?.event;
+    if (typeof fn !== 'function') continue;
+    const failed = err => writeLog(`hook event in ${file} failed: ${String(err?.message ?? err).replace(/[\r\n\t]+/g, ' ').slice(0, 300)}`);
+    try {
+      const out = fn(desktopShell, ev);
+      if (out && typeof out.then === 'function') out.then(undefined, failed);
+    } catch (err) {
+      failed(err);
+    }
+  }
+}
+
 // The loader's `load`: it requires the module as the loader would, and remembers the ones that loaded (for runStartFailed below).
 function loadHandlerModule(file) {
   const mod = require(file);
@@ -261,7 +281,8 @@ const desktopShell = {
   powerSaveBlocker,
   ipcMain,
   win: () => win,
-  showWindow: () => showWindow(),
+  // A notification's click: the window comes to the front and, with a route ({ kind, id? }), the page opens that place (openInPage).
+  showWindow: route => showWindow(route),
   tell: message => tell(server, message),
   get vault() {
     return vault;
@@ -276,6 +297,8 @@ const desktopShell = {
   },
   log: writeLog,
   settings: () => alertSettings(),
+  // Whether the owner's quiet hours hold now (desktop/notify-quiet.cjs, from GET /api/notify), for the run alerts (handlers/alerts.cjs).
+  quietNow: () => quietHours.quietNow(),
   stateFile: () => stateFile(),
   tray: {
     count: n => {
@@ -358,6 +381,15 @@ function startServer(registryVars) {
   child.on('message', message => {
     if (message?.type === 'shutdown-done') {
       shutdownDone?.();
+      return;
+    }
+    // The server says it listens, right after its listen() (server.mjs): the start check ends at once (see bringUp). A port other than
+    // this app's is not this start's answer, and the poll goes on.
+    if (message?.type === 'listening') {
+      if (child === server && Number(message.port) === PORT) {
+        child.listening = true;
+        child.onListening?.();
+      }
       return;
     }
     onServerMessage(child, message).catch(() => writeLog('a message from the server could not be handled'));
@@ -501,7 +533,7 @@ function tell(child, message) {
 async function onServerMessage(child, message) {
   if (child !== server || !message || typeof message !== 'object' || typeof message.type !== 'string') return;
   // The phones connected now also show in the tray. The phones handler (desktop/handlers/phones.cjs) gets the same message for its notice.
-  if (message.type === 'phones-indicator') setPhonesConnected(message.connected);
+  if (message.type === 'phones-indicator') setPhonesConnected(message.connected, message.devices);
   // The hub's launcher (lib/hub-starter.mjs, the command `up`) is running or has ended: { type: 'hub-launcher', pid, state: 'started' | 'ended' }.
   // Only the shell's own bookkeeping, no handler is asked.
   if (message.type === 'hub-launcher') {
@@ -641,27 +673,43 @@ function portInUse() {
 // starting (DECISIONS item 89). A try ends once, whichever comes first of its answer, an error or its time limit. Destroying a request
 // also fires its error event, and before this each timed-out try started two retries, so a slow server got twice as many checks every
 // round. There is one try at a time. abort, when given, is asked before every try: true stops the wait (the server has ended).
+// heard, when given, is a promise that resolves when the server says it listens (its 'listening' message, wave 4): the wait ends at once
+// then, without the next poll, and no poll starts after it. The poll stays as the way in for a server that does not send it.
 const STATUS_TRY_MS = 10_000;
-function waitForServer(timeoutMs = 30_000, abort = null) {
+function waitForServer(timeoutMs = 30_000, abort = null, heard = null) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     let checkPath = '/api/health';
+    let done = false;
+    const succeed = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const fail = message => {
+      if (done) return;
+      done = true;
+      reject(new Error(message));
+    };
+    if (heard && typeof heard.then === 'function') heard.then(succeed, () => {});
     const stopped = () => typeof abort === 'function' && abort();
     const retry = () => {
-      if (stopped()) reject(new Error('The local server stopped before it answered.'));
-      else if (Date.now() > deadline) reject(new Error('The local server did not start in time.'));
+      if (done) return;
+      if (stopped()) fail('The local server stopped before it answered.');
+      else if (Date.now() > deadline) fail('The local server did not start in time.');
       else setTimeout(tryOnce, 300);
     };
     const tryOnce = () => {
+      if (done) return;
       if (stopped()) {
-        reject(new Error('The local server stopped before it answered.'));
+        fail('The local server stopped before it answered.');
         return;
       }
       let ended = false;
       const end = outcome => {
         if (ended) return;
         ended = true;
-        if (outcome === 'ok') resolve();
+        if (outcome === 'ok') succeed();
         else if (outcome === 'older' && Date.now() <= deadline) tryOnce();
         else retry();
       };
@@ -700,8 +748,13 @@ async function bringUp({ loadPage }) {
   if (quitting) return;
   const began = Date.now();
   const child = startServer(registryVars);
+  // The server's 'listening' message ends the wait at once (it comes right after listen); the poll of waitForServer is the fallback.
+  const heard = new Promise(resolve => {
+    child.onListening = resolve;
+    if (child.listening) resolve();
+  });
   try {
-    await waitForServer(30_000, () => child.exited || child !== server || quitting);
+    await waitForServer(30_000, () => child.exited || child !== server || quitting, heard);
   } catch (err) {
     if (child.exited || child !== server || quitting) return;
     void startFailed(child, { code: null, message: err.message });
@@ -819,6 +872,8 @@ function watchWindow() {
     const url = typeof contents.getURL === 'function' ? contents.getURL() : '';
     if (!String(url).startsWith(APP_URL)) return;
     loadFailures = 0;
+    // A notification was clicked while the page was not there yet: the place it names is opened now.
+    if (pendingOpen) openInPage(pendingOpen);
     if (pageLoadedOnce) return;
     pageLoadedOnce = true;
     writeLog(`start: the window finished loading ${Date.now() - SHELL_STARTED} ms after the shell started`);
@@ -1051,8 +1106,17 @@ function fetchSettings() {
 
 // Asks the server for its state. Resolves null when it does not answer in time, so a slow server changes nothing.
 function fetchState() {
+  return fetchJson('/api/state');
+}
+
+// The owner's quiet hours, read from the notification hub's settings (wave 5 integration). Read again on every new events channel and
+// when the last reading is five minutes old; until a read worked, nothing is quiet.
+const quietHours = createQuietReader({ fetchJson: apiPath => fetchJson(apiPath) });
+
+// GET of one of the server's own JSON paths (with the app's token). Resolves null when it does not answer in time, is not 200 or not JSON.
+function fetchJson(apiPath) {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port: PORT, path: '/api/state', headers: apiHeaders() }, res => {
+    const req = http.get({ host: '127.0.0.1', port: PORT, path: apiPath, headers: apiHeaders() }, res => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', chunk => {
@@ -1092,8 +1156,36 @@ async function pollServer() {
   }
 }
 
+// What the event hook of the handlers is given (wave 4): the first event of every run, whatever its type (so a run is known from its
+// start, also a council, which sends no start of its own), a run's events of the types below, 'notice' and 'approval' (a card answered),
+// and { type: 'hello' } when a channel opens. A run's other events (the streamed words of a reply above all: one event per word) are
+// dropped by the parser before they are parsed (skipFrame, desktop/sse.cjs runEventType), so this process does no JSON work for them.
+const EVENT_RUN_TYPES = new Set(['start', 'done', 'error', 'approval', 'approval-closed']);
+// The runs this channel has passed on, so only a run's first frame of another type is parsed. A run's done takes it out; the set is kept
+// small (a done that never came is forgotten with the oldest).
+const seenRuns = new Set();
+const MAX_SEEN_RUNS = 500;
+
+function noteRun(runId, inner) {
+  // A seat's or a column's own done (a compare) is not the run's end.
+  if (inner.type === 'done' && (inner.seat === undefined || inner.seat === null)) {
+    seenRuns.delete(runId);
+    return;
+  }
+  seenRuns.add(runId);
+  while (seenRuns.size > MAX_SEEN_RUNS) seenRuns.delete(seenRuns.values().next().value);
+}
+
+// The parser's skip: true for a run frame whose event no handler reads, once the run has been seen. Read from the text, not parsed.
+function skipFrame(text) {
+  const inner = runEventType(text);
+  if (!inner || EVENT_RUN_TYPES.has(inner)) return false;
+  const runId = runIdOf(text);
+  return runId !== '' && seenRuns.has(runId);
+}
+
 // Opens the events channel (GET /api/events). Its hello and state events carry the state without messages, which is all
-// onState reads. When the channel ends or fails it is opened again after 1, 2, 4, 8 and then 10 seconds, and the poll above
+// onState reads. The run, notice and approval events go to the handlers' event hook (callEventHooks, above). When the channel ends or fails it is opened again after 1, 2, 4, 8 and then 10 seconds, and the poll above
 // covers the gap. Calling this while a channel is open or a retry is waiting starts over with a fresh one.
 function subscribeEvents() {
   if (quitting) return;
@@ -1105,12 +1197,33 @@ function subscribeEvents() {
     old.destroy();
   }
   eventsUp = false;
+  // A new channel: every run is new to it, so the first frame of each is passed on again (see skipFrame).
+  seenRuns.clear();
   const parser = createSseParser(ev => {
-    if (!ev || typeof ev !== 'object' || (ev.type !== 'hello' && ev.type !== 'state') || !ev.state) return;
-    eventsUp = true;
-    eventsFails = 0;
-    onState(ev.state);
-  });
+    if (!ev || typeof ev !== 'object') return;
+    if (ev.type === 'hello' || ev.type === 'state') {
+      if (!ev.state) return;
+      eventsUp = true;
+      eventsFails = 0;
+      // The handlers that follow runs start over on a new channel; the state that came with hello follows at once.
+      if (ev.type === 'hello') {
+        callEventHooks({ type: 'hello', at: ev.at });
+        // A new channel may be a new server, or settings changed while it was away.
+        quietHours.refresh();
+      }
+      onState(ev.state);
+      return;
+    }
+    if (ev.type === 'run') {
+      const inner = ev.event && typeof ev.event === 'object' ? ev.event : null;
+      if (typeof ev.runId !== 'string' || !inner) return;
+      const first = !seenRuns.has(ev.runId);
+      noteRun(ev.runId, inner);
+      if (first || EVENT_RUN_TYPES.has(inner.type)) callEventHooks(ev);
+      return;
+    }
+    if (ev.type === 'notice' || ev.type === 'approval') callEventHooks(ev);
+  }, { skip: skipFrame });
   const req = http.get({ host: '127.0.0.1', port: PORT, path: '/api/events', headers: { ...apiHeaders(), accept: 'text/event-stream' } }, res => {
     if (res.statusCode !== 200) {
       res.resume();
@@ -1137,16 +1250,54 @@ function eventsLost(req) {
   eventsTimer = setTimeout(subscribeEvents, wait);
 }
 
-// Brings the window back from the tray, or from behind other windows.
-function showWindow() {
+// Brings the window back from the tray, or from behind other windows. With a route (a notification's click: { kind, id? }), the page then
+// opens that place (openInPage).
+function showWindow(route) {
   if (SMOKE) return;
+  const open = cleanRoute(route);
   if (!win) {
+    if (open) pendingOpen = open;
     reopenWindow();
     return;
   }
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  if (open) openInPage(open);
+}
+
+// The places a notification can open (public/ext-open-route.js does the opening): the waiting card of a project, a project's chat, Today
+// (with a business), Plan use, Accounts and Background services. An id is a plain id (a project's or a business's), never a path or text.
+const OPEN_KINDS = new Set(['waiting', 'chat', 'today', 'plan-use', 'accounts', 'services']);
+const OPEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+// A route that waits for the page: the window was made again, or its page has not finished loading. Sent once it has.
+let pendingOpen = null;
+let openSeq = 0;
+
+function cleanRoute(route) {
+  if (!route || typeof route !== 'object' || !OPEN_KINDS.has(route.kind)) return null;
+  return { kind: route.kind, ...(typeof route.id === 'string' && OPEN_ID.test(route.id) ? { id: route.id } : {}) };
+}
+
+// Tells the page to open a place: { op: 'open', kind, id }. The preload bridge has no channel for this and the page needs none: the message
+// is posted to the page's own window (window.postMessage, same origin) and also left in window.__plenumPendingOpen, which
+// public/ext-open-route.js takes when it loads later than the message. Only the app's own page at the app's own address is told, and only
+// a cleaned route (cleanRoute) is ever put into the script. A page that is still loading gets it when it has finished (did-finish-load).
+function openInPage(open) {
+  const contents = win?.webContents;
+  const url = typeof contents?.getURL === 'function' ? String(contents.getURL()) : '';
+  if (!contents || !url.startsWith(APP_URL) || (typeof contents.isLoading === 'function' && contents.isLoading())) {
+    pendingOpen = open;
+    return;
+  }
+  pendingOpen = null;
+  openSeq += 1;
+  const message = JSON.stringify({ op: 'open', ...open, n: openSeq, at: Date.now() });
+  try {
+    contents.executeJavaScript(`(() => { const m = ${message}; window.__plenumPendingOpen = m; window.postMessage(m, location.origin); })()`)?.catch?.(() => {});
+  } catch {
+    // The page is gone; the window still came to the front.
+  }
 }
 
 // There is no window (it was destroyed, or this is a second launch on a copy that lost its window): makes one and loads the page. Not
@@ -1191,17 +1342,25 @@ function setTrayItem(name, item) {
 
 // The phones the server reports connected (its phones-indicator message, lib/remote/index.mjs): the tray item 'Phones (n connected)'
 // while there are some, and the same words in the tray tooltip.
-function setPhonesConnected(names) {
+// devices ([{ name, form }], wave 5) says which of them are browsers; the words come from the phones handler (trayLabel).
+function setPhonesConnected(names, devices) {
   const count = Array.isArray(names) ? names.length : 0;
-  if (count === phonesConnected) return;
+  let label = `Phones (${count} connected)`;
+  try {
+    label = require('./handlers/phones.cjs').trayLabel(count, devices);
+  } catch {
+    // The phones handler is missing: the words stay the plain ones.
+  }
+  if (count === phonesConnected && label === phonesLabel) return;
   phonesConnected = count;
-  setTrayItem('phones', count > 0 ? { label: `Phones (${count} connected)`, click: () => showWindow() } : null);
+  phonesLabel = label;
+  setTrayItem('phones', count > 0 ? { label, click: () => showWindow() } : null);
 }
 
 // The tray tooltip: the approval count (alerts.cjs), then the phones when some are connected.
 function trayTooltip() {
   const parts = [tooltipFor(trayCount)];
-  if (phonesConnected > 0) parts.push(`Phones (${phonesConnected} connected)`);
+  if (phonesConnected > 0) parts.push(phonesLabel || `Phones (${phonesConnected} connected)`);
   return parts.join(' · ');
 }
 

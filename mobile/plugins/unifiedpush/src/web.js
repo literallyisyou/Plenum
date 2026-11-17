@@ -6,7 +6,16 @@ const NOT_ON_WEB = 'UnifiedPush is only in the Android app. The browser uses Web
 
 export class UnifiedPushWeb extends WebPlugin {
   async getState() {
-    return { supported: false, distributor: null, endpoints: {}, failures: {}, registrations: [], visible: false };
+    return { supported: false, distributor: null, endpoints: {}, failures: {}, registrations: [], visible: false, endpointChanged: false };
+  }
+
+  // Nothing to take down: the browser's notifications are the service worker's (sw.js closes them itself).
+  async cancel() {
+    return { cancelled: 0 };
+  }
+
+  async cancelAll() {
+    return { cancelled: 0 };
   }
 
   async getDistributors() {

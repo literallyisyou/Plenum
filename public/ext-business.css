@@ -233,3 +233,49 @@
 .biz-do-link { font-family: var(--mono); overflow-wrap: anywhere; user-select: all; min-width: 0; }
 .biz-do-needs { overflow-wrap: anywhere; min-width: 0; }
 .biz-from-verdict { align-items: center; margin-bottom: var(--sp-3); }
+
+/* "If it could not run" in the routine editor (wave 4): two numbers with their units on one line, a note under each, the failures in a row. */
+.biz-late-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-late-label { flex: 0 1 auto; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.biz-late-unit { color: var(--muted); }
+.ext-biz .biz-late-input { width: 96px; }
+.biz-late-fails { color: var(--text-2); overflow-wrap: anywhere; }
+
+/* The phone's Today card (wave 4): one card on the start screen above the list of chats. public/ext-phone.js places it; it is the
+   pane's own look, at the phone's sizes. */
+.biz-glance { display: grid; gap: var(--sp-3); min-width: 0; margin: 0 0 var(--sp-3); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); color: var(--text); font-size: var(--fs-body); line-height: var(--lh-body); }
+.biz-glance[hidden] { display: none; }
+.biz-glance p, .biz-glance h2, .biz-glance h3, .biz-glance ul { margin: 0; padding: 0; }
+.biz-glance ul { list-style: none; }
+.biz-g-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-g-title { flex: 1 1 auto; min-width: 0; font: 600 var(--fs-read)/var(--lh-tight) var(--ui); color: var(--text); }
+.biz-g-title:focus { outline: none; }
+.biz-g-pauseall[aria-pressed="true"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 36%, var(--line)); }
+.biz-g-say { color: var(--ok); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-g-say:empty { display: none; }
+.biz-g-banner { padding: var(--sp-2) var(--sp-3); border-left: 3px solid var(--warn); border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); overflow-wrap: anywhere; }
+.biz-g-needfull { margin: 0; }
+.biz-g-group { display: grid; gap: var(--sp-2); min-width: 0; padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.biz-g-grouphead { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-g-head3 { font: 600 var(--fs-body)/var(--lh-ui) var(--ui); color: var(--text-2); }
+.biz-g-grouphead .badge { margin-left: 0; }
+.biz-g-list { display: grid; gap: var(--sp-1); min-width: 0; }
+.biz-g-row {
+  display: grid; gap: 2px; width: 100%; min-width: 0; min-height: var(--ctl); padding: var(--sp-2) var(--sp-3); box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line)); border-radius: var(--r-md); background: var(--bg); color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.biz-g-row:hover { background: var(--fill-1); }
+.biz-g-row:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.biz-g-row-title { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.biz-g-row-sub { min-width: 0; color: var(--muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.biz-g-more { justify-self: start; }
+.biz-g-line, .biz-g-bizrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.biz-g-line-text { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+.biz-g-miss { display: grid; gap: 2px; min-width: 0; }
+.biz-g-why { color: var(--text-2); }
+.biz-g-plan { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); min-width: 0; padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.biz-g-plan-label { color: var(--text-2); font-weight: 600; }
+.biz-g-plan .biz-line { flex: 1 1 160px; min-width: 0; margin: 0; }
+.biz-g-bizmain { flex: 1 1 160px; display: grid; gap: 2px; min-width: 0; }
+.biz-g-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); min-width: 0; }

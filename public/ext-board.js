@@ -397,5 +397,10 @@
   // The first read waits for the token (MuseUI.ready); the events channel's hello event reads it again on every connection.
   Promise.resolve(MuseUI.ready).then(() => sync());
   // The clocks and the minutes of the rows move while a run goes; the sidebar is redrawn every few seconds.
-  setInterval(renderSide, TICK_MS);
+  setInterval(() => {
+    if (document.visibilityState !== 'hidden') renderSide();
+  }, TICK_MS);
+  document.addEventListener?.('visibilitychange', () => {
+    if (document.visibilityState === 'visible') renderSide();
+  });
 })();

@@ -132,7 +132,7 @@
       <section class="chat" id="chat" role="log" aria-live="off" aria-label="Conversation"></section>
 
       <footer class="composer-wrap" id="composerWrap">
-        <div class="palette" id="palette" hidden></div>
+        <div class="palette" id="palette" role="listbox" aria-label="Commands" hidden></div>
         <section class="board" id="board" aria-label="Council seats" hidden>
           <div class="board-bar">
             <span class="kicker">Council</span>
@@ -167,7 +167,7 @@
         <!-- One banner slot above the message box: notices and other panels' banners are ordered by MuseUI.slots.bannerSlot. -->
         <div class="banner-slot" id="bannerSlot" data-slot="bannerSlot"></div>
         <form class="composer" id="composer">
-          <textarea id="input" rows="1" placeholder="Ask for a change, a review or a plan. Type / for commands." spellcheck="false" aria-label="Message"></textarea>
+          <textarea id="input" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="palette" rows="1" placeholder="Ask for a change, a review or a plan. Type / for commands." spellcheck="false" aria-label="Message"></textarea>
           <div class="composer-bar">
             <div class="seg mode-seg" role="group" aria-label="What Send does" title="Chat asks the main model. Council asks every seat, then a moderator sums up">
               <button type="button" class="seg-btn" data-mode="chat" aria-pressed="true">Chat</button>

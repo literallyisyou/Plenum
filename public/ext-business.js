@@ -293,7 +293,8 @@
   }
 
   const slot = () => ({ state: 'idle', data: null, error: '' });
-  const D = { biz: slot(), dec: slot(), brief: slot(), rt: slot(), starts: slot() };
+  // gbrief: today's brief of every business, for the phone's Today card (the pane's own brief follows its switcher and its range).
+  const D = { biz: slot(), dec: slot(), brief: slot(), rt: slot(), starts: slot(), gbrief: slot() };
   const ones = new Map(); // business id -> the answer of GET /api/business/one
 
   async function ask(path, body) {
@@ -308,7 +309,18 @@
     const data = await res.json().catch(() => null);
     if (data?.terms === true) window.dispatchEvent(new CustomEvent('plenum:terms-required'));
     if (res.ok && isObj(data)) return { ok: true, status: res.status, data };
-    return { ok: false, status: res.status, error: str(data?.error) || `The request failed (${res.status}).` };
+    return { ok: false, status: res.status, error: str(data?.error) || failWords(res.status) };
+  }
+  // A refusal that came without a sentence of the server's: what happened in plain words, never a number.
+  function failWords(status) {
+    if (status === 401) return 'Plenum did not accept this page. Close it and open Plenum again.';
+    if (status === 403) return 'Plenum did not allow that from here.';
+    if (status === 404) return 'That is not in this build of Plenum.';
+    if (status === 409) return 'Something changed in the meantime. Look again, then try once more.';
+    if (status === 413) return 'That is too large to send.';
+    if (status === 429) return 'Plenum is busy. Try again in a moment.';
+    if (status >= 500) return 'Plenum could not do that just now. Try again in a moment.';
+    return 'That did not work. Try again in a moment.';
   }
 
   // Reads one answer into its slot. True when what the pane shows has changed.
@@ -358,6 +370,7 @@
     editor: null,       // the routine being made or changed
     setup: null,        // { id, f, dirty }
     focus: '',          // the control to focus after the next draw
+    goto: null,         // { item, start, business, until }: a place on Today to bring into view once it is drawn (goTo)
     said: { text: '', bad: false },
   };
 
@@ -426,6 +439,13 @@
           const folder = ui.tab === 'routines' && D.rt.state === 'ok' ? factsFolder() : '';
           if (folder) jobs.push(loadFacts(folder));
         }
+        // The phone's Today card is on screen (wave 4): the businesses, the routines and today's brief of every business are read for
+        // it too, the first two once only when the pane reads them as well.
+        if (glanceWanted()) {
+          G.readAt = Date.now();
+          jobs.push(load(D.gbrief, '/api/business/brief?range=day'));
+          if (!(shown() || opening)) jobs.push(load(D.biz, '/api/business'), load(D.rt, '/api/routines'));
+        }
         const changed = (await Promise.all(jobs)).some(Boolean);
         // The business on screen is gone (closed elsewhere, or removed): all businesses are shown, and the brief is read for them.
         if (ui.sel !== ALL && D.biz.state === 'ok' && !bizById(ui.sel)) {
@@ -435,6 +455,7 @@
           readAgain = true;
         }
         paintCount();
+        paintGlance();
         if (changed) { if (drawingWaits()) late = true; else paint(); }
       } while (readAgain);
     })().finally(() => { reading = null; });
@@ -774,6 +795,18 @@
     refresh();
   }
 
+  // What a routine does when it could not run at its time: the limits and defaults of lib/routines.mjs (CEILINGS, DEFAULTS, FAILS_OFF).
+  // The server checks them again and answers its own sentence when a number is outside them.
+  const LATE = {
+    catchUpHours: { min: 0, max: 168, def: 6, key: 'ed|catchup', bad: 'Run late up to: a whole number of hours from 0 to 168.' },
+    retryMin: { min: 5, max: 1440, def: 30, key: 'ed|retry', bad: 'Try again after: a whole number of minutes from 5 to 1440.' },
+  };
+  const FAILS_OFF = 3;
+  const lateOf = (r, k) => (Number.isInteger(r?.[k]) ? r[k] : LATE[k].def);
+  const numText = v => { const t = String(v ?? '').trim(); return t !== '' && Number.isFinite(Number(t)) ? String(Number(t)) : t; };
+  // Switched off by the three-failures rule: off, with three or more failures in a row on its record.
+  const offByFails = r => r?.on !== true && num(r?.failsInRow) >= FAILS_OFF;
+
   // What the editor would send for each field, as text, so two states of the form can be compared.
   function sentOf(e) {
     return {
@@ -782,6 +815,8 @@
       prompt: e.source === 'file' ? `file ${str(e.file).trim()}` : `text ${e.text}`,
       onlyIf: str(e.folder).trim(),
       leads: [...e.leads].join(' '),
+      catchUpHours: numText(e.catchUp),
+      retryMin: numText(e.retry),
     };
   }
 
@@ -791,13 +826,23 @@
     const name = e.name.trim();
     if (!name) { say('Give the routine a name.', true); ui.focus = 'ed|name'; return paint(); }
     if (!e.business) { say('Choose the business this routine works for.', true); ui.focus = 'ed|business'; return paint(); }
+    const late = {};
+    for (const [k, typed] of [['catchUpHours', e.catchUp], ['retryMin', e.retry]]) {
+      const lim = LATE[k];
+      const t = String(typed ?? '').trim();
+      const v = Number(t);
+      if (t === '' || !Number.isInteger(v) || v < lim.min || v > lim.max) { say(lim.bad, true); ui.focus = lim.key; return paint(); }
+      late[k] = v;
+    }
     const home = arr(bizById(e.business)?.projects)[0] ?? '';
     const when = e.type === 'every' ? { type: 'every', hours: Math.round(Number(e.hours)) } : { type: 'daily', at: e.at, days: [...e.days].sort((a, b) => a - b) };
     const fields = {
       name, when,
       prompt: e.source === 'file' ? { text: '', file: e.file.trim() } : { text: e.text, file: '' },
-      onlyIf: { folder: e.folder.trim() }, leads: [...e.leads],
+      onlyIf: { folder: e.folder.trim() }, leads: [...e.leads], ...late,
     };
+    // A new routine sends the two numbers only when they are not the server's defaults (it fills those in itself).
+    if (!e.id) for (const k of Object.keys(late)) if (late[k] === LATE[k].def) delete fields[k];
     let body = { business: e.business, project: e.project || home, kind: 'lead', ...fields };
     if (e.id) {
       // A routine that exists: only what was changed here is sent, so the switch, the next run and a playbook that waits for Keep stay
@@ -1081,6 +1126,7 @@
     const type = TYPES[item.type] ?? TYPES.question;
     const box = make('article', 'biz-item');
     box.dataset.n = String(n);
+    if (str(item.business)) box.dataset.business = item.business;
     const title = make('h4', 'biz-item-title', str(item.title) || 'An item with no title');
     title.id = uid('biz-it');
     box.setAttribute('aria-labelledby', title.id);
@@ -1544,7 +1590,8 @@
     const lead = str(l.lead) ? `, led by ${modelLabel(l.lead)}` : '';
     const tail = [str(l.done) ? `Finished: ${sentence(l.done)}` : '', str(l.next) ? `Next step: ${sentence(l.next)}` : ''].filter(Boolean).join(' ');
     if (l.state === 'running') return `Running since ${at}${lead}.`;
-    if (l.state === 'held') return `Not started ${at}. ${sentence(l.why)}`.trim();
+    // Held for a reason Plenum names (a program waits for a sign-in, for example): the reason is what the person reads first.
+    if (l.state === 'held') return str(l.why) && r.hold !== 'playbook' ? `Waiting: ${sentence(l.why)}` : `Not started ${at}. ${sentence(l.why)}`.trim();
     // A finished run can carry a sentence too (its lead's plan use was not known, so the stop line could not be checked).
     if (l.state === 'done') return `Last run ${at}: finished in ${spanText(l.ms)}${lead}. ${[sentence(l.why), tail].filter(Boolean).join(' ')}`.trim();
     if (l.state === 'nothing') return `Last check ${at}: nothing to do, so no model was started.`;
@@ -1662,8 +1709,14 @@
     const when = make('p', 'biz-rt-when', `${whenWords(r.when)}. ${r.on !== true ? 'Switched off.' : heldBy ? `Paused with ${str(heldBy.name) || 'its business'}: it will not start until you press Resume.` : num(r.next) ? (noStarts() ? TEXT.noStart : `Next run ${whenText(r.next)}.`) : 'The next run is not set yet.'}`);
     row.append(top, when, make('p', `biz-rt-last${r.last?.state === 'failed' ? ' biz-bad' : ''}`, lastWords(r)));
     if (held) row.append(make('p', 'biz-rt-held', TEXT.held));
+    // Switched off by the three-failures rule: said on the row, and Turn back on leads to the two lines and Switch on, as the switch does.
+    const offFails = offByFails(r) && ui.arming !== r.id;
+    if (offFails) row.append(make('p', 'biz-rt-held', `Failed ${plural(num(r.failsInRow), 'time', 'times')} in a row, so Plenum switched it off.`));
 
     const acts = make('div', 'biz-actions');
+    if (offFails) {
+      acts.append(btn('ghost small', 'Turn back on', `rt|${r.id}|again`, () => { ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
+    }
     const run = btn('ghost small', 'Run now', `rt|${r.id}|run`, () => routineAct(r, 'run'));
     run.disabled = busy || running;
     acts.append(run);
@@ -1759,6 +1812,7 @@
       days: new Set(arr(w.days).length ? arr(w.days).map(d => (d === 7 ? 0 : d)) : [1, 2, 3, 4, 5]),
       source: str(r?.prompt?.text) && !str(r?.prompt?.file) ? 'text' : 'file', file: str(r?.prompt?.file), text: str(r?.prompt?.text),
       folder: str(r?.onlyIf?.folder), leads: arr(r?.leads).map(String),
+      catchUp: String(lateOf(r, 'catchUpHours')), retry: String(lateOf(r, 'retryMin')),
     };
   }
 
@@ -1791,6 +1845,74 @@
       box.append(add);
     }
     return box;
+  }
+
+  // The editor's group "If it could not run": how late a missed run still starts, how soon a failed one is tried again, and the routine's
+  // failures in a row (read only), with Turn back on when the three-failures rule switched it off.
+  function lateSet(e) {
+    const set = make('fieldset', 'biz-set biz-late');
+    set.append(make('legend', 'biz-label', 'If it could not run'));
+    const row = (k, before, after, value, onInput, note) => {
+      const lim = LATE[k];
+      const box = make('div', 'biz-late-row');
+      const label = make('label', 'biz-late-label', before);
+      const inp = input('number', value, lim.key, onInput, { min: lim.min, max: lim.max, step: 1, inputmode: 'numeric' });
+      inp.classList.add('biz-late-input');
+      label.htmlFor = inp.id = uid('biz-f');
+      const unit = make('span', 'biz-late-unit', after);
+      const n = make('p', 'biz-note', note);
+      n.id = uid('biz-n');
+      inp.setAttribute('aria-describedby', n.id);
+      box.append(label, inp, unit);
+      set.append(box, n);
+    };
+    row('catchUpHours', 'Run late up to', 'hours', e.catchUp, v => { e.catchUp = v; },
+      `When Plenum was closed or the PC was asleep at its time, it still starts this many hours late. 0 means only at its time. ${LATE.catchUpHours.min} to ${LATE.catchUpHours.max}.`);
+    row('retryMin', 'Try again after', 'minutes', e.retry, v => { e.retry = v; },
+      `After a failed run it tries once more after this long, while that is still inside the hours above. ${LATE.retryMin.min} to ${LATE.retryMin.max}.`);
+    const r = e.id ? routines().find(x => x.id === e.id) : null;
+    const fails = num(r?.failsInRow);
+    if (r && fails > 0) {
+      const off = offByFails(r) && e.on !== true;
+      const line = make('p', `biz-late-fails${off ? ' biz-line-warn' : ''}`, off
+        ? `Failed ${plural(fails, 'time', 'times')} in a row, so Plenum switched it off.`
+        : `Failed ${plural(fails, 'time', 'times')} in a row. After ${FAILS_OFF} it is switched off.`);
+      line.dataset.fk = 'ed|fails';
+      set.append(line);
+      // Without a folder there are no two lines on this form, so Turn back on goes the row's way: the lines and Switch on, on the row.
+      if (off && !editorProject(e)) {
+        const acts = make('div', 'biz-actions');
+        acts.append(btn('ghost small', 'Turn back on', 'ed|again', () => { ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
+        set.append(acts);
+      }
+    }
+    return set;
+  }
+
+  const editorProject = e => e.project || arr(bizById(e.business)?.projects)[0] || '';
+
+  // The editor's Turn back on, drawn under "Before you switch it on" so the press comes after the two lines, as on the row.
+  function againEl(e) {
+    const r = e.id ? routines().find(x => x.id === e.id) : null;
+    if (!r || !offByFails(r) || e.on === true) return null;
+    const busy = ui.busy.has(`rt|${r.id}`);
+    const again = btn('ghost small', busy ? 'Turning it on…' : 'Turn back on', 'ed|again', () => turnBackOn(r));
+    again.disabled = busy;
+    const acts = make('div', 'biz-actions');
+    acts.append(again);
+    return acts;
+  }
+
+  // Turn back on, from the editor: it sits under the two lines about the folder on the same form, so one press switches it on. Only the
+  // switch is sent; the server counts the failures from zero again.
+  async function turnBackOn(r) {
+    const res = await act(`rt|${r.id}`, '/api/routines', { id: r.id, on: true });
+    if (res.status === -1) return;
+    if (res.ok && ui.editor?.id === r.id) ui.editor.on = true;
+    say(res.ok ? `${str(r.name)} is switched on again.` : `${str(r.name)} was not switched on. ${sentence(res.error)}`, !res.ok);
+    ui.focus = res.ok ? 'ed|save' : 'ed|again';
+    paint();
+    refresh();
   }
 
   function editorEl() {
@@ -1875,12 +1997,14 @@
     const offers = [...new Set([...bizLeads, ...arr(MU.catalog).map(refOf)])];
     const leads = make('fieldset', 'biz-set');
     leads.append(make('legend', 'biz-label', 'Leads, in your order'), leadsEditor(e.leads, offers, 'ed|lead', bizLeads.length ? `It uses the business's leads: ${bizLeads.map(modelLabel).join(', ')}.` : 'It uses the business\'s leads. The business has none yet: add them under Setup.', redraw));
-    form.append(leads);
+    form.append(leads, lateSet(e));
 
-    const project = e.project || arr(bizById(e.business)?.projects)[0] || '';
+    const project = editorProject(e);
     if (project && !e.on) {
       const pre = make('div', 'biz-arm');
       pre.append(make('h5', 'biz-arm-title', 'Before you switch it on'), folderLines(project, 'ed').box);
+      const again = againEl(e);
+      if (again) pre.append(again);
       form.append(pre);
     }
 
@@ -2160,6 +2284,7 @@
     if (!root || !parts) return;
     const act = document.activeElement;
     const had = root.contains(act) && act.dataset?.fk ? { key: act.dataset.fk, from: act.selectionStart, to: act.selectionEnd } : null;
+    const place = root.contains(act) && !had && act.matches?.('.biz-item, .biz-card') ? { n: act.dataset.n ?? '', start: act.dataset.start ?? '', id: act.dataset.id ?? '' } : null;
     const scroll = root.parentElement?.scrollTop ?? 0;
     // One odd answer must not leave the old pane on screen without a word: a part that cannot be drawn says so, in its own place.
     try { paintHead(); } catch (err) {
@@ -2180,6 +2305,20 @@
     parts.panel = panel;
     showSaid();
     drawNotices();
+    refocus(had, scroll);
+    // An item, a program's card or a business that was brought into view (goTo) keeps the focus when the list is drawn again.
+    if (place && !root.contains(document.activeElement)) {
+      const sel = place.n ? `.biz-item[data-n="${CSS.escape(place.n)}"]` : place.start ? `.biz-start[data-start="${CSS.escape(place.start)}"]` : `.biz-card[data-id="${CSS.escape(place.id)}"]`;
+      const n = root.querySelector(sel);
+      if (n) {
+        n.tabIndex = -1;
+        try { n.focus({ preventScroll: true }); } catch { /* the focus is a courtesy */ }
+      }
+    }
+    goTo();
+  }
+
+  function refocus(had, scroll) {
     const want = ui.focus || had?.key;
     const explicit = Boolean(ui.focus);
     ui.focus = '';
@@ -2192,6 +2331,39 @@
     if (had && target.dataset.fk === had.key && typeof had.from === 'number' && typeof target.setSelectionRange === 'function') {
       try { target.setSelectionRange(had.from, had.to); } catch { /* this kind of field has no caret to place */ }
     }
+  }
+
+  // A place another part of the page asked for (a notification, the phone's Today card, #today=<business>): the item, the program's card
+  // or the business is brought into view on Today once it is drawn. When the lists are read and it is not there, it is let go; an item
+  // that no longer waits says so.
+  let gotoTimer = 0;
+  function goTo() {
+    const g = ui.goto;
+    if (!g || !root || ui.tab !== 'today') return;
+    if (Date.now() > g.until) { ui.goto = null; return; }
+    const pick1 = sel => root.querySelector(sel);
+    let el = null;
+    if (g.item) el = pick1(`.biz-item[data-n="${CSS.escape(String(g.item))}"]`);
+    else if (g.start) el = pick1(`.biz-start[data-start="${CSS.escape(g.start)}"]`);
+    else if (g.business) el = pick1(`.biz-item[data-business="${CSS.escape(g.business)}"]`) ?? pick1(`.biz-card[data-id="${CSS.escape(g.business)}"]`);
+    if (!el) {
+      const read = D.dec.state === 'ok' && D.biz.state !== 'idle' && D.biz.state !== 'loading' && (!g.business || !['idle', 'loading'].includes(D.brief.state));
+      if (read) {
+        ui.goto = null;
+        if (g.item) say(`#${g.item} no longer waits for you.`);
+      }
+      return;
+    }
+    // On a phone the pane is laid out a moment after it opens: until then there is nowhere to scroll to, so this looks again shortly.
+    if (!el.getClientRects().length) {
+      clearTimeout(gotoTimer);
+      gotoTimer = setTimeout(goTo, 150);
+      return;
+    }
+    ui.goto = null;
+    if (!el.hasAttribute('tabindex')) el.tabIndex = -1;
+    try { el.scrollIntoView({ block: 'start' }); } catch { /* the pane scrolls when it can */ }
+    try { el.focus({ preventScroll: true }); } catch { /* reading it is enough */ }
   }
 
   // The registered notice that fits the folder's approval mode, under the two lines. Each is asked for once and lives in an element of
@@ -2267,6 +2439,331 @@
     paint();
   }
 
+  // ---------- the phone's Today card (wave 4) ----------
+  // On a phone the start screen (Projects) shows one compact card above the list of chats once a business exists: public/ext-phone.js
+  // places MU.businessToday.node() there, and nothing else of the card is the phone layer's. It is built only from the reads the pane
+  // already makes: GET /api/decisions (what waits), GET /api/routines (what runs and what did not run), GET /api/business (the businesses
+  // and Pause all) and GET /api/business/brief?range=day (each business's next run), plus the plan watch's own line when this page has one.
+  // A row of what waits is never answered here: a tap opens it on Today, where its draft, its note and its whole text are. Run now, Pause,
+  // Resume and Pause all need Full access on a phone; Stop on a run works at every level, as in the pane. The card is read while it is on
+  // screen: on the events of the routines, the list and the notices, when the phone is connected again, and by itself at most once a minute.
+
+  const G = { node: null, sig: '', said: { text: '', bad: false }, sayTimer: 0, busy: new Set(), readAt: 0, laterTimer: 0, laterAt: 0 };
+  const SAFE_ID = /^[A-Za-z0-9_.-]{1,80}$/;
+  const onPhone = () => document.documentElement?.dataset?.surface === 'phone';
+  // Wanted: the card is in the page and the screen that holds it is shown. The card itself is hidden while no business exists, so its
+  // parent is what is looked at.
+  const glanceWanted = () => Boolean(G.node?.isConnected && G.node.parentElement && G.node.parentElement.getClientRects().length > 0 && document.visibilityState !== 'hidden');
+  // The last results that mean a routine did not do its work today. A stop is the person's own act and is not counted here.
+  const DID_NOT_RUN = { failed: 'Failed', skipped: 'Skipped', skip: 'Skipped', interrupted: 'Cut off', held: 'Waiting' };
+  const GLANCE_ROWS = 4;
+
+  function glanceModel() {
+    if (D.biz.state !== 'ok') return null;
+    const list = open();
+    if (!list.length) return null;
+    const all = routines();
+    const live = runningIds();
+    const day0 = new Date();
+    day0.setHours(0, 0, 0, 0);
+    const waits = [
+      ...startCards().map(c => ({ kind: 'start', id: str(c.id), title: `Start ${str(c.label) || 'a program'}: ${str(c.title) || 'a task'}`, sub: 'A program waits for your yes' })),
+      ...items().map(i => ({ kind: 'item', id: num(i.n), title: str(i.title) || 'An item with no title', sub: [bizName(i.business), (TYPES[i.type] ?? TYPES.question).label].join(' · ') })),
+    ];
+    const running = [
+      ...live.map(id => { const r = all.find(x => String(x.id) === id); return { key: id, name: str(r?.name) || 'A routine', business: str(r?.business) }; }),
+      ...followUps().map(f => ({ key: str(f.key), name: str(f.name) || TEXT.followUp, business: str(f.business) })),
+    ];
+    const missed = all.filter(r => !live.includes(String(r.id)) && (offByFails(r) || (num(r.last?.at) >= day0.getTime() && DID_NOT_RUN[str(r.last?.state)])))
+      .map(r => {
+        const why = sentence(r.last?.why);
+        const word = DID_NOT_RUN[str(r.last?.state)] ?? 'Not run';
+        return {
+          id: str(r.id), name: str(r.name) || 'A routine', business: str(r.business),
+          why: offByFails(r) ? `Failed ${plural(num(r.failsInRow), 'time', 'times')} in a row, so Plenum switched it off.` : r.last?.state === 'held' && why ? `Waiting: ${why}` : why ? `${word}. ${why}` : `${word}.`,
+        };
+      });
+    const briefs = arr(D.gbrief.data?.businesses).filter(isObj);
+    const rows = list.map(b => {
+      const mine = all.filter(r => r.business === b.id);
+      let next = arr(briefs.find(x => x.id === b.id)?.next).filter(n => isObj(n) && num(n.at) && str(n.routine)).sort((x, y) => x.at - y.at)[0] ?? null;
+      if (!next) {
+        const r = mine.filter(x => x.on === true && num(x.next)).sort((x, y) => x.next - y.next)[0];
+        if (r) next = { routine: str(r.id), at: r.next };
+      }
+      const nr = next ? all.find(r => r.id === next.routine) : null;
+      return {
+        id: str(b.id), name: str(b.name) || 'A business', status: str(b.status) || 'active',
+        next: next ? { id: str(next.routine), name: str(nr?.name) || 'a routine', at: num(next.at), running: live.includes(String(next.routine)) } : null,
+      };
+    });
+    return { waits, count: waitingCount() ?? waits.length, running, missed, rows, paused: D.biz.data?.paused === true, held: noStarts() };
+  }
+
+  // The plan watch's one line for the business whose plan use is worst, or null (no plan watch, or nothing to say).
+  function glancePlan() {
+    const rank = { out: 3, short: 2, tight: 1 };
+    let best = null;
+    for (const b of open()) {
+      let n = null;
+      try { n = MU.planWatch?.businessLine?.(b.id) ?? null; } catch { n = null; }
+      if (n && (!best || (rank[n.dataset.state] ?? 0) > (rank[best.dataset.state] ?? 0))) best = n;
+    }
+    return best;
+  }
+
+  function glanceSay(text, bad) {
+    clearTimeout(G.sayTimer);
+    G.said = { text: str(text), bad: Boolean(bad) };
+    if (G.said.text && !bad) G.sayTimer = setTimeout(() => glanceSay(''), 8000);
+    paintGlance();
+  }
+
+  // One POST of the card. Its key is busy until the answer, so it cannot be pressed twice; the answer is said on the card's own line.
+  async function glanceDo(key, path, body, done, fail) {
+    if (G.busy.has(key)) return;
+    G.busy.add(key);
+    paintGlance();
+    const r = await ask(path, body);
+    G.busy.delete(key);
+    glanceSay(r.ok ? done(r) : `${fail} ${sentence(r.error)}`, !r.ok);
+    refresh();
+  }
+
+  async function glancePauseAll(on) {
+    if (on) {
+      let yes = false;
+      try {
+        yes = await MU.confirm({ title: 'Pause every business?', body: 'Each business stops the routine it is running now, and no routine starts until you press Resume all.', action: 'Pause all', focusCancel: true });
+      } catch { yes = false; }
+      if (!yes) return;
+    }
+    glanceDo('g|pauseall', '/api/business/pause-all', { paused: on }, () => (on ? 'Everything is paused.' : 'Routines may start again.'), 'That did not work.');
+  }
+
+  function openToday(opts) {
+    try { MU.openBusinesses?.({ tab: 'today', ...opts }); } catch (err) { console.error('Businesses: Today could not be opened.', err); }
+  }
+
+  function glanceGroup(title, cls, count) {
+    const g = make('div', `biz-g-group ${cls}`);
+    const h = make('h3', 'biz-g-head3', title);
+    h.id = uid('biz-g');
+    g.setAttribute('role', 'group');
+    g.setAttribute('aria-labelledby', h.id);
+    const head = make('div', 'biz-g-grouphead');
+    head.append(h);
+    if (count) head.append(MU.ui?.badge ? MU.ui.badge(count, 'amber') : make('span', 'badge', count));
+    g.append(head);
+    return g;
+  }
+
+  function paintGlance() {
+    if (!G.node) return;
+    const m = glanceModel();
+    const plan = m ? glancePlan() : null;
+    const below = belowFull();
+    const sig = JSON.stringify([m, plan ? [plan.textContent, plan.className] : null, below, [...G.busy], G.said]);
+    if (sig === G.sig) return;
+    G.sig = sig;
+    const node = G.node;
+    const wasHidden = node.hidden;
+    node.hidden = !m;
+    if (!m) {
+      node.replaceChildren();
+      if (!wasHidden) tellPhone();
+      return;
+    }
+    const held = node.contains(document.activeElement) ? document.activeElement.dataset?.fk ?? '' : '';
+    const kids = [];
+    const busy = k => G.busy.has(k);
+
+    const head = make('div', 'biz-g-top');
+    const title = make('h2', 'biz-g-title', 'Today');
+    title.id = 'biz-g-title';
+    title.tabIndex = -1;
+    node.setAttribute('aria-labelledby', title.id);
+    const pa = btn('ghost small biz-g-pauseall', m.paused ? 'Resume all' : 'Pause all', 'g|pauseall', () => glancePauseAll(!m.paused));
+    pa.setAttribute('aria-pressed', String(m.paused));
+    pa.disabled = busy('g|pauseall');
+    const openBtn = btn('ghost small', 'Open', 'g|open', () => openToday({}));
+    openBtn.setAttribute('aria-label', 'Open Today in Businesses');
+    head.append(title, pa, openBtn);
+    kids.push(head);
+    const said = make('p', `biz-g-say${G.said.bad ? ' biz-bad' : ''}`, G.said.text);
+    said.setAttribute('role', 'status');
+    kids.push(said);
+    let why = null;
+    if (below) {
+      why = make('p', 'biz-note biz-g-needfull', TEXT.needFullShort);
+      why.id = uid('biz-n');
+      kids.push(why);
+    }
+    if (m.paused) kids.push(make('p', 'biz-g-banner', TEXT.pausedAll));
+
+    // Waiting for you: the count and the first few, newest first; each opens on Today.
+    const wait = glanceGroup('Waiting for you', 'biz-g-wait', m.count);
+    if (!m.waits.length) wait.append(make('p', 'biz-note', TEXT.nothingWaits));
+    else {
+      const ul = make('ul', 'biz-g-list');
+      for (const w of m.waits.slice(0, GLANCE_ROWS)) {
+        const li = make('li');
+        const b = btn('biz-g-row', null, w.kind === 'start' ? `g|start|${w.id}` : `g|item|${w.id}`, () => openToday(w.kind === 'start' ? { start: w.id } : { item: w.id }));
+        b.append(make('span', 'biz-g-row-title', w.title), make('span', 'biz-g-row-sub', w.sub));
+        b.setAttribute('aria-label', `${w.title}. ${w.sub}. Open it on Today`);
+        li.append(b);
+        ul.append(li);
+      }
+      wait.append(ul);
+      if (m.waits.length > GLANCE_ROWS) {
+        const more = btn('biz-quiet biz-g-more', `${m.waits.length - GLANCE_ROWS} more on Today`, 'g|more', () => openToday({}));
+        wait.append(more);
+      }
+    }
+    kids.push(wait);
+
+    // Running now: business · routine, and its own Stop (the global Stop stays where it is).
+    if (m.running.length) {
+      const run = glanceGroup('Running now', 'biz-g-run');
+      const ul = make('ul', 'biz-g-list');
+      for (const r of m.running) {
+        const li = make('li', 'biz-g-line');
+        li.append(make('span', 'biz-g-line-text', [r.business ? bizName(r.business) : '', r.name].filter(Boolean).join(' · ')));
+        const stop = btn('ghost small biz-stop', 'Stop', `g|stop|${r.key}`, () => glanceDo(`g|stop|${r.key}`, STOP_PATH, { id: r.key },
+          res => (str(res.data?.happened) ? `${r.name}: ${sentence(res.data.happened)}` : `Stop was sent to ${r.name}. It shows as running until it has ended.`), `${r.name} was not stopped.`));
+        stop.setAttribute('aria-label', `Stop ${r.name}`);
+        stop.disabled = busy(`g|stop|${r.key}`);
+        li.append(stop);
+        ul.append(li);
+      }
+      run.append(ul);
+      kids.push(run);
+    }
+
+    // Did not run today: the routine and Plenum's own sentence why.
+    if (m.missed.length) {
+      const miss = glanceGroup('Did not run today', 'biz-g-missed');
+      const ul = make('ul', 'biz-g-list');
+      for (const r of m.missed) {
+        const li = make('li', 'biz-g-miss');
+        li.dataset.id = r.id;
+        li.append(make('span', 'biz-g-row-title', [r.name, r.business ? bizName(r.business) : ''].filter(Boolean).join(' · ')), make('span', 'biz-g-row-sub biz-g-why', r.why));
+        ul.append(li);
+      }
+      miss.append(ul);
+      kids.push(miss);
+    }
+
+    // One line of plan use, the plan watch's own sentence; Plan use opens the pop-up with the rest.
+    if (plan) {
+      const box = make('div', 'biz-g-plan');
+      box.append(make('span', 'biz-g-plan-label', 'Plan use'), plan);
+      if (typeof MU.openPlanUse === 'function') {
+        const go = btn('biz-quiet', 'Details', 'g|plan', () => window.dispatchEvent(new CustomEvent('plenum:open', { detail: { kind: 'plan-use' } })));
+        go.setAttribute('aria-label', 'Plan use details');
+        box.append(go);
+      }
+      kids.push(box);
+    }
+
+    // One row for each business: its next routine and time, Run now, Pause or Resume.
+    const bizBox = glanceGroup(m.rows.length === 1 ? 'Your business' : 'Your businesses', 'biz-g-biz');
+    const ul = make('ul', 'biz-g-list');
+    for (const b of m.rows) {
+      const li = make('li', 'biz-g-bizrow');
+      li.dataset.id = b.id;
+      const main = make('div', 'biz-g-bizmain');
+      const name = make('span', 'biz-g-row-title', b.name);
+      const paused = b.status === 'paused';
+      const nextWords = paused ? 'Paused. Nothing new starts for it.'
+        : m.held ? TEXT.noStart
+          : b.next ? `Next: ${b.next.name}, ${whenText(b.next.at)}${b.next.running ? ' (running now)' : ''}.` : 'No routine is planned.';
+      main.append(name, make('span', 'biz-g-row-sub', nextWords));
+      const acts = make('div', 'biz-g-acts');
+      if (b.next && !paused) {
+        const k = `g|run|${b.id}`;
+        const go = btn('ghost small', 'Run now', k, () => glanceDo(k, '/api/routines/run', { id: b.next.id }, () => `${b.next.name} was started.`, `${b.next.name} was not started.`));
+        go.setAttribute('aria-label', `Run ${b.next.name} now`);
+        go.disabled = busy(k) || b.next.running;
+        acts.append(go);
+      }
+      const pk = `g|pause|${b.id}`;
+      const p = btn('ghost small', paused ? 'Resume' : 'Pause', pk, () => glanceDo(pk, '/api/business/status', { id: b.id, status: paused ? 'active' : 'paused' },
+        () => (paused ? `${b.name} runs again.` : `${b.name} is paused. Nothing new starts for it.`), `${b.name} was not changed.`));
+      p.setAttribute('aria-label', `${paused ? 'Resume' : 'Pause'} ${b.name}`);
+      p.disabled = busy(pk);
+      acts.append(p);
+      li.append(main, acts);
+      ul.append(li);
+    }
+    bizBox.append(ul);
+    kids.push(bizBox);
+
+    // Below Full: the controls that change something are shown switched off, with the page's sentence for it.
+    if (below) {
+      for (const k of kids) {
+        for (const n of k.querySelectorAll ? k.querySelectorAll('button') : []) {
+          if (!/^g\|(?:run|pause|pauseall)(?:\||$)/.test(n.dataset.fk ?? '')) continue;
+          n.disabled = true;
+          if (why) n.setAttribute('aria-describedby', why.id);
+        }
+      }
+    }
+    node.replaceChildren(...kids);
+    if (held) {
+      const t = [...node.querySelectorAll('[data-fk]')].find(n => n.dataset.fk === held && !n.disabled);
+      try { (t ?? title).focus({ preventScroll: true }); } catch { /* the focus is a courtesy */ }
+    }
+    if (wasHidden) tellPhone();
+  }
+
+  const tellPhone = () => {
+    try { window.dispatchEvent(new CustomEvent('plenum:biz-today', { detail: { shown: Boolean(G.node && !G.node.hidden) } })); } catch { /* the phone looks again later */ }
+  };
+
+  // Reads again for the card soon, at most once every three seconds (the notices can come in bursts).
+  function glanceLater() {
+    if (!(shown() || glanceWanted())) return;
+    if (G.laterTimer) return;
+    const wait = Math.max(150, 3000 - (Date.now() - G.laterAt));
+    G.laterTimer = setTimeout(() => { G.laterTimer = 0; G.laterAt = Date.now(); refresh(); }, wait);
+  }
+
+  MU.businessToday = {
+    // The card's element: one for the page, drawn here, placed by the phone layer.
+    node: () => {
+      if (!G.node) {
+        G.node = make('section', 'biz-glance');
+        G.node.hidden = true;
+        G.node.setAttribute('aria-label', 'Today');
+      }
+      return G.node;
+    },
+    // Read again now, when the card is on screen (the phone calls it when Projects comes to the front).
+    refresh: () => { if (glanceWanted()) refresh(); else paintGlance(); },
+    count: () => waitingCount() ?? 0,
+  };
+
+  // Opens the pane. With { tab, item, start, business }: that tab, and on Today the item, the program's card or the business brought
+  // into view once it is drawn. With nothing, it opens the pane as it is (the setup strip and the title bar button call it so).
+  MU.openBusinesses = opts => {
+    const o = isObj(opts) ? opts : {};
+    if (TABS.some(t => t.id === o.tab) && ui.tab !== o.tab) { ui.tab = o.tab; ui.arming = ''; }
+    const business = typeof o.business === 'string' && SAFE_ID.test(o.business) ? o.business : '';
+    const item = Number.isInteger(o.item) && o.item > 0 ? o.item : 0;
+    const start = typeof o.start === 'string' && SAFE_ID.test(o.start) ? o.start : '';
+    if (item || start || business) {
+      ui.goto = { item, start, business, until: Date.now() + 10000 };
+      ui.tab = 'today';
+      // A business that the switcher hides (another one is shown) is shown with all of them, unless Setup has unsaved changes.
+      const target = business || (item ? str(items().find(i => i.n === item)?.business) : '');
+      if (ui.sel !== ALL && target && ui.sel !== target && !ui.setup?.dirty) pick(ALL, false);
+    }
+    MU.pane.open(TAB);
+    paint();
+    refresh();
+  };
+
   // ---------- wiring ----------
 
   MU.pane.register({
@@ -2305,23 +2802,49 @@
       } else refreshSoon();
     } else if (ev.type === 'business' || ev.type === 'routine') {
       if (shown()) refreshSoon();
+      else glanceLater();
+    } else if (ev.type === 'needs-you' || ev.type === 'notice') {
+      // A notice that something needs the person (a routine that did not run, a sign-in to renew): the pane and the phone's card look again.
+      glanceLater();
     } else if (ev.type === 'state' && shown() && (ui.arming || ui.editor)) {
       // The folder's approval mode or its writers changed while the two lines are on screen: they are read again.
       refreshSoon();
     }
   });
 
-  MU.openBusinesses = () => MU.pane.open(TAB);
+  // A place another part of the page asks for (public/ext-open-route.js on the desktop, a notice's button): { kind: 'today', id } opens
+  // the pane on Today, at that business when an id is given. On a phone the phone layer answers this event (public/ext-phone.js), so it
+  // is not done twice.
+  window.addEventListener('plenum:open', e => {
+    const d = e.detail;
+    if (!isObj(d) || d.kind !== 'today' || onPhone()) return;
+    MU.openBusinesses({ tab: 'today', business: typeof d.id === 'string' && SAFE_ID.test(d.id) ? d.id : '' });
+  });
   // The setups changed (public/ext-biz-setup.js read them again): Today is drawn again, and the list with it.
   // The plan watch changed (public/ext-planwatch.js): the line for each business is drawn again with the rest, when the pane is on screen.
   window.addEventListener('plenum:plan-watch', () => { if (shown()) { if (drawingWaits()) late = true; else paint(); } });
   window.addEventListener('plenum:biz-setup', () => { if (shown()) { if (drawingWaits()) late = true; else paint(); refreshSoon(); } });
 
   // The phone's access can change while the pane is open (the computer raises or lowers it): the pane is drawn again with what it allows.
+  // When the phone is connected again after a gap, what waits and what runs is read again.
   try {
     let was = belowFull();
-    window.plenumShell?.onConnection?.(() => { const now = belowFull(); if (now !== was) { was = now; paint(); } });
+    const connState = () => { try { return str(window.plenumShell?.connection?.()?.state); } catch { return ''; } };
+    let link = connState();
+    window.plenumShell?.onConnection?.(() => {
+      const now = belowFull();
+      if (now !== was) { was = now; paint(); paintGlance(); }
+      const st = connState();
+      if (st === 'connected' && link !== 'connected') refreshSoon();
+      link = st;
+    });
   } catch { /* the access is read again at the next draw */ }
+
+  // The phone's card has no timer of its own: it reads on the events above, when the phone is connected again, when Projects comes to the
+  // front, and when the app comes to the front after half a minute or more.
+  if (onPhone()) {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - G.readAt >= 30000) glanceLater(); });
+  }
 
   // The count on the title bar button: one read, after the page has started, never on the start path.
   Promise.resolve(MU.ready).then(() => setTimeout(refresh, 1500), () => {});

@@ -48,7 +48,7 @@ function deviceId(phone) {
   return crypto.createHash('sha256').update(phone.ecdh.getPublicKey(null, 'uncompressed')).digest('hex');
 }
 
-function harness({ phones, presence = { focused: false, idleS: 0 }, foregroundAt = {}, prefs, vapid, allowLocal = true }) {
+function harness({ phones, presence = { focused: false, idleS: 900 }, foregroundAt = {}, prefs, vapid, allowLocal = true }) {
   const state = {
     nowMs: Date.UTC(2026, 9, 22, 12, 0, 0),
     presence,
@@ -79,6 +79,7 @@ function harness({ phones, presence = { focused: false, idleS: 0 }, foregroundAt
     vapid,
     now: () => state.nowMs,
     allowLocalEndpoints: allowLocal,
+    quiet: () => ({ quiet: false, silent: false }),
   });
   return { state, devices, pusher };
 }
@@ -184,7 +185,7 @@ test('text: generic approval, opt-in first line, Approve only behind the switch 
   const computer = { id: 'c1', name: 'Home PC' };
   const base = { kind: 'approval', projectName: 'my-app', projectId: 'p1', approvalId: 'a1', firstLine: 'npm test -- --watch=false' };
   const generic = buildPushText(base, { prefs: {}, device: { tier: 'full' }, computer });
-  assert.equal(generic.payload.title, 'Home PC · my-app');
+  assert.equal(generic.payload.title, 'my-app · Home PC');
   assert.equal(generic.payload.body, 'An approval is waiting.');
   assert.equal(generic.urgency, 'high');
   assert.deepEqual(generic.payload.actions.map((a) => a.action), ['deny', 'stop']);
@@ -302,7 +303,7 @@ test('a generic push reaches the fake service, decrypts to generic text and carr
     assert.ok(req.headers.authorization.endsWith(`k=${keys.publicKey}`));
     const { plaintext } = decryptPush(req.body, phone);
     const payload = JSON.parse(plaintext.toString('utf8'));
-    assert.equal(payload.title, 'Home PC · my-app');
+    assert.equal(payload.title, 'my-app · Home PC');
     assert.equal(payload.body, 'An approval is waiting.');
     assert.equal(plaintext.toString('utf8').includes('rm -rf'), false);
     assert.equal(state.logs.some((l) => l.includes('rm -rf')), false);
@@ -347,7 +348,7 @@ test('unifiedpush sends without VAPID; apns-forwarder is refused and never sent'
   }
 });
 
-test('presence: no push while focused and idle under 2 minutes; the phone in front holds it for 30 s', async () => {
+test('presence: no push while idle under 2 minutes (focused or not); the phone in front holds it for 30 s', async () => {
   const service = await startFakePushService();
   try {
     const phone = makePhone('p');
@@ -358,11 +359,13 @@ test('presence: no push while focused and idle under 2 minutes; the phone in fro
     h.state.presence = { focused: true, idleS: 150 };
     assert.equal((await h.pusher.sendEvent(event))[0].outcome, 'sent');
     h.state.presence = { focused: false, idleS: 0 };
+    assert.equal((await h.pusher.sendEvent(event))[0].reason, 'at-computer', 'n2: an unfocused window with an active owner is at the computer');
+    h.state.presence = { focused: false, idleS: 900 };
     assert.equal((await h.pusher.sendEvent(event))[0].outcome, 'sent');
     h.state.presence = { focused: true, idleS: 1 };
     h.state.foregroundAt[h.devices[0].id] = h.state.nowMs - 10_000;
     assert.equal((await h.pusher.sendEvent(event))[0].reason, 'at-computer');
-    h.state.presence = { focused: false, idleS: 0 };
+    h.state.presence = { focused: false, idleS: 900 };
     assert.equal((await h.pusher.sendEvent(event))[0].reason, 'phone-foreground');
     h.state.foregroundAt[h.devices[0].id] = h.state.nowMs - 40_000;
     assert.equal((await h.pusher.sendEvent(event))[0].outcome, 'sent');
@@ -464,7 +467,7 @@ test('VAPID Authorization is cached per origin for an hour and refreshed after',
   const service = await startFakePushService();
   try {
     const phone = makePhone('cache');
-    const h = harness({ phones: [phone], vapid: generateVapidKeys(), presence: { focused: false, idleS: 0 } });
+    const h = harness({ phones: [phone], vapid: generateVapidKeys(), presence: { focused: false, idleS: 900 } });
     h.devices[0].pushSubscription = phone.subscription(service.endpointFor('cache'));
     const event = { kind: 'finished', projectName: 'my-app', projectId: 'p1' };
     await h.pusher.sendEvent(event);

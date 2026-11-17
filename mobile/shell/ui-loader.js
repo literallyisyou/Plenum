@@ -5,7 +5,8 @@
 //   Android:     files under the app-data folder, then Capacitor's WebView.persistServerBasePath and setServerBasePath (after every
 //                file verified; persist goes first, because setServerBasePath reloads the WebView at once). The index and the shell
 //                files (SHELL_FILES: boot.js, shell.js, channel.worker.js, styles.css) are written there too, so the base path
-//                is a whole UI. A complete record whose base path the WebView no longer has is activated again (ensureActive).
+//                is a whole UI. A complete record whose base path the WebView no longer has is activated again (ensureActive), and so is
+//                one whose shellSha256 is not the bundled version.json's (w4-m1: an app rebuilt and installed over copies its new shell in).
 //   iOS:         refused. The App Store build runs the bundled snapshot (MOBILE.json client_model.ui_source.ios); pull() throws
 //                UiError('refused') and nothing is fetched.
 //
@@ -38,6 +39,10 @@ export const BOOT_FILE = 'shell/boot.js';
 // shell.js, channel.worker.js, styles.css), and readBundled(rel) reads `shell/<name>` from the root of the app's www folder. A file that is not
 // bundled is skipped.
 export const SHELL_FILES = Object.freeze([BOOT_FILE, 'shell/shell.js', 'shell/channel.worker.js', 'shell/styles.css']);
+// w4-m1: the bundle's version file (scripts/build-mobile.mjs writes it at the root of www). Its shellSha256 hashes every shell file, so a
+// rebuilt app has a new one. The active record keeps the shellSha256 its shell files were copied from; a different one means the copies in
+// plenum-ui/<cache>/shell/ are an older app's, and ensureActive copies the new ones in (readBundled reads it as for the shell files).
+export const VERSION_FILE = 'version.json';
 
 const utf8 = new TextEncoder();
 const utf8Decode = new TextDecoder();
@@ -206,6 +211,21 @@ async function bundledShellFiles(readBundled) {
   return out;
 }
 
+// w4-m1: the shellSha256 of the bundled version.json, or null when the bundle cannot be read here. The Android UI page is one such place: its
+// WebView serves the UI folder, not the app's www, so the file is not found there and nothing is decided from it.
+export async function bundledShellSha(readBundled) {
+  if (!readBundled) return null;
+  try {
+    const bytes = await readBundled(VERSION_FILE);
+    if (!bytes || !bytes.byteLength || bytes.byteLength > 64 * 1024) return null;
+    const value = JSON.parse(utf8Decode.decode(bytes));
+    const sha = typeof value?.shellSha256 === 'string' ? value.shellSha256 : '';
+    return HEX64.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
 // Storage over the app-data folder (Android). files: { write(rel, bytes), read(rel) -> Uint8Array | null, removeDir(rel) }.
 // webView: { setServerBasePath({ path }), persistServerBasePath({ path }), getServerBasePath() } (Capacitor core WebView plugin).
 export function androidStorage({ files, webView, root = 'plenum-ui' }) {
@@ -223,25 +243,41 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
   // Makes the slot the one the WebView serves: the shell files and the rewritten index go in first, and the base path is set only
   // after every file is in place. Persist goes before set: setServerBasePath reloads the WebView at once, and the page that awaits it
   // may be gone before a later call would run.
-  async function activate(record, { readBundled, shellBase } = {}) {
+  // beforeServe (w4-m1) runs once every file is written and before the base path moves (the record is written there: after the set the page
+  // may be gone).
+  async function activate(record, { readBundled, shellBase, beforeServe = null } = {}) {
     const dir = base(record.cacheName);
     const index = await files.read(`${dir}/index.html`);
     if (!index) throw new UiError('storage', 'The index is missing.');
     for (const file of await bundledShellFiles(readBundled)) await files.write(`${dir}/${fileNameFor(file.path)}`, file.bytes);
     const html = rewriteIndex(utf8Decode.decode(index), { shellBase });
     await files.write(`${dir}/index.html`, utf8.encode(html));
+    await beforeServe?.();
     await webView?.persistServerBasePath({ path: dir });
     await webView?.setServerBasePath({ path: dir });
   }
+  async function readActive() {
+    const bytes = await files.read(`${root}/active.json`);
+    const record = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
+    return record ? { ...record, computerId: computerOf(record.computerId) } : null;
+  }
+  async function writeActive(record) {
+    await files.write(`${root}/active.json`, utf8.encode(JSON.stringify(record)));
+  }
+  // w4-m1: activates the record again with the bundled shell files, and keeps the bundle's shellSha256 in the record (written after the copy,
+  // before the base path moves). A bundle that cannot be read leaves the record's value as it is.
+  async function activateWithShell(record, opts = {}) {
+    const shellSha256 = await bundledShellSha(opts.readBundled);
+    await activate(record, {
+      ...opts,
+      beforeServe: async () => {
+        if (shellSha256 && shellSha256 !== record.shellSha256) await writeActive({ ...record, shellSha256 });
+      },
+    });
+  }
   return {
-    async readActive() {
-      const bytes = await files.read(`${root}/active.json`);
-      const record = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
-      return record ? { ...record, computerId: computerOf(record.computerId) } : null;
-    },
-    async writeActive(record) {
-      await files.write(`${root}/active.json`, utf8.encode(JSON.stringify(record)));
-    },
+    readActive,
+    writeActive,
     async openSlot(name) {
       return slotOn(name);
     },
@@ -249,13 +285,21 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
       await files.removeDir(base(name));
     },
     activate,
+    // "Use the copy in this app" (ui-host.js useCopy): the copy on the phone is served again, with this app's shell files.
+    activateCopy: activateWithShell,
     // A complete record the WebView does not serve (its persist or set was lost) is activated again. A WebView without
     // getServerBasePath is left alone.
+    // w4-m1: a record the WebView does serve is activated again too when the bundled version.json has another shellSha256 than the record
+    // keeps (the app was rebuilt and installed over: its shell files in the UI folder are the old app's). Same sha, or no bundle to read
+    // (the Android UI page cannot read the app's www): nothing is copied.
     async ensureActive(record, opts = {}) {
       if (!webView?.getServerBasePath) return false;
       const current = await webView.getServerBasePath();
-      if (current?.path === base(record.cacheName)) return false;
-      await activate(record, opts);
+      if (current?.path === base(record.cacheName)) {
+        const bundled = await bundledShellSha(opts.readBundled);
+        if (!bundled || bundled === record.shellSha256) return false;
+      }
+      await activateWithShell(record, opts);
       return true;
     },
     async dropSlotsExcept(name) {
@@ -312,8 +356,9 @@ export function createUiLoader({
     }
     // On Android the WebView may have lost its base path (the persist or the set never landed): put it right here, before the early
     // return, so the next start serves this UI. A failure is logged and the check still answers 'current'.
+    // w4-m1: the record just written (computerId, reloadedFor) goes in, so a shellSha256 that ensureActive writes back does not undo it.
     try {
-      await storage.ensureActive?.(prev, { readBundled, shellBase });
+      await storage.ensureActive?.(record, { readBundled, shellBase });
     } catch (err) {
       log(`ui: ${err.code ?? 'error'}`);
     }
@@ -355,8 +400,20 @@ export function createUiLoader({
       // The shell files the page loads from its own base. They are not in the desktop's manifest (they come from the bundled www), so
       // they are not checked against it; the slot keeps their bytes and their sha256 for the service worker. Android also copies them
       // in activate.
-      for (const file of await bundledShellFiles(readBundled)) {
+      const shellFiles = await bundledShellFiles(readBundled);
+      for (const file of shellFiles) {
         await slot.put(file.path, file.bytes, { type: contentTypeFor(fileNameFor(file.path)), sha256: sha256Hex(file.bytes), size: file.bytes.byteLength });
+      }
+      // w4-m1: a shell file the bundle did not answer is carried over from the slot in use, so the new slot is still a whole UI. This is the
+      // Android UI page, whose WebView serves the UI folder and not the app's www: without this a UI update pulled there left the new folder
+      // with no /shell/ files and the page that loaded from it had no shell. Only when a reader was given (the web build passes none).
+      if (readBundled && previousSlot) {
+        for (const rel of SHELL_FILES) {
+          const path = `/${rel}`;
+          if (shellFiles.some(f => f.path === path)) continue;
+          const old = await previousSlot.get(path).catch(() => null);
+          if (old?.bytes?.byteLength) await slot.put(path, old.bytes, { type: contentTypeFor(fileNameFor(path)), sha256: sha256Hex(old.bytes), size: old.bytes.byteLength });
+        }
       }
     } catch (err) {
       // The active record is not written, so the old UI stays the one served. Only the half-filled cache is dropped.
@@ -365,6 +422,9 @@ export function createUiLoader({
       throw err;
     }
     const reload = shouldReload({ loadedHash, nextHash: next.hash, reloadedFor: prev?.reloadedFor ?? null });
+    // w4-m1: the bundle's shellSha256 the shell files came from (ensureActive compares it with the bundle later). A bundle that cannot be read
+    // here keeps the value of the record in use: its shell files are the ones carried over.
+    const shellSha256 = (await bundledShellSha(readBundled)) ?? (typeof prev?.shellSha256 === 'string' ? prev.shellSha256 : null);
     const record = {
       hash: next.hash,
       generation: next.generation,
@@ -375,6 +435,7 @@ export function createUiLoader({
       files: next.files,
       pulledAt: now(),
       computerId: computerOf(computerId),
+      shellSha256,
     };
     await storage.writeActive(record);
     await storage.activate?.(record, { readBundled, shellBase });

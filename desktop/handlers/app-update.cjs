@@ -1,7 +1,8 @@
 'use strict';
 // Over-the-air updates for the installed app. This is the only file that requires electron-updater, and it runs here in the desktop
 // process, never in the server and never in the page. The rules it keeps:
-//  - Checks are on by default (Settings > Updates can turn them off). The first check runs 20 s after start, then every 4 hours. A
+//  - Checks are on by default (Settings > Updates can turn them off). The updater is set up 3 s after the app's ready hook (never before
+//    the server is started), and the first check runs 20 s after that, then every 4 hours. A
 //    check waits while the legal gate (the terms) is open or has not been looked at yet (before the first state hook), and while a
 //    check or a download is already going.
 //  - Nothing installs without the person: an update is installed only when they choose Restart to update (the Updates page or the tray
@@ -31,12 +32,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { writeFileAtomicSync } = require('../atomic.cjs');
 
 const FIRST_CHECK_MS = 20_000;
 const CHECK_MS = 4 * 60 * 60 * 1000;
 const AFTER_SETTINGS_MS = 5_000;
 const TERMS_RETRY_MS = 60_000;
 const PROGRESS_MS = 1_000;
+// The updater starts this long after the app's ready hook (the server has answered and the page is loading), so requiring electron-updater
+// (0.3 to 1 s of work in this process) never delays the server's start or the window. A message or a failed start that needs it sooner
+// starts it at once.
+const START_DELAY_MS = 3_000;
+// Restart to update quits the app to install. When the app is still running this long after it was pressed, the install did not begin:
+// the press is forgotten and the status is posted again, so the next press tries again.
+const INSTALL_STUCK_MS = 60_000;
 // How long the 'check' action waits for a check to end before it answers with the status as it is (the server waits 15 s for us).
 const CHECK_ANSWER_MS = 12_000;
 const NOTES_MAX = 4_000;
@@ -59,9 +68,13 @@ const TEXT = {
 };
 
 // ------------------------------------------------------------------------------------------------------------- state
-// Everything below belongs to the one updater of this process. It is set up by init(), on the first hook or message that carries the
-// shell (windowCreated is the first, right after the app starts).
+// Everything below belongs to the one updater of this process. The hooks record the shell (remember); the updater itself is set up by
+// start(): START_DELAY_MS after the ready hook, or at once for a message from the server or a failed start. A state that arrives before
+// that is kept (termsPending, sawState) and its work (the record of a clean start, the first status post) is done when start() runs.
 let inited = false;
+let sawState = false;
+let startTimer = null;
+let installTimer = null;
 let shell = null;
 let app = null;
 let current = '';
@@ -257,7 +270,7 @@ function readUpdateState() {
 }
 
 // Merges keys into update-state.json (a null value removes a key). The file is small, so it is read, changed and written again in
-// one go, which keeps two writes from mixing; it is written to a temporary name and renamed.
+// one go, which keeps two writes from mixing; it is written to a temporary name, flushed and renamed.
 function mergeUpdateState(patch) {
   const file = stateFilePath();
   if (!file) return;
@@ -268,9 +281,8 @@ function mergeUpdateState(patch) {
   }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(next, null, 2));
-    fs.renameSync(temp, file);
+    // Flushed to the disk and renamed, with a few short tries when another program holds the file (desktop/atomic.cjs).
+    writeFileAtomicSync(file, JSON.stringify(next, null, 2));
   } catch (err) {
     log(`error: update-state.json could not be written (${err?.code ?? 'unknown'})`);
   }
@@ -456,6 +468,8 @@ function onError(err) {
   if (!settings.check) return;
   const message = oneLine(err?.message ?? err, MESSAGE_MAX) || TEXT.checkFailed;
   installing = false;
+  clearTimeout(installTimer);
+  installTimer = null;
   setView('error', { message, checkedAt: Date.now(), ...(offered ? { version: offered.version, ...(offered.downloadUrl ? { downloadUrl: offered.downloadUrl } : {}) } : {}) });
 }
 
@@ -749,7 +763,7 @@ function onCleanStart() {
 // choice here ends in a quit). Otherwise it returns false and opens nothing. The version that failed is remembered and never
 // downloaded again (see onAvailable).
 function onStartFailed(sh) {
-  init(sh);
+  start(sh);
   const saved = readUpdateState();
   const first = versionPair(saved.firstStart);
   if (!first) return false;
@@ -883,10 +897,29 @@ function setup() {
   startSchedule(FIRST_CHECK_MS);
 }
 
-function init(sh) {
-  if (inited || !sh) return;
+// Keeps the shell that a hook or a message carries. Nothing else happens here, so the windowCreated hook costs nothing before the server
+// is started.
+function remember(sh) {
+  if (sh && !shell) shell = sh;
+}
+
+// The ready hook: the server has answered. The updater starts a few seconds later, when the window has had its time.
+function onReady(sh) {
+  remember(sh);
+  if (inited || startTimer) return;
+  startTimer = later(() => {
+    startTimer = null;
+    start(shell);
+  }, START_DELAY_MS);
+}
+
+// Sets the updater up, once. A state seen before this is dealt with now.
+function start(sh) {
+  remember(sh);
+  if (inited || !shell) return;
   inited = true;
-  shell = sh;
+  clearTimeout(startTimer);
+  startTimer = null;
   try {
     setup();
   } catch (err) {
@@ -895,12 +928,21 @@ function init(sh) {
     view = restingView();
     log(`error: the updater could not start (${oneLine(err?.message, 80)})`);
   }
+  if (sawState) afterState();
 }
 
 // ----------------------------------------------------------------------------------------------------------------- hooks
+// A state before the updater started is kept for start(): the legal gate and that the server is up.
 function onState(sh, st) {
-  init(sh);
+  remember(sh);
   termsPending = st?.legal?.required === true;
+  sawState = true;
+  if (inited) afterState();
+}
+
+// The first state after the updater started says the server is up, so this start was clean; a later one posts the status when a new
+// server has none yet.
+function afterState() {
   if (!cleanStartDone) {
     cleanStartDone = true;
     try {
@@ -928,7 +970,7 @@ async function answerCheck() {
 }
 
 async function onUpdateMessage(message, sh) {
-  init(sh);
+  start(sh);
   switch (message?.action) {
     case 'status':
       return { ok: true, status: statusObject() };
@@ -939,6 +981,17 @@ async function onUpdateMessage(message, sh) {
       if (view.status !== 'downloaded' || !updater || !settings.check) return { ok: false, message: TEXT.nothingReady };
       if (installing) return { ok: true };
       installing = true;
+      // An install that has not begun after INSTALL_STUCK_MS (this process still runs, so the quit did not happen) is let go: the status
+      // is posted again and the next press tries again. An error from the updater lets it go at once (onError).
+      clearTimeout(installTimer);
+      installTimer = later(() => {
+        installTimer = null;
+        if (!installing) return;
+        installing = false;
+        log('warn: the update did not start installing within 60 s; Restart to update can be pressed again');
+        post();
+        syncTray();
+      }, INSTALL_STUCK_MS);
       // The answer is posted first; the install and the quit follow on the next turn of the loop.
       setImmediate(() => {
         try {
@@ -956,7 +1009,7 @@ async function onUpdateMessage(message, sh) {
 
 // The server saved new settings. Only a change of the check switch or the channel does anything.
 async function onSettingsMessage(message, sh) {
-  init(sh);
+  start(sh);
   const saved = readSettings();
   const given = isObject(message?.settings) ? message.settings : {};
   const next = {
@@ -974,14 +1027,20 @@ module.exports = {
     'app-update-settings': onSettingsMessage,
   },
   hooks: {
-    windowCreated: sh => init(sh),
+    // The window and the server's start only record the shell: requiring electron-updater would make the server's fork wait.
+    windowCreated: sh => remember(sh),
     serverStarted: sh => {
-      init(sh);
+      remember(sh);
       // A server that has just started has no status yet; it gets one with the next state.
       postNeeded = true;
     },
+    ready: onReady,
     state: onState,
     startFailed: onStartFailed,
-    beforeQuit: () => clearTimers(),
+    beforeQuit: () => {
+      clearTimers();
+      clearTimeout(startTimer);
+      startTimer = null;
+    },
   },
 };

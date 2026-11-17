@@ -1464,6 +1464,18 @@ html[data-legal='pending'] #app { display: none; }
 }
 @keyframes drop { from { opacity: 0; translate: 0 -8px; } }
 .toast::before { content: ""; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--ok); }
+/* A toast takes the pointer (its text can be selected and its buttons pressed); the box around the toasts stays click-through. */
+.toast { pointer-events: auto; user-select: text; -webkit-user-select: text; }
+.toast .toast-text { min-width: 0; overflow-wrap: anywhere; }
+/* The count of a toast that came again under the same key. It is drawn by the stylesheet, so it is not part of the words a screen reader hears. */
+.toast[data-count]::after { content: "×" attr(data-count); flex: none; order: 1; padding: 0 6px; border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-2); background: var(--fill-1); }
+.toast .toast-action { flex: none; order: 2; padding: 2px 8px; border-radius: var(--r-md, 8px); border: 1px solid var(--line-2); background: transparent; color: var(--accent, inherit); font: inherit; font-size: 12.5px; cursor: pointer; }
+.toast .toast-action:hover { background: var(--fill-1); }
+.toast .toast-close { flex: none; order: 3; position: relative; width: 20px; height: 20px; margin: -2px -6px -2px 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.toast .toast-close::before, .toast .toast-close::after { content: ""; position: absolute; left: 5px; right: 5px; top: 50%; height: 1.5px; margin-top: -0.75px; border-radius: 1px; background: currentColor; rotate: 45deg; }
+.toast .toast-close::after { rotate: -45deg; }
+.toast .toast-close:hover { background: var(--fill-1); color: var(--text); }
+.toast .toast-action:focus-visible, .toast .toast-close:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 1px; }
 .toast.bad::before { background: var(--bad); }
 /* With the connection banner showing, a toast waits below it instead of covering it. */
 .app:has(.ext-conn-banner:not([hidden])) .toasts { top: calc(max(var(--win-top), var(--bar-now, var(--bar-h))) + 122px); }
@@ -2034,3 +2046,32 @@ html[data-legal='pending'] #app { display: none; }
 @media (min-width: 861px) {
   :root[data-shell="desktop"] .app::before { content: ""; position: fixed; top: 0; left: 0; width: calc(var(--side-w, 268px) + 20px); height: 10px; -webkit-app-region: drag; }
 }
+
+/* ---------- Jump to latest (wave 4, app.js jumpPill) ---------- */
+/* A small pill over the foot of the chat, just above the composer area, while the reader is more than 180 px above the end. It lies on
+   the menu glass with the float shadow, takes no room (nothing moves when it comes or goes), and stays inside a 360 px window. Its dot
+   says new text of a running reply arrived below. Under the Settings page, an expanded pane or the open command list it is not shown. */
+.jump-latest {
+  position: absolute; left: 50%; bottom: calc(100% + 10px); translate: -50% 0; z-index: 6;
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; max-width: calc(100vw - 32px); padding: 0 14px;
+  border: 0; border-radius: var(--r-full); white-space: nowrap;
+  font: 500 var(--fs-small)/1 var(--ui); color: var(--text-2);
+  background: var(--material-menu); -webkit-backdrop-filter: var(--blur-menu); backdrop-filter: var(--blur-menu);
+  box-shadow: var(--shadow-float);
+  transition: color var(--t-fast) var(--ease);
+  animation: jump-in var(--t-base) var(--ease) both;
+}
+.jump-latest:hover { color: var(--text); }
+.jump-latest:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.jump-latest::after {
+  content: ""; width: 6px; height: 6px; margin: -3px 0 0 1px; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; rotate: 45deg;
+}
+.jump-latest .jl-dot { display: none; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent); }
+.jump-latest.has-new .jl-dot { display: block; }
+@keyframes jump-in { from { opacity: 0; translate: -50% 6px; } }
+.app[data-settings-open] .jump-latest,
+.composer-wrap:has(> #palette:not([hidden])) > .jump-latest { display: none; }
+
+/* A screenshot on a computer-use card is a button for the keyboard (Enter or Space enlarges it). */
+.approval-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

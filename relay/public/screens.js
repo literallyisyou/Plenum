@@ -81,7 +81,7 @@ function updateDesktopBody(computer, minimum, have) {
   return `This app needs Plenum ${minimum} or later on ${computer}, which has ${have}. On the computer, open Settings \u203A Updates and install the update.`;
 }
 function uiFailedBody(computer, cause) {
-  return cause === "not-sent" ? `${computer} did not send Plenum's screens. Try again.` : cause === "stopped" ? `Plenum on ${computer} stopped while the screens were loading.` : "A file from " + computer + " did not match its checksum, so the phone kept the copy it had. Try again; if it happens again, restart Plenum on the computer.";
+  return cause === "not-sent" ? `${computer} did not send Plenum's screens. Try again.` : cause === "stopped" ? `Plenum on ${computer} stopped while the screens were loading.` : "Part of Plenum did not arrive intact from " + computer + ", so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.";
 }
 function drivingLine(computer, driving) {
   return `A model is driving ${computer}: ${driving}.`;
@@ -147,10 +147,45 @@ var PART2_IDS = Object.freeze([
   "demo-home",
   "demo-run",
   "demo-diff",
-  "demo-artifact"
-]), COMPUTERS_TITLE = "Plenum", COMPUTERS_LABEL = "COMPUTERS", PAIR_ANOTHER = "Pair another computer", ROW_MENU = Object.freeze({ connect: "Connect", ways: "Ways to reach it", rename: "Rename on this phone", forget: "Forget this computer" }), STATUS = Object.freeze({ online: "Online", asleep: "Asleep", unreachable: "Not reachable" }), INSTALL_IOS_BODY = "Add Plenum to your Home Screen for notifications and a full-screen app. Tap Share, then Add to Home Screen, then open Plenum from the Home Screen and pair there.", INSTALL_IOS_STEPS = Object.freeze(["Tap Share.", "Tap Add to Home Screen.", "Open Plenum from the Home Screen."]), INSTALL_IOS_PAIR_HERE = "Pair in this tab, without notifications", INSTALL_ANDROID_BODY = "Install Plenum for notifications and a full-screen app.", INSTALL_NO_PROMPT = "This browser does not offer the install here. Use the browser menu and choose Install app.", LAN_WEB_STRIP = "This page works only on {computer}'s network and cannot send notifications. It is sent without encryption, so someone on this network could change it. On a network you do not trust, use the Plenum app, Tailscale or your relay.", PAIR_REVIEW_TITLE = (name) => `Pair with ${name}?`, PAIR_REVIEW_LEAD = "Pair only if you clicked Add phone on your own computer just now and its window shows a code.", PAIR_REVIEW_HOSTS = "This phone will connect to:", PAIR_REVIEW_NOTE = "A computer you pair with runs its own screens in this app.", PAIR_REVIEW_PAIR = "Pair", PAIR_REVIEW_CANCEL = "Cancel", STORAGE_UNAVAILABLE = "This phone could not open its secure storage, so Plenum cannot keep a computer's key here. Close Plenum and open it again. If it keeps happening, reinstall the app.", LOCK_UNKNOWN = "Plenum could not read its lock settings, so it stays locked. Stop still works. Close Plenum and open it again.", LOCK_UNKNOWN_NO_STOP = "Plenum could not read its lock settings, so it stays locked. This phone cannot send Stop from here. Press Stop on your computer (the Stop bar, or Ctrl+Alt+Esc). Close Plenum and open it again.", START_FAILED = "Plenum could not start on this page. Close it and open Plenum again.", LOCK_STOP = "Stop everything", LOCK_UNLOCK_STOP = "Unlock and stop everything", CONNECTED_SINCE = (computer, when) => `Connected to ${computer}${when ? ` since ${when}` : ""}.`, CONNECTED_TITLE = "Connected", RECONNECTING_TITLE = "Reconnecting", RECONNECTING_BODY = (computer) => `Reconnecting to ${computer}. Plenum keeps trying. The strip at the top says what is happening.`, RENAME_TITLE = "Rename on this phone", RENAME_HELP = "Only this phone shows this name. The computer keeps its own name.", FORGET_TITLE = "Forget {computer}?", FORGET_BODY = "This phone deletes its key for {computer}. {computer} keeps listing this phone until you remove it there under Settings \u203A Phones.", FORGET_CONFIRM = "Forget", CANCEL = "Cancel", SETTINGS_TITLE = "Phone settings", SETTINGS_COMPUTERS = "COMPUTERS", SETTINGS_THIS_PHONE = "THIS PHONE", SETTINGS_HELP = "HELP", PAIR_ANOTHER_SHORT = "Pair another computer", SETTINGS_NONE = "No computer is paired yet.", WAYS_TITLE = "Ways to reach {computer}", WAYS_LEAD = "Plenum tries the way it last connected first, then the others in this order.", WAYS_TEST = "Test them now", WAYS_CARRIER = Object.freeze({ lan: "the same network", tailscale: "Tailscale", relay: "your relay" }), WAYS_CONNECTED = (carrier) => `Connected by ${carrier} now. Test them again when the phone is not connected.`, WAYS_TRYING = "Trying the ways now. The line at the top says which one answers.", WAYS_NEW = "New ways you turn on at the computer appear here the next time this phone connects.", WAY_NOT_AVAILABLE = "Not available in this app", WAY_NOT_REACHABLE = "Not reachable";
+  "demo-artifact",
+  // Wave 5 (brb): the code page at /pair/ and the card for a computer another tab of this browser holds.
+  "claim",
+  "other-tab"
+]), CLAIM_TITLE = "Open Plenum in this browser", CLAIM_LEAD = "On your computer, open Plenum, then Settings \u203A Phones \u203A Add a browser. Type the code it shows.", CLAIM_LABEL = "Code", CLAIM_HELP = "12 letters and numbers. Dashes and spaces do not matter.", CLAIM_CONTINUE = "Continue", CLAIM_ERRORS = Object.freeze({
+  wrong: "That code does not match. Check it on your computer and try again.",
+  none: "No browser is being added right now. On your computer, click Add a browser, then type the new code.",
+  locked: "Too many tries. On your computer, click New code, then type it here.",
+  "too-many": "Too many tries in a minute. Wait a minute, then try again.",
+  network: "Plenum on your computer did not answer. Check that it is running and that this is the address the Add a browser window shows."
+}), CLAIM_PLAIN_HTTP = "This page is not encrypted. Chat, approvals and Stop work here. Notifications and some Copy buttons need the secure Tailscale address.", CLAIM_PAIRED = (name) => `This browser is already paired with ${name}.`, CLAIM_OPEN = "Open Plenum", CLAIM_AGAIN = "Pair again", BROWSER_NAME_LABEL = "This browser's name", NOTIFY_BODY_BROWSER = "Get a notification when an approval waits or a run ends, even when this tab is in the background.", LAYOUT_TITLE = "Layout on this device", LAYOUT_LABEL = Object.freeze({ auto: "Automatic", phone: "Phone", wide: "Computer" }), LAYOUT_NOT_KEPT = "This browser could not keep the choice. Its site storage may be blocked.", LAYOUT_NOTE = "Automatic uses the computer layout in a window at least 1000 pixels wide with a mouse or trackpad. A change shows the next time Plenum opens.";
+var TAB_ELSEWHERE = "Plenum is open in another tab of this browser.", TAB_MOVED = "Plenum moved to another tab.", TAB_USE_HERE = "Use it here", PAIR_REVIEW_LEAD_BROWSER = "Pair only if you clicked Add a browser on your own computer just now and typed the code its window shows.", PAIR_REVIEW_HOSTS_BROWSER = "This browser will connect to:", PAIR_REVIEW_NOTE_BROWSER = "A computer you pair with runs its own screens in this browser.", CODE_TEXT_BROWSER = "shows a code in the Add a browser window. If it is the same, click Allow there.", MISMATCH_BODY_BROWSER = "Stopped. Click Deny on your computer, then click Add a browser again. A different code can mean another device used the same code.", DENIED_BODY_BROWSER = "did not allow this browser. To try again, click Add a browser on the computer, then type the new code.", EXPIRED_BODY_BROWSER = "The code expired. On your computer, click New code, then type the new code.", TYPE_NEW_CODE = "Type the new code", SETTINGS_TITLE_BROWSER = "Browser settings", SETTINGS_THIS_BROWSER = "THIS BROWSER", RENAME_TITLE_BROWSER = "Rename in this browser", RENAME_HELP_BROWSER = "Only this browser shows this name. The computer keeps its own name.", FORGET_BODY_BROWSER = "This browser deletes its key for {computer}. {computer} keeps listing this browser until you remove it there under Settings \u203A Phones.", COMPUTERS_TITLE = "Plenum", COMPUTERS_LABEL = "COMPUTERS", PAIR_ANOTHER = "Pair another computer", ROW_MENU = Object.freeze({ connect: "Connect", ways: "Ways to reach it", rename: "Rename on this phone", forget: "Forget this computer" }), STATUS = Object.freeze({ online: "Online", asleep: "Asleep", unreachable: "Not reachable" }), INSTALL_IOS_BODY = "Add Plenum to your Home Screen for notifications and a full-screen app. Tap Share, then Add to Home Screen, then open Plenum from the Home Screen and pair there.", INSTALL_IOS_STEPS = Object.freeze(["Tap Share.", "Tap Add to Home Screen.", "Open Plenum from the Home Screen."]), INSTALL_IOS_PAIR_HERE = "Pair in this tab, without notifications", INSTALL_ANDROID_BODY = "Install Plenum for notifications and a full-screen app.", INSTALL_NO_PROMPT = "This browser does not offer the install here. Use the browser menu and choose Install app.", LAN_WEB_STRIP = "This page works only on {computer}'s network and cannot send notifications. It is sent without encryption, so someone on this network could change it. On a network you do not trust, use the Plenum app, Tailscale or your relay.", PAIR_REVIEW_TITLE = (name) => `Pair with ${name}?`, PAIR_REVIEW_LEAD = "Pair only if you clicked Add phone on your own computer just now and its window shows a code.", PAIR_REVIEW_HOSTS = "This phone will connect to:", PAIR_REVIEW_NOTE = "A computer you pair with runs its own screens in this app.", PAIR_REVIEW_PAIR = "Pair", PAIR_REVIEW_CANCEL = "Cancel", STORAGE_UNAVAILABLE = "This phone could not open its secure storage, so Plenum cannot keep a computer's key here. Close Plenum and open it again. If it keeps happening, reinstall the app.", LOCK_UNKNOWN = "Plenum could not read its lock settings, so it stays locked. Stop still works. Close Plenum and open it again.", LOCK_UNKNOWN_NO_STOP = "Plenum could not read its lock settings, so it stays locked. This phone cannot send Stop from here. Press Stop on your computer (the Stop bar, or Ctrl+Alt+Esc). Close Plenum and open it again.", START_FAILED = "Plenum could not start on this page. Close it and open Plenum again.", LOCK_STOP = "Stop everything", LOCK_UNLOCK_STOP = "Unlock and stop everything", CONNECTED_SINCE = (computer, when) => `Connected to ${computer}${when ? ` since ${when}` : ""}.`, CONNECTED_TITLE = "Connected", RECONNECTING_TITLE = "Reconnecting", RECONNECTING_BODY = (computer) => `Reconnecting to ${computer}. Plenum keeps trying. The strip at the top says what is happening.`, RENAME_TITLE = "Rename on this phone", RENAME_HELP = "Only this phone shows this name. The computer keeps its own name.", FORGET_TITLE = "Forget {computer}?", FORGET_BODY = "This phone deletes its key for {computer}. {computer} keeps listing this phone until you remove it there under Settings \u203A Phones.", FORGET_CONFIRM = "Forget", CANCEL = "Cancel", SETTINGS_TITLE = "Phone settings", SETTINGS_COMPUTERS = "COMPUTERS", SETTINGS_THIS_PHONE = "THIS PHONE", SETTINGS_HELP = "HELP", PAIR_ANOTHER_SHORT = "Pair another computer", SETTINGS_NONE = "No computer is paired yet.", WAYS_TITLE = "Ways to reach {computer}", WAYS_LEAD = "Plenum tries the way it last connected first, then the others in this order.", WAYS_TEST = "Test them now", WAYS_CARRIER = Object.freeze({ lan: "the same network", tailscale: "Tailscale", relay: "your relay" }), WAYS_CONNECTED = (carrier) => `Connected by ${carrier} now. Test them again when the phone is not connected.`, WAYS_TRYING = "Trying the ways now. The line at the top says which one answers.", WAYS_NEW = "New ways you turn on at the computer appear here the next time this phone connects.", WAY_NOT_AVAILABLE = "Not available in this app", WAY_NOT_REACHABLE = "Not reachable";
 var WAY_MOVE_UP = "Move up", WAY_MOVE_DOWN = "Move down", WAY_LAN_WEB = "An https web app cannot open your network's address.", WAY_NO_ADDRESS = "Turned off at the computer", NOTIFY_TITLE = "Notifications", NOTIFY_ON_PHONE = "On this phone", NOTIFY_KEPT = "KEPT ON {computer}, FOR EVERY PHONE", NOTIFY_APPROVE_ROW = "Approve from notifications", NOTIFY_TEST = "Send a test notification", NOTIFY_NOT_ARRIVING = "Not arriving? iPhone Focus modes and notification summaries can hold them back: Settings \u203A Notifications \u203A Plenum.", NOTIFY_NOT_ARRIVING_ANDROID = "Not arriving? Check Settings \u203A Apps \u203A Plenum \u203A Notifications on the phone.";
-var NOTIFY_PERMISSION = Object.freeze({ granted: "Allowed", denied: "Blocked", default: "Not asked", unknown: "Not asked" }), NOTIFY_DENIED_HINT = "Turn them on in Settings for Plenum on this phone.", APPROVE_NOTIFY_TEXT = "The notification shows one line of the card. Approving from it runs that edit or command on {computer} without opening the card or the lines under it. Your phone asks for Face ID, your fingerprint or your PIN first. Deny and Stop never need this switch.", APPROVE_BLOCKED_TEXT = "A blocked command never shows Approve on a notification.", LOCK_TITLE = "App lock", LOCK_ROW = "Lock Plenum", LOCK_AFTER_LABEL = "After", LOCK_SWITCHER = "Hide content in the app switcher", LOCK_NOW = "Lock now", LOCK_OFF_TITLE = "Turn off the app lock?", LOCK_OFF_TEXT = "With the app lock off, anyone who can unlock this phone can run models, approve changes and use your computer through Plenum. If the phone is lost, remove it at the computer under Settings \u203A Phones.", LOCK_OFF_KEEP = "Keep the lock on", LOCK_OFF_TURN = "Turn off";
+var NOTIFY_TEST_SENT = "A test notification was sent.", NOTIFY_PERMISSION = Object.freeze({ granted: "Allowed", denied: "Blocked", default: "Not asked", unknown: "Not asked" }), NOTIFY_DENIED_HINT = "Turn them on in Settings for Plenum on this phone.", APPROVE_NOTIFY_TEXT = "The notification shows one line of the card. Approving from it runs that edit or command on {computer} without opening the card or the lines under it. Your phone asks for Face ID, your fingerprint or your PIN first. Deny and Stop never need this switch.", APPROVE_BLOCKED_TEXT = "A blocked command never shows Approve on a notification.", NOTIFY_FIX_TEXT = Object.freeze({
+  "no-distributor": "Plenum sends notifications through a small free app called ntfy. Install it, then come back and tap Turn on again.",
+  denied: "Notifications are blocked for Plenum in Android's settings.",
+  "denied-web": "Notifications are blocked for Plenum on this phone. Allow them in the phone's settings for Plenum, then tap Turn on again.",
+  timeout: "ntfy did not answer. Open ntfy once, then try again.",
+  failed: "Plenum could not turn notifications on. Check that the phone is connected to {computer}, then try again."
+}), NOTIFY_GET_NTFY = "Get ntfy", NOTIFY_FDROID = "ntfy is also on F-Droid: f-droid.org/packages/io.heckel.ntfy", NOTIFY_OPEN_SETTINGS = "Open notification settings", NOTIFY_SETTINGS_WHERE = "Open Settings on the phone, then Apps, then Plenum, then Notifications, and turn them on.", NOTIFY_COMES_BACK = "Plenum checks again when you come back.", NOTIFY_TEST_ON_WAY = "A test notification is on its way.", NOTIFY_TEST_FAILED = "The test notification could not be sent. Check that the phone is connected to {computer}, then try again.", NOTIFY_REPAIRED = "Notifications had stopped reaching this phone. Plenum turned them back on.", NOTIFY_LAST = (when) => `Last notification ${when}`;
+function notifyFixFor(reason, { platform = "android", computer = "your computer" } = {}) {
+  let android = platform === "android", on = String(computer || "your computer");
+  switch (reason) {
+    case "no-distributor":
+      return { text: NOTIFY_FIX_TEXT["no-distributor"], button: { label: NOTIFY_GET_NTFY, action: "get-ntfy" }, help: NOTIFY_FDROID };
+    case "denied":
+      return android ? { text: NOTIFY_FIX_TEXT.denied, button: { label: NOTIFY_OPEN_SETTINGS, action: "open-settings" }, help: null } : { text: NOTIFY_FIX_TEXT["denied-web"], button: null, help: null };
+    case "timeout":
+    case "registration":
+      return { text: NOTIFY_FIX_TEXT.timeout, button: null, help: null };
+    // These two keep the lock step's own words (copy.js lockFailText): the screen uses that when this answers null.
+    case "other-computer":
+    case "unavailable":
+      return null;
+    default:
+      return { text: fillName(NOTIFY_FIX_TEXT.failed, on), button: null, help: null };
+  }
+}
+var LOCK_TITLE = "App lock", LOCK_ROW = "Lock Plenum", LOCK_AFTER_LABEL = "After", LOCK_SWITCHER = "Hide content in the app switcher", LOCK_NOW = "Lock now", LOCK_OFF_TITLE = "Turn off the app lock?", LOCK_OFF_TEXT = "With the app lock off, anyone who can unlock this phone can run models, approve changes and use your computer through Plenum. If the phone is lost, remove it at the computer under Settings \u203A Phones.", LOCK_OFF_KEEP = "Keep the lock on", LOCK_OFF_TURN = "Turn off";
 var LOCK_WEB_KEY = "The key that pairs this phone is kept in this browser's storage. Clearing the browser's website data removes it, and you pair again. A PIN or passkey protects the key from someone else using the unlocked phone.";
 var PHONE_PUSH_TEXT = "Plenum sends your phone only the project name and a status, such as an approval is waiting. Anyone holding the phone can read that on the lock screen. Turning on Include the first line adds the first line of the card, which can name files and commands.", LOCK_OFF_HINT = "The app lock is off. Turn it on to ask for your passcode or Face ID before Plenum connects.", APPEARANCE_TITLE = "Appearance", APPEARANCE_THEME = "Theme", APPEARANCE_TEXT = "Text size", APPEARANCE_FOLLOW_TEXT = "Follow phone", APPEARANCE_SAMPLE = "Coding agents work in the folders you choose, and you approve what they change. This paragraph shows the text size you picked.", APPEARANCE_STOP = "Stop button", APPEARANCE_STOP_RIGHT = "Right", APPEARANCE_STOP_LEFT = "Left", APPEARANCE_HAPTICS = "Haptics", APPEARANCE_NOTE = "The theme here is for this phone. Settings \u203A General \u203A Theme changes {computer}.", APPEARANCE_HAPTICS_IOS = "Haptics are not available in the web app on iPhone.", DICTATION_TITLE = "Dictation", DICTATION_PREFER = "Prefer recognition on this phone", DICTATION_ALLOW = "Allow that", DICTATION_ALLOW_TEXT = "When your language is not available on the phone, Plenum can use Apple's or Google's speech service instead.", DICTATION_WEB = "Dictation runs in the Plenum app on your phone.", PHONE_VOICE = "Plenum asks your phone to turn what you say into text in the message box. It prefers recognition on the phone itself; where your language is not available there, Apple or Google may process the audio under their own terms. Nothing reaches your computer until you press Send.", DEBUG_TITLE = "Debug console", DEBUG_LEAD = "Holds the last 500 lines, kept only on this phone.", DEBUG_EMPTY = "No log lines yet.", DEBUG_COPY = "Copy", DEBUG_SEND = "Send to {computer}", DEBUG_CLEAR = "Clear", DEBUG_SENT = "Sent {n} lines to {computer}.", DEBUG_SEND_FAILED = "Could not send the log to {computer}. Connect, then try again.", DEBUG_COPIED = "Copied.", DEBUG_NO_CLIPBOARD = "This browser does not allow copying here. Select the lines to copy them.", ABOUT_TITLE = "About", ABOUT_APP = "Plenum app {version}", ABOUT_COMPUTER = "{computer}: Plenum {version}", ABOUT_LINK = "Link version {version}", ABOUT_SCREENS_BUILT = "Screens: built into this app", ABOUT_SCREENS_LOADED = "Screens: loaded from {computer}, {n} files, all checked", ABOUT_CONNECTED = "Connected over {carrier} since {when}", ABOUT_NEWER_UI = "{computer} has features this app does not show yet. Update the app to use them.", ABOUT_NOT_CONNECTED = "Not connected to a computer now.", LEGAL_TITLE = "Legal", LEGAL_ROWS = Object.freeze({ license: "License Agreement", privacy: "Privacy Notice", third: "Third-party notices" }), LEGAL_VERSIONS = "The versions {computer} uses are in Settings \u203A Legal.";
 var DEMO_STRIP = "Demo: nothing here reaches a computer.", DEMO_EXIT = "Exit demo", DEMO_TITLE = "Demo computer", DEMO_RUNS = "RUNS", DEMO_APPROVAL = "Waiting for you", DEMO_APPROVE = "Approve", DEMO_DENY = "Deny", DEMO_RUN_LABEL = "Computer run", DEMO_DIFF_LABEL = "Changes", DEMO_ARTIFACT_LABEL = "Artifacts", DEMO_NO_PAIR = "The demo cannot pair with a computer. Exit the demo to pair.";
@@ -228,8 +263,21 @@ function pushPatch(key, value, approveStored) {
   let patch = { [key]: value === !0 };
   return key === "firstLine" && value !== !0 && approveStored && (patch.approveFromNotifications = !1), patch;
 }
-function unifiedPushLine(distributor) {
-  return distributor ? distributor === "io.heckel.ntfy" ? "Notifications from closed app: through ntfy (UnifiedPush)." : "Notifications from closed app: through your UnifiedPush app." : "Install a UnifiedPush app such as ntfy to get notifications while Plenum is closed.";
+var NTFY_PACKAGE = "io.heckel.ntfy";
+function unifiedPushLine(distributor, { installed = !1 } = {}) {
+  return !distributor && installed === !0 ? "Notifications while Plenum is closed come through your push app once they are on. Tap On this phone." : distributor ? distributor === NTFY_PACKAGE ? "Notifications while Plenum is closed come through ntfy." : "Notifications while Plenum is closed come through your push app." : "Notifications while Plenum is closed need the free ntfy app. Install it, then tap On this phone.";
+}
+var ANDROID_NOTIFY_LABEL = Object.freeze({
+  on: "On, through ntfy",
+  onOther: "On, through your push app",
+  needsApp: "Needs the ntfy app",
+  blocked: "Blocked in Android settings",
+  off: "Off"
+});
+function androidNotifyLabel(up) {
+  if (!up || up.supported === !1) return ANDROID_NOTIFY_LABEL.off;
+  let on = up.registered === !0;
+  return up.permission === !1 && (on || up.lastReason === "denied") ? ANDROID_NOTIFY_LABEL.blocked : up.distributor ? on ? up.distributor === NTFY_PACKAGE ? ANDROID_NOTIFY_LABEL.on : ANDROID_NOTIFY_LABEL.onOther : ANDROID_NOTIFY_LABEL.off : up.installed === !0 ? ANDROID_NOTIFY_LABEL.off : ANDROID_NOTIFY_LABEL.needsApp;
 }
 function normalisePrefs(raw) {
   let p = raw && typeof raw == "object" ? raw : {};
@@ -250,6 +298,52 @@ function normalisePrefs(raw) {
 function isLanPage(win) {
   let loc = win?.location ?? {};
   return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(String(loc.hostname ?? "")) ? !1 : win?.isSecureContext === !1 || String(loc.protocol ?? "") === "http:";
+}
+function isNative(win) {
+  return win?.Capacitor?.isNativePlatform?.() === !0;
+}
+var WIDE_QUERY = "(min-width: 1000px) and (hover: hover) and (pointer: fine)", LAYOUT_KEY = "plenum-layout", LAYOUTS = Object.freeze(["phone", "wide"]);
+function savedLayout(win) {
+  try {
+    let value = win?.localStorage?.getItem(LAYOUT_KEY) ?? null;
+    return LAYOUTS.includes(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function windowLayout(win) {
+  try {
+    return win?.matchMedia?.(WIDE_QUERY)?.matches === !0 ? "wide" : "phone";
+  } catch {
+    return "phone";
+  }
+}
+function surfaceFor(win) {
+  return isNative(win) ? "phone" : savedLayout(win) ?? windowLayout(win);
+}
+var BRAND_NAMES = Object.freeze([[/edge/i, "Edge"], [/opera/i, "Opera"], [/firefox/i, "Firefox"], [/safari/i, "Safari"], [/google chrome|^chrome$/i, "Chrome"]]);
+function browserOf(win) {
+  let brands = win?.navigator?.userAgentData?.brands;
+  if (Array.isArray(brands)) {
+    let names = brands.map((b) => String(b?.brand ?? ""));
+    for (let [pattern, name] of BRAND_NAMES) if (names.some((n) => pattern.test(n))) return name;
+  }
+  let ua = String(win?.navigator?.userAgent ?? "");
+  return /\bEdg(e|A|iOS)?\//.test(ua) ? "Edge" : /\bOPR\/|\bOpera\b/.test(ua) ? "Opera" : /\bFirefox\/|\bFxiOS\//.test(ua) ? "Firefox" : /\bChrome\/|\bCriOS\//.test(ua) ? "Chrome" : /\bSafari\//.test(ua) && /\bVersion\//.test(ua) ? "Safari" : Array.isArray(brands) && brands.some((b) => /chromium/i.test(String(b?.brand ?? ""))) ? "Chrome" : "";
+}
+function systemOf(win) {
+  let platform = String(win?.navigator?.userAgentData?.platform ?? "");
+  if (/^windows$/i.test(platform)) return "Windows";
+  if (/^macos$/i.test(platform)) return "macOS";
+  if (/^chrome ?os$/i.test(platform)) return "ChromeOS";
+  if (/^android$/i.test(platform)) return "Android";
+  if (/^linux$/i.test(platform)) return "Linux";
+  let ua = String(win?.navigator?.userAgent ?? "");
+  return /\bCrOS\b/.test(ua) ? "ChromeOS" : /\bWindows\b/.test(ua) ? "Windows" : /\biPhone\b/.test(ua) ? "iPhone" : /\biPad\b/.test(ua) ? "iPad" : /\bAndroid\b/.test(ua) ? "Android" : /\bMac OS X\b|\bMacintosh\b/.test(ua) ? "macOS" : /\bLinux\b|\bX11\b/.test(ua) ? "Linux" : "";
+}
+function browserName(win) {
+  let browser = browserOf(win), system = systemOf(win);
+  return browser && system ? `${browser} on ${system}` : browser || (system ? `Browser on ${system}` : "This browser");
 }
 
 // mobile/shell/screens/route.js
@@ -275,6 +369,7 @@ function terminalScreen(s) {
 function screenFor(s, nav = {}) {
   if (!s) return null;
   if (s.locked) return s.lock?.mode === "pin" ? "lock-pin" : "lock-bio";
+  if (s.claim) return "claim";
   let p = s.pairing ?? null;
   if (p?.state === "review") return "pair-review";
   if (p?.state === "confirm" && !nav.pairingCancelled)
@@ -287,6 +382,7 @@ function screenFor(s, nav = {}) {
     if (shown) return shown;
   }
   if (nav.onboarding?.length) return nav.onboarding[0];
+  if ((s.tab?.state === "elsewhere" || s.tab?.state === "moved") && !nav.screen) return "other-tab";
   if (nav.uiState) return nav.uiState;
   if (s.ui?.state === "loading" || s.ui?.state === "navigating") return "loading";
   if (s.ui?.state === "failed") return "ui-failed";
@@ -319,6 +415,13 @@ function lanPage(env = {}) {
 function defaultPhoneName(platform) {
   return platform === "ios" ? "iPhone" : platform === "android" ? "Android phone" : "Phone";
 }
+function widePage(env = {}) {
+  return platformOf(env) === "web" && surfaceFor(env) === "wide";
+}
+function defaultDeviceName(env = {}, { browser = !1 } = {}) {
+  let platform = platformOf(env);
+  return platform === "web" && (browser || widePage(env)) ? browserName(env) : defaultPhoneName(platform);
+}
 function passkeyAvailable(env = {}) {
   return env.isSecureContext === !0 && typeof env.PublicKeyCredential == "function";
 }
@@ -339,13 +442,20 @@ function stripFor(conn, computer, env = {}) {
   return status === "reconnecting" ? { tone: "warn", text: `Reconnecting to ${computer}\u2026` } : status === "offline" ? { tone: "bad", text: `Can't reach ${computer}.${when}` } : status === "asleep" ? { tone: "muted", text: ASLEEP_STRIP(computer, when) } : null;
 }
 function ctxFor(s, nav = {}, env = {}) {
-  let platform = platformOf(env), lan = lanPage(env), hello = s?.hello ?? null, active = (s?.computers ?? []).find((c) => c.id === s?.activeId) ?? null, computer = String(hello?.desktopName || active?.name || "your computer"), conn = s?.connection ?? {}, pairing = s?.pairing ?? null, tried = pairing?.tried ?? conn.failure?.tried ?? [], driving = hello?.pending?.driving ?? nav.lastDriving ?? null;
+  let platform = platformOf(env), lan = lanPage(env), hello = s?.hello ?? null, active = (s?.computers ?? []).find((c) => c.id === s?.activeId) ?? null, computer = String(hello?.desktopName || active?.name || "your computer"), conn = s?.connection ?? {}, pairing = s?.pairing ?? null, tried = pairing?.tried ?? conn.failure?.tried ?? [], driving = hello?.pending?.driving ?? nav.lastDriving ?? null, wide = widePage(env), browserOffer = (pairing ? pairing.form ?? pairing.review?.form : nav.pairForm) === "browser";
   return {
     platform,
     lan,
     computer,
     session: !!s?.activeId || !!(s?.locked && s?.computers?.length),
-    phoneName: nav.local?.phoneName ?? defaultPhoneName(platform),
+    phoneName: nav.local?.phoneName ?? defaultDeviceName(env, { browser: browserOffer }),
+    // Wave 5 (brb): the computer layout, a browser offer on the review screen, the code page, and another tab that holds this computer.
+    wide,
+    browserOffer,
+    // A browser, not a phone: the shell's settings say "this browser" (a web page in the computer layout, or one pairing through Add a browser).
+    browser: platform === "web" && (wide || browserOffer),
+    claim: s?.claim ? { paired: (s.claim.paired ?? []).map((c) => ({ name: String(c.name ?? ""), path: String(c.path ?? "") })) } : null,
+    tab: s?.tab ? { state: s.tab.state, computer: s.tab.computer } : null,
     code: pairing?.code ?? null,
     carrier: conn.carrier ?? pairing?.carrier ?? null,
     failReason: pairing?.state === "failed" ? pairing.reason ?? null : null,
@@ -522,7 +632,10 @@ var REPO = "https://github.com/literallyisyou/Plenum", LEGAL_LINKS = Object.free
   "third-party": `${REPO}/blob/main/legal/THIRD-PARTY-SERVICES.md`,
   license: `${REPO}/blob/main/legal/EULA.md`,
   third: `${REPO}/blob/main/THIRD-PARTY-NOTICES.txt`
-}), STORE_LINKS = Object.freeze({ ios: null, android: `${REPO}/releases`, web: `${REPO}/releases` });
+}), STORE_LINKS = Object.freeze({ ios: null, android: `${REPO}/releases`, web: `${REPO}/releases` }), NTFY_LINKS = Object.freeze({
+  play: "https://play.google.com/store/apps/details?id=io.heckel.ntfy",
+  fdroid: "https://f-droid.org/packages/io.heckel.ntfy/"
+});
 function openLinkFlow(env, href) {
   if (!href) return { ok: !1, reason: "not-configured" };
   let url;
@@ -541,6 +654,51 @@ function openSettingsFlow() {
 }
 function cleanPhoneName(text, fallback) {
   return String(text ?? "").replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, "").trim().slice(0, 60).trim() || fallback;
+}
+function claimCodeOf(text) {
+  let code2 = String(text ?? "").replace(/[\s-]+/g, "");
+  return /^[0-9A-Za-z]{12}$/.test(code2) ? code2 : null;
+}
+function claimLinkOk(link, origin) {
+  let text = String(link ?? "");
+  if (text.length > 8192) return null;
+  try {
+    let url = new URL(text);
+    return url.origin !== String(origin ?? "") || !/^\/p\/[0-9a-f]{32}\/$/.test(url.pathname) || !/^#pair=[A-Za-z0-9_-]+$/.test(url.hash) ? null : url.href;
+  } catch {
+    return null;
+  }
+}
+async function claimFlow(env, text) {
+  let code2 = claimCodeOf(text);
+  if (!code2) return { ok: !1, error: "wrong" };
+  let fetchFn = typeof env?.fetch == "function" ? env.fetch.bind(env) : null;
+  if (!fetchFn) return { ok: !1, error: "network" };
+  let res;
+  try {
+    res = await fetchFn("/pair/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: code2 }),
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "error"
+    });
+  } catch {
+    return { ok: !1, error: "network" };
+  }
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (res.status === 200) {
+    let link = claimLinkOk(body?.link, env?.location?.origin);
+    return link ? { ok: !0, link } : { ok: !1, error: "network" };
+  }
+  let error = String(body?.error ?? "");
+  return ["wrong", "none", "locked", "too-many"].includes(error) ? { ok: !1, error } : error === "bad-request" || error === "too-large" ? { ok: !1, error: "wrong" } : { ok: !1, error: "network" };
 }
 
 // mobile/shell/screens/views.js
@@ -579,7 +737,7 @@ function welcome(ctx, io) {
       el(
         "div",
         { class: "sh-field" },
-        el("label", { class: "sh-label", for: "sh-name", text: "This phone's name" }),
+        el("label", { class: "sh-label", for: "sh-name", text: ctx.wide ? BROWSER_NAME_LABEL : "This phone's name" }),
         input,
         para("Your computer shows this name.", "sh-help")
       ),
@@ -768,27 +926,34 @@ function code(ctx, io) {
     title: PAIRING_CHECK,
     body: [
       el("p", { class: "sh-code", role: "img", "aria-label": codeLabel(ctx.code), text: codeSpaced(ctx.code) }),
-      para(`${ctx.computer} ${CODE_TEXT}`, "sh-note"),
+      para(`${ctx.computer} ${ctx.browserOffer ? CODE_TEXT_BROWSER : CODE_TEXT}`, "sh-note"),
       countdown
     ],
     actions: [button("The codes do not match", { kind: "danger", onClick: () => io.act.mismatch() })]
   });
 }
+var newCodeButton = (io) => button(TYPE_NEW_CODE, { kind: "primary", onClick: () => io.act.newCode() });
 function mismatch(ctx, io) {
   return frame(ctx, io, {
     title: "The codes do not match",
-    body: [para(MISMATCH_BODY, "sh-note")],
-    actions: [button("Try again", { kind: "primary", onClick: () => io.go("how") })]
+    body: [para(ctx.browserOffer ? MISMATCH_BODY_BROWSER : MISMATCH_BODY, "sh-note")],
+    actions: [ctx.browserOffer ? newCodeButton(io) : button("Try again", { kind: "primary", onClick: () => io.go("how") })]
   });
 }
 function denied(ctx, io) {
   return frame(ctx, io, {
     title: "Pairing was not allowed",
-    body: [para(`${ctx.computer} ${DENIED_BODY}`, "sh-note")],
-    actions: [button("Try again", { kind: "primary", onClick: () => io.go("how") })]
+    body: [para(`${ctx.computer} ${ctx.browserOffer ? DENIED_BODY_BROWSER : DENIED_BODY}`, "sh-note")],
+    actions: [ctx.browserOffer ? newCodeButton(io) : button("Try again", { kind: "primary", onClick: () => io.go("how") })]
   });
 }
 function expired(ctx, io) {
+  if (ctx.browserOffer)
+    return frame(ctx, io, {
+      title: "The code expired",
+      body: [para(EXPIRED_BODY_BROWSER, "sh-note")],
+      actions: [newCodeButton(io)]
+    });
   let actions = ctx.lan ? [button("Scan the code", { kind: "primary", onClick: () => io.go("scan") })] : [button("Paste a link", { kind: "ghost", onClick: () => io.go("paste") }), button("Scan the code", { kind: "primary", onClick: () => io.go("scan") })];
   return frame(ctx, io, {
     title: "The code expired",
@@ -828,20 +993,42 @@ function pairedLock(ctx, io) {
     ]
   });
 }
+function notifyFix(ctx, io, reason) {
+  if (!reason) return null;
+  let fix = notifyFixFor(reason, { platform: ctx.platform, computer: ctx.computer }) ?? { text: lockFailText(reason), button: null, help: null }, act = fix.button?.action === "get-ntfy" ? () => io.act.getNtfy?.() : fix.button?.action === "open-settings" ? () => io.act.openNotificationSettings?.() : null, help = fix.button?.action === "open-settings" ? ctx.notifyWhere ? NOTIFY_SETTINGS_WHERE : NOTIFY_COMES_BACK : fix.help;
+  return el(
+    "div",
+    { class: "sh-fix", "data-reason": String(reason) },
+    el("p", { class: "sh-msg", role: "alert", text: fix.text }),
+    fix.button && act ? button(fix.button.label, { kind: "ghost", onClick: act }) : null,
+    help ? para(help, "sh-help") : null
+  );
+}
 function pairedNotify(ctx, io) {
   let advance = () => {
-    io.local.onboardMessage = null, io.advance();
+    io.local.onboardMessage = null, io.local.notifyReason = null, io.advance();
   }, message = ctx.onboardMessage ? el("p", { class: "sh-msg", role: "alert", text: ctx.onboardMessage }) : null;
-  return ctx.platform === "ios" && !ctx.forwarder ? frame(ctx, io, {
+  if (ctx.platform === "ios" && !ctx.forwarder)
+    return frame(ctx, io, {
+      title: "Notifications",
+      body: [para(NOTIFY_BODY_LATER, "sh-note"), message],
+      actions: [button("Continue", { kind: "primary", onClick: advance })]
+    });
+  let turnOn = async () => {
+    let result = await io.act.enableNotifications();
+    if (result?.ok === !0) {
+      io.local.onboardMessage = null, io.local.notifyReason = null, io.advance();
+      return;
+    }
+    io.local.notifyReason = result?.reason ?? "failed", io.repaint();
+  };
+  return frame(ctx, io, {
     title: "Notifications",
-    body: [para(NOTIFY_BODY_LATER, "sh-note"), message],
-    actions: [button("Continue", { kind: "primary", onClick: advance })]
-  }) : frame(ctx, io, {
-    title: "Notifications",
-    body: [para(fill(NOTIFY_BODY, ctx.computer), "sh-note"), message],
+    // Wave 5 (brb): a browser in the computer layout is told what a notification is for there (Web Push, also with the tab in the background).
+    body: [para(ctx.wide && !ctx.lan ? NOTIFY_BODY_BROWSER : fill(NOTIFY_BODY, ctx.computer), "sh-note"), message, notifyFix(ctx, io, ctx.notifyReason ?? null)],
     actions: [
       button("Not now", { kind: "ghost", onClick: advance }),
-      button("Turn on", { kind: "primary", onClick: stepThen(io, () => io.act.enableNotifications()) })
+      button("Turn on", { kind: "primary", onClick: turnOn })
     ]
   });
 }
@@ -1075,19 +1262,93 @@ function radioGroup(label, options, value, onPick) {
 }
 var msgNode = (text) => text ? el("p", { class: "sh-msg", role: "status", text }) : null;
 function pairReview(ctx, io) {
-  let hosts = Array.isArray(ctx.review?.hosts) ? ctx.review.hosts : [];
+  let hosts = Array.isArray(ctx.review?.hosts) ? ctx.review.hosts : [], nameField = null;
+  if (ctx.browserOffer) {
+    let input = el("input", { class: "sh-input", id: "sh-name", type: "text", autocomplete: "off", spellcheck: "false", maxlength: "64", "aria-describedby": "sh-name-help" });
+    input.value = io.local.phoneName ?? ctx.phoneName, input.addEventListener("input", () => {
+      io.local.phoneName = input.value;
+    }), nameField = el(
+      "div",
+      { class: "sh-field" },
+      el("label", { class: "sh-label", for: "sh-name", text: BROWSER_NAME_LABEL }),
+      input,
+      el("p", { class: "sh-help", id: "sh-name-help", text: "Your computer shows this name." })
+    );
+  }
   return frame(ctx, io, {
     title: PAIR_REVIEW_TITLE(ctx.review?.name || "Plenum computer"),
     body: [
-      para(PAIR_REVIEW_LEAD, "sh-note"),
-      para(PAIR_REVIEW_HOSTS, "sh-label"),
+      para(ctx.browserOffer ? PAIR_REVIEW_LEAD_BROWSER : PAIR_REVIEW_LEAD, "sh-note"),
+      para(ctx.browserOffer ? PAIR_REVIEW_HOSTS_BROWSER : PAIR_REVIEW_HOSTS, "sh-label"),
       ...hosts.map((h) => para(`${CARRIER_LABEL[h.kind]}: ${h.host}`, "sh-note")),
-      para(PAIR_REVIEW_NOTE, "sh-help")
+      nameField,
+      para(ctx.browserOffer ? PAIR_REVIEW_NOTE_BROWSER : PAIR_REVIEW_NOTE, "sh-help")
     ],
     actions: [
       button(PAIR_REVIEW_CANCEL, { kind: "ghost", onClick: () => io.act.cancelPair() }),
       button(PAIR_REVIEW_PAIR, { kind: "primary", onClick: () => io.act.confirmPair() })
     ]
+  });
+}
+function claim(ctx, io) {
+  let paired = ctx.claim?.paired ?? [], plain = ctx.lan ? para(CLAIM_PLAIN_HTTP, "sh-msg sh-warn") : null;
+  if (paired.length && !ctx.claimForm) {
+    let first = paired[0];
+    return frame(ctx, io, {
+      title: CLAIM_TITLE,
+      body: [para(CLAIM_PAIRED(first.name), "sh-note"), plain],
+      actions: [
+        button(CLAIM_AGAIN, { kind: "ghost", onClick: () => io.act.claimAgain() }),
+        button(CLAIM_OPEN, { kind: "primary", onClick: () => io.act.openPaired(first.path) })
+      ]
+    });
+  }
+  let input = el("input", {
+    class: "sh-input sh-code-input",
+    id: "sh-claim",
+    type: "text",
+    inputmode: "text",
+    autocomplete: "one-time-code",
+    autocapitalize: "characters",
+    spellcheck: "false",
+    maxlength: "40",
+    "aria-describedby": "sh-claim-help sh-claim-err"
+  });
+  input.value = io.local.claimCode ?? "", input.addEventListener("input", () => {
+    io.local.claimCode = input.value;
+  });
+  let send = () => {
+    io.act.claim(input.value);
+  };
+  input.addEventListener("keydown", (event) => {
+    event.key === "Enter" && (event.preventDefault?.(), send());
+  });
+  let error = ctx.claimError ? CLAIM_ERRORS[ctx.claimError] ?? CLAIM_ERRORS.network : null;
+  return io.later(() => {
+    input.focus?.({ preventScroll: !0 });
+  }, 0), frame(ctx, io, {
+    title: CLAIM_TITLE,
+    body: [
+      para(CLAIM_LEAD, "sh-note"),
+      el(
+        "div",
+        { class: "sh-field" },
+        el("label", { class: "sh-label", for: "sh-claim", text: CLAIM_LABEL }),
+        input,
+        el("p", { class: "sh-help", id: "sh-claim-help", text: CLAIM_HELP })
+      ),
+      el("p", { class: "sh-msg", id: "sh-claim-err", role: "alert" }, error),
+      plain
+    ],
+    actions: [button(CLAIM_CONTINUE, { kind: "primary", disabled: ctx.claimBusy === !0, onClick: send })]
+  });
+}
+function otherTab(ctx, io) {
+  let moved = ctx.tab?.state === "moved";
+  return frame(ctx, io, {
+    title: moved ? TAB_MOVED : TAB_ELSEWHERE,
+    body: [],
+    actions: [button(TAB_USE_HERE, { kind: "primary", onClick: () => io.act.useHere() })]
   });
 }
 function computers(ctx, io) {
@@ -1099,7 +1360,7 @@ function computers(ctx, io) {
       button(ROW_MENU.ways, { kind: "ghost", onClick: () => {
         io.local.waysFor = c.id, io.go("settings-connection");
       } }),
-      button(ROW_MENU.rename, { kind: "ghost", onClick: () => {
+      button(ctx.browser ? RENAME_TITLE_BROWSER : ROW_MENU.rename, { kind: "ghost", onClick: () => {
         io.local.renameId = c.id, io.go("rename");
       } }),
       button(ROW_MENU.forget, { kind: "danger", onClick: () => {
@@ -1131,7 +1392,7 @@ function computers(ctx, io) {
       ),
       menu
     );
-  }), gear = el("button", { type: "button", class: "sh-icon", "aria-label": SETTINGS_TITLE, on: { click: () => io.go("settings") } }, "\u2699");
+  }), gear = el("button", { type: "button", class: "sh-icon", "aria-label": ctx.browser ? SETTINGS_TITLE_BROWSER : SETTINGS_TITLE, on: { click: () => io.go("settings") } }, "\u2699");
   return frame(ctx, io, {
     title: COMPUTERS_TITLE,
     trailing: gear,
@@ -1184,7 +1445,7 @@ function connected(ctx, io) {
     ctx.uiAvailable && !ctx.reconnecting ? button("Open Plenum", { kind: "primary", onClick: () => io.act.openUi() }) : null,
     vm.computers.length > 1 ? button("Computers", { kind: "ghost", onClick: () => io.go("computers") }) : null,
     button("Ways to reach", { kind: "ghost", onClick: () => io.go("settings-connection") }),
-    button("Phone settings", { kind: ctx.uiAvailable && !ctx.reconnecting ? "ghost" : "primary", onClick: () => io.go("settings") })
+    button(ctx.browser ? SETTINGS_TITLE_BROWSER : "Phone settings", { kind: ctx.uiAvailable && !ctx.reconnecting ? "ghost" : "primary", onClick: () => io.go("settings") })
   ];
   return ctx.reconnecting ? frame(ctx, io, {
     kicker: RECONNECTING_TITLE,
@@ -1209,7 +1470,7 @@ function rename(ctx, io) {
   return input.value = io.local.renameValue ?? current?.name ?? "", input.addEventListener("input", () => {
     io.local.renameValue = input.value;
   }), frame(ctx, io, {
-    title: RENAME_TITLE,
+    title: ctx.browser ? RENAME_TITLE_BROWSER : RENAME_TITLE,
     back: !0,
     body: [
       el(
@@ -1217,7 +1478,7 @@ function rename(ctx, io) {
         { class: "sh-field" },
         el("label", { class: "sh-label", for: "sh-rename", text: "Name" }),
         input,
-        para(RENAME_HELP, "sh-help")
+        para(ctx.browser ? RENAME_HELP_BROWSER : RENAME_HELP, "sh-help")
       ),
       msgNode(io.local.renameNote ?? null)
     ],
@@ -1237,7 +1498,7 @@ function forget(ctx, io) {
   let id = io.local.forgetId ?? ctx.vm.computers.find((c) => c.active)?.id ?? null, name = ctx.vm.computers.find((c) => c.id === id)?.name ?? ctx.computer, cancel = null, root = frame(ctx, io, {
     title: fillName(FORGET_TITLE, name),
     back: !0,
-    body: [para(fillName(FORGET_BODY, name), "sh-note"), msgNode(io.local.forgetNote ?? null)],
+    body: [para(fillName(ctx.browser ? FORGET_BODY_BROWSER : FORGET_BODY, name), "sh-note"), msgNode(io.local.forgetNote ?? null)],
     actions: [
       cancel = button(CANCEL, { kind: "ghost", onClick: () => io.back() }),
       button(FORGET_CONFIRM, {
@@ -1261,12 +1522,12 @@ function settings(ctx, io) {
     io.local.waysFor = c.id, io.go("settings-connection");
   })), lockValue = vm.lock.mode === "off" ? "Off" : `${vm.lock.label} \xB7 ${lockAfter(vm.prefs.lockAfter).label}`;
   return frame(ctx, io, {
-    title: SETTINGS_TITLE,
+    title: ctx.browser ? SETTINGS_TITLE_BROWSER : SETTINGS_TITLE,
     back: !0,
     body: [
       section(SETTINGS_COMPUTERS),
       el("div", { class: "sh-rows" }, computerRows, row(PAIR_ANOTHER_SHORT, null, () => io.go("how"))),
-      section(SETTINGS_THIS_PHONE),
+      section(ctx.browser ? SETTINGS_THIS_BROWSER : SETTINGS_THIS_PHONE),
       el(
         "div",
         { class: "sh-rows" },
@@ -1275,6 +1536,8 @@ function settings(ctx, io) {
         row(APPEARANCE_TITLE, THEME_LABEL[vm.prefs.theme], () => io.go("settings-appearance")),
         vm.native ? row(DICTATION_TITLE, "On this phone", () => io.go("settings-dictation")) : null
       ),
+      // Wave 4 (m2): shown once, after Plenum turned this phone's notifications back on by itself.
+      ctx.repairLine ? el("p", { class: "sh-msg sh-info", role: "status", text: ctx.repairLine }) : null,
       section(SETTINGS_HELP),
       el(
         "div",
@@ -1371,14 +1634,18 @@ function settingsNotify(ctx, io) {
   }) : null, notes = [
     para(fill(APPROVE_NOTIFY_TEXT, ctx.computer), "sh-note"),
     para(APPROVE_BLOCKED_TEXT, "sh-help")
-  ], up = vm.unifiedPush, androidLine = up ? para(unifiedPushLine(up.distributor ?? null), "sh-note") : null, chooseApp = up?.supported ? button("Choose app", { kind: "ghost", onClick: () => io.act.chooseDistributor() }) : null;
+  ], up = vm.unifiedPush, androidLine = up ? para(unifiedPushLine(up.distributor ?? null, { installed: up.installed === !0 }), "sh-note") : null, chooseApp = up?.supported ? button("Choose app", { kind: "ghost", onClick: () => io.act.chooseDistributor() }) : null;
   return frame(ctx, io, {
     title: NOTIFY_TITLE,
     back: !0,
     body: [
       section(NOTIFY_ON_PHONE),
       el("div", { class: "sh-rows" }, row(NOTIFY_ON_PHONE, vm.notify.label, () => io.act.enableNotifications())),
+      vm.notify.last ? para(vm.notify.last, "sh-help") : null,
       vm.notify.hint ? para(vm.notify.hint, "sh-help") : null,
+      // Wave 4 (m2): why the last turn-on stopped and what to do, and the one-time line after Plenum turned them back on by itself.
+      notifyFix(ctx, io, ctx.notifyReason ?? null),
+      ctx.repairLine ? el("p", { class: "sh-msg sh-info", role: "status", text: ctx.repairLine }) : null,
       section(fill(NOTIFY_KEPT, ctx.computer)),
       el("div", { class: "sh-switches" }, pushRows, approveRow, approve.visible ? el("div", { class: "sh-notes" }, notes) : null),
       androidLine,
@@ -1546,7 +1813,12 @@ function settingsAppearance(ctx, io) {
       radioGroup(APPEARANCE_STOP, [{ id: "right", label: APPEARANCE_STOP_RIGHT }, { id: "left", label: APPEARANCE_STOP_LEFT }], prefs.stopSide, (id) => io.act.setPref({ stopSide: id })),
       vm.haptics.visible ? switchRow({ label: APPEARANCE_HAPTICS, checked: prefs.haptics, id: "sh-haptics", onChange: (value) => io.act.setPref({ haptics: value }) }) : null,
       vm.haptics.visible ? null : para(APPEARANCE_HAPTICS_IOS, "sh-help"),
-      para(fill(APPEARANCE_NOTE, ctx.computer), "sh-help")
+      para(fill(APPEARANCE_NOTE, ctx.computer), "sh-help"),
+      // Wave 5 (brb): in a browser, which layout the computer's screens use on this device (device.js LAYOUT_KEY).
+      vm.layout ? section(LAYOUT_TITLE) : null,
+      vm.layout ? radioGroup(LAYOUT_TITLE, ["auto", "phone", "wide"].map((id) => ({ id, label: LAYOUT_LABEL[id] })), vm.layout, (id) => io.act.setLayout(id)) : null,
+      vm.layout ? para(LAYOUT_NOTE, "sh-help") : null,
+      vm.layout ? msgNode(ctx.layoutNote ?? null) : null
     ]
   });
 }
@@ -1738,7 +2010,9 @@ var PART2_BUILDERS = Object.freeze({
   "demo-run": demoRun,
   "demo-diff": demoDiff,
   "demo-artifact": demoArtifact,
-  "pin-set": pinSet
+  "pin-set": pinSet,
+  claim,
+  "other-tab": otherTab
 }), PART2_SCREEN_BUILDERS = PART2_BUILDERS;
 function renderPart2(id, ctx, io) {
   let build = PART2_BUILDERS[id];
@@ -1819,6 +2093,12 @@ function seenText(ms) {
   let d = new Date(Number(ms));
   return Number.isNaN(d.getTime()) ? null : `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${clockTime(ms)}`;
 }
+function lastNotificationLine(ms, nowMs = Date.now()) {
+  let at = Number(ms);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  let d = new Date(at), today = new Date(nowMs), sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  return NOTIFY_LAST(sameDay ? clockTime(at) : `${d.getDate()} ${MONTHS[d.getMonth()]}, ${clockTime(at)}`);
+}
 function installHint(env = globalThis) {
   if (platformOf(env) !== "web" || lanPage(env) || String(env.location?.protocol ?? "") !== "https:" || env.matchMedia?.("(display-mode: standalone)")?.matches === !0 || env.navigator?.standalone === !0) return null;
   let ua = String(env.navigator?.userAgent ?? "");
@@ -1857,15 +2137,19 @@ function buildVm(s, nav, env, core = null) {
       screensLoaded: null,
       newerUi: !1
     },
-    notify: { label: NOTIFY_PERMISSION[perm] ?? NOTIFY_PERMISSION.unknown, hint: perm === "denied" ? NOTIFY_DENIED_HINT : null },
+    // Wave 4 (m2): on Android the row is what the phone knows (the push app, the computer holding the endpoint, Android's own switch); the
+    // web Notification API is not in the Android WebView, so it would say "Not asked" while notifications work.
+    notify: platform === "android" ? { label: androidNotifyLabel(s?.androidPush ?? null), hint: null, last: lastNotificationLine(s?.androidPush?.lastAt) } : { label: NOTIFY_PERMISSION[perm] ?? NOTIFY_PERMISSION.unknown, hint: perm === "denied" ? NOTIFY_DENIED_HINT : null, last: null },
     lock: { mode: lockMode, label: lockLabel, failures: Number(s?.lock?.failures) || 0, waitSec: Number(s?.lock?.waitSec) || 0, prefs: null },
     prefs,
     push,
     approve,
     haptics: { visible: !iosWeb },
-    unifiedPush: platform === "android" ? { supported: s?.androidPush?.supported === !0, distributor: s?.androidPush?.distributor ?? null, registered: s?.androidPush?.registered === !0, failure: s?.androidPush?.failure ?? null } : null,
+    unifiedPush: platform === "android" ? { supported: s?.androidPush?.supported === !0, distributor: s?.androidPush?.distributor ?? null, registered: s?.androidPush?.registered === !0, installed: s?.androidPush?.installed === !0, failure: s?.androidPush?.failure ?? null } : null,
     dictation: native ? { available: s?.dictation?.available === !0, onDevice: s?.dictation?.onDevice === !0, permission: s?.dictation?.permission ?? "prompt", known: !!s?.dictation } : null,
     debug: { lines: debugLines.slice(-500).map((l) => ({ level: l.level ?? "info", time: hhmmss(l.at), text: String(l.text ?? "") })) },
+    // Wave 5 (brb): the layout this device uses (web only): 'auto', 'phone' or 'wide'.
+    layout: native ? null : savedLayout(env) ?? "auto",
     demo,
     replay: !!s?.demo
   };
@@ -2001,9 +2285,9 @@ function mountScreens(env = globalThis) {
       return;
     }
     if (!fixtureMode && snapshot) {
-      snapshot.paired && snapshot.paired.seq > (nav.pairedSeq ?? 0) && (nav.pairedSeq = snapshot.paired.seq, nav.onboarding = lanPage(env) ? ["paired-lock"] : ["paired-lock", "paired-notify"]), snapshot.hello && (nav.lastDriving = snapshot.hello.pending?.driving ?? null), snapshot.hello && snapshot.activeId && (nav.wasConnected = snapshot.activeId), snapshot.activeId || (nav.lastDriving = null), nav.pairingCancelled && snapshot.pairing?.state !== "confirm" && (nav.pairingCancelled = !1);
+      snapshot.paired && snapshot.paired.seq > (nav.pairedSeq ?? 0) && (nav.pairedSeq = snapshot.paired.seq, nav.onboarding = lanPage(env) ? ["paired-lock"] : ["paired-lock", "paired-notify"]), snapshot.hello && (nav.lastDriving = snapshot.hello.pending?.driving ?? null), snapshot.hello && snapshot.activeId && (nav.wasConnected = snapshot.activeId), snapshot.activeId || (nav.lastDriving = null), nav.pairingCancelled && snapshot.pairing?.state !== "confirm" && (nav.pairingCancelled = !1), snapshot.pairing && (nav.pairForm = (snapshot.pairing.form ?? snapshot.pairing.review?.form) === "browser" ? "browser" : null);
       let request = snapshot.screenRequest ?? null;
-      !snapshot.locked && request?.seq > (nav.screenSeq ?? 0) && (nav.screenSeq = request.seq, nav.stack = [], nav.screen = request.screen, nav.dismissedKey = null), applyPrefs(snapshot);
+      !snapshot.locked && request?.seq > (nav.screenSeq ?? 0) && (nav.screenSeq = request.seq, nav.stack = [], nav.screen = request.screen, nav.dismissedKey = null), applyPrefs(snapshot), noteNotifySetup(snapshot.notifySetup ?? null);
     }
     let showingCode = fixtureMode ? demoId === "code" : snapshot?.pairing?.state === "confirm" && !nav.pairingCancelled;
     showingCode ? (nav.codeSince == null && (nav.codeSince = now()), codeSecondsLeft(nav.codeSince, now()) === 0 && (nav.codeExpired = !0)) : (nav.codeSince = null, nav.codeExpired = !1, fixtureMode || (nav.forced = null));
@@ -2013,7 +2297,7 @@ function mountScreens(env = globalThis) {
     if (!ctx) return;
     let isPart2 = PART2_SCREEN_BUILDERS[id] !== void 0;
     if (isPart2 && !snapshot) return;
-    if (ctx.id = id, id !== "scan" && scanning && stopScan(), fixtureMode || (ctx.cameraDenied = !!nav.local.cameraDenied), ctx.countdown = showingCode ? codeSecondsLeft(nav.codeSince, now()) : null, id === "failed" && (ctx.stripInfo = null), ctx.bioMessage = nav.local.bioMessage ?? null, ctx.linkMessage = nav.local.linkMessage ?? null, ctx.onboardMessage = nav.local.onboardMessage ?? null, ctx.notifyNote = nav.local.notifyNote ?? null, ctx.install = fixtureMode ? null : installHint(env), ctx.vm = fixtureMode ? null : buildVm(snapshot, nav, env, core), updateChrome(ctx, id), !id) {
+    if (ctx.id = id, id !== "scan" && scanning && stopScan(), fixtureMode || (ctx.cameraDenied = !!nav.local.cameraDenied), ctx.countdown = showingCode ? codeSecondsLeft(nav.codeSince, now()) : null, id === "failed" && (ctx.stripInfo = null), ctx.bioMessage = nav.local.bioMessage ?? null, ctx.linkMessage = nav.local.linkMessage ?? null, ctx.onboardMessage = nav.local.onboardMessage ?? null, ctx.notifyNote = nav.local.notifyNote ?? null, ctx.notifyReason = nav.local.notifyReason ?? null, ctx.notifyWhere = nav.local.notifyWhere === !0, ctx.claimError = nav.local.claimError ?? null, ctx.claimForm = nav.local.claimForm === !0, ctx.claimBusy = nav.local.claimBusy === !0, ctx.layoutNote = nav.local.layoutNote ?? null, ctx.repairLine = fixtureMode ? null : repairLineFor(id), ctx.install = fixtureMode ? null : installHint(env), ctx.vm = fixtureMode ? null : buildVm(snapshot, nav, env, core), updateChrome(ctx, id), !id) {
       view.replaceChildren(), lastId = null, lastSig = "", doc2.body.removeAttribute("data-screen");
       return;
     }
@@ -2027,6 +2311,18 @@ function mountScreens(env = globalThis) {
     timers.clear();
     let node = isPart2 ? renderPart2(id, { ...ctx, id }, io) : renderScreen(id, { ...ctx, id }, io);
     node && view.replaceChildren(node), id !== lastId && focusTitle(), lastId = id, lastSig = sig, doc2.body.setAttribute("data-screen", id);
+  }
+  function noteNotifySetup(setup) {
+    if (nav.notifySetupSeq === void 0) {
+      nav.notifySetupSeq = setup?.seq ?? 0;
+      return;
+    }
+    !setup || !(setup.seq > nav.notifySetupSeq) || (nav.notifySetupSeq = setup.seq, setup.auto && (nav.local.notifyReason = setup.ok ? null : setup.reason ?? "failed", nav.local.notifyNote = setup.ok && setup.testSent ? NOTIFY_TEST_ON_WAY : null, setup.ok && nav.onboarding?.[0] === "paired-notify" && (nav.onboarding.shift(), nav.onboarding.length || (nav.onboarding = null, core?.releaseUi?.()))));
+  }
+  let REPAIR_SCREENS = Object.freeze(["settings", "settings-notify"]);
+  function repairLineFor(id) {
+    return REPAIR_SCREENS.includes(id) ? (!nav.local.repairLine && snapshot?.pushRepaired === !0 && (nav.local.repairLine = NOTIFY_REPAIRED, Promise.resolve().then(() => core?.ackPushRepaired?.()).catch(() => {
+    })), nav.local.repairLine ?? null) : (nav.local.repairLine = null, null);
   }
   function updateChrome(ctx, id) {
     let locked = fixtureMode ? LOCK_IDS.includes(id) : !!snapshot?.locked, showStop = (fixtureMode ? !!ctx.session : !!snapshot?.activeId) && !locked;
@@ -2085,7 +2381,7 @@ function mountScreens(env = globalThis) {
       if (replayMode)
         return nav.local.linkMessage = DEMO_NO_PAIR, paint(), null;
       nav.screen = null, nav.pairingCancelled = !1, nav.dismissedKey = null;
-      let name = cleanPhoneName(nav.local.phoneName, defaultPhoneName(platformOf(env))), final = await core?.pair?.(String(text ?? ""), { name });
+      let name = cleanPhoneName(nav.local.phoneName, defaultDeviceName(env)), final = await core?.pair?.(String(text ?? ""), { name });
       return final?.state === "allowed" && (nav.onboarding = lanPage(env) ? ["paired-lock"] : ["paired-lock", "paired-notify"]), paint(), final;
     },
     readClipboard: (setter) => {
@@ -2131,10 +2427,27 @@ function mountScreens(env = globalThis) {
       nav.pairingCancelled = !0, nav.screen = "mismatch", nav.dismissedKey = null, paint(), await coreCall("cancelPairing"), paint();
     },
     enableLock: async (mode) => fixtureMode ? { ok: !0, reason: null } : enableLockFlow(core, mode),
+    // Wave 4 (m2): every reason a turn-on stopped is shown with what to do (views.js notifyFix: Get ntfy, Open notification settings, or the
+    // sentence alone); B-128's other-computer is one of them. On success the core sent the test notification, and the line says it is coming.
     enableNotifications: async () => {
       if (fixtureMode) return { ok: !0, reason: null };
+      nav.local.notifyWhere = !1;
       let out = await enableNotificationsFlow(core);
-      return nav.local.notifyNote = out?.reason === "other-computer" ? PUSH_OTHER_COMPUTER : null, paint(), out;
+      nav.local.notifyReason = out?.ok === !0 ? null : out?.reason ?? "failed";
+      let sent = out?.ok === !0 && core?.state?.()?.notifySetup?.testSent === !0;
+      return nav.local.notifyNote = sent ? NOTIFY_TEST_ON_WAY : null, paint(), out;
+    },
+    // "Get ntfy": its store page in the system browser. The core checks for it again when Plenum comes back to the front.
+    getNtfy: () => {
+      if (fixtureMode) return { ok: !0, reason: null };
+      let out = openLinkFlow(env, NTFY_LINKS.play);
+      return out.ok && call(core, "awaitPushApp"), paint(), out;
+    },
+    // "Open notification settings": Android's page for Plenum. An app that cannot open it gets the line that says where it is.
+    openNotificationSettings: async () => {
+      if (fixtureMode) return { ok: !0, reason: null };
+      let out = await coreCall("openNotificationSettings");
+      return nav.local.notifyWhere = out.ok !== !0, paint(), out;
     },
     unlock: async (method, arg = null) => {
       if (fixtureMode || !core) return { ok: !1, reason: "demo" };
@@ -2148,8 +2461,10 @@ function mountScreens(env = globalThis) {
       nav.local.bioMessage = lockMessage(method, result), paint();
     },
     // The pairing link that waits for review (D5): Pair starts it, Cancel drops it (C6c).
+    // Wave 5 (brb): a browser offer has a name field on the review screen; the name goes with Pair.
     confirmPair: async () => {
-      await call(core, "confirmPair"), paint();
+      let browser = snapshot?.pairing?.review?.form === "browser";
+      await call(core, "confirmPair", browser ? { name: cleanPhoneName(nav.local.phoneName, defaultDeviceName(env, { browser: !0 })) } : {}), paint();
     },
     cancelPair: async () => {
       await call(core, "cancelPairing"), paint();
@@ -2212,11 +2527,19 @@ function mountScreens(env = globalThis) {
       return coreCall("setPush", patch);
     },
     setApprove: async (value) => coreCall("setApprove", value === !0),
-    testPush: async () => coreCall("testPush"),
-    // Android: the system chooser for the push app UnifiedPush goes through (the settings line shows which one is chosen).
+    // The test notification says whether it went (it used to say nothing).
+    testPush: async () => {
+      let out = await coreCall("testPush");
+      if (!fixtureMode) {
+        let computer = snapshot?.hello?.desktopName || snapshot?.computers?.find((c) => c.id === snapshot?.activeId)?.name || "your computer";
+        nav.local.notifyNote = out.ok ? NOTIFY_TEST_SENT : fillName(NOTIFY_TEST_FAILED, computer), paint();
+      }
+      return out;
+    },
+    // Android: the system chooser for the push app notifications come through (the settings line shows which one is chosen).
     chooseDistributor: async () => {
       let out = await coreCall("chooseDistributor");
-      return nav.local.notifyNote = out.ok ? null : unifiedPushLine(null), paint(), out;
+      return nav.local.notifyNote = out.ok ? null : unifiedPushLine(null, { installed: snapshot?.androidPush?.installed === !0 }), paint(), out;
     },
     lockOn: async (mode) => fixtureMode ? { ok: !0, reason: null } : enableLockFlow(core, mode),
     lockOff: async (pin) => coreCall("lockOff", pin),
@@ -2258,6 +2581,46 @@ function mountScreens(env = globalThis) {
     debugClear: () => {
       fixtureMode || coreCall("debugClear");
     },
+    // ---- wave 5 (brb): the code page, another tab, the layout ----
+    // Continue on the code page: the computer checks the code and answers with the pairing link, which this page goes to at once (the review
+    // screen there, as for any link). The link is kept nowhere.
+    claim: async (text) => {
+      if (fixtureMode || replayMode || nav.local.claimBusy) return { ok: !1, error: "busy" };
+      nav.local.claimBusy = !0, nav.local.claimError = null, paint();
+      let out = await claimFlow(env, text);
+      return nav.local.claimBusy = !1, out.ok ? (nav.local.claimCode = "", env.location?.replace?.(out.link), out) : (nav.local.claimError = out.error, paint(), out);
+    },
+    openPaired: (path) => {
+      typeof path == "string" && /^\/p\/[0-9a-f]{32}\/$/.test(path) && env.location?.assign?.(path);
+    },
+    claimAgain: () => {
+      nav.local.claimForm = !0, nav.local.claimError = null, paint();
+    },
+    // "Type the new code" after an Add a browser pairing that stopped (mismatch, denied, expired): the code page at /pair/ on this same
+    // address, which the computer that made the offer serves. The apps have no code page, so they go to the phone's How screen instead.
+    newCode: () => {
+      if (!(fixtureMode || replayMode)) {
+        if (platformOf(env) !== "web" || !env.location?.assign) {
+          io.go("how");
+          return;
+        }
+        env.location.assign("/pair/");
+      }
+    },
+    useHere: async () => {
+      let id = snapshot?.tab?.computer;
+      if (!id) return { ok: !1, reason: "none" };
+      let out = await coreCall("connect", id);
+      return paint(), out;
+    },
+    setLayout: (id) => {
+      try {
+        id === "phone" || id === "wide" ? env.localStorage?.setItem(LAYOUT_KEY, id) : env.localStorage?.removeItem(LAYOUT_KEY), nav.local.layoutNote = null;
+      } catch {
+        nav.local.layoutNote = LAYOUT_NOT_KEPT;
+      }
+      paint();
+    },
     demoDecide: async (id, decision) => replayMode ? coreCall("demoDecide", id, decision) : { ok: !1, reason: "demo" },
     demoReset: () => {
       replayMode && coreCall("demoReset");
@@ -2267,7 +2630,7 @@ function mountScreens(env = globalThis) {
     act: actions,
     later,
     go: (id) => {
-      fixtureMode ? (demoOverrides = {}, nav.codeSince = null, nav.codeExpired = !1, demoId = id) : (nav.stack.push(nav.screen), nav.screen = id, nav.forced = null, nav.dismissedKey = stateKeyNow(), nav.local.linkMessage = null, nav.local.onboardMessage = null), paint();
+      fixtureMode ? (demoOverrides = {}, nav.codeSince = null, nav.codeExpired = !1, demoId = id) : (nav.stack.push(nav.screen), nav.screen = id, nav.forced = null, nav.dismissedKey = stateKeyNow(), nav.local.linkMessage = null, nav.local.onboardMessage = null, nav.local.notifyReason = null, nav.local.notifyWhere = !1), paint();
     },
     back: () => {
       fixtureMode ? demoId = "welcome" : (nav.screen = nav.stack.length ? nav.stack.pop() : null, nav.dismissedKey = null, nav.local.linkMessage = null), paint();
@@ -2315,6 +2678,7 @@ if (typeof document < "u" && typeof window < "u" && !globalThis.__PLENUM_SCREENS
 export {
   buildVm,
   installHint,
+  lastNotificationLine,
   mountScreens,
   scanWithBrowser,
   screensDebugOn

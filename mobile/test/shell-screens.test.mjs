@@ -110,7 +110,7 @@ describe('routing and copy (Node, no browser)', () => {
     assert.equal(copy.updateAppBody('Home PC', '2.0', '1.6'), 'Home PC runs Plenum 2.0, which needs a newer Plenum app than this one (1.6). Update the app, then open it again.');
     assert.equal(copy.updateDesktopBody('Home PC', '1.0', '0.9'), 'This app needs Plenum 1.0 or later on Home PC, which has 0.9. On the computer, open Settings › Updates and install the update.');
     assert.equal(copy.REVOKED_BODY, 'To use Plenum here again, add the phone at the computer under Settings › Phones.');
-    assert.equal(copy.uiFailedBody('Home PC', 'checksum'), 'A file from Home PC did not match its checksum, so the phone kept the copy it had. Try again; if it happens again, restart Plenum on the computer.');
+    assert.equal(copy.uiFailedBody('Home PC', 'checksum'), 'Part of Plenum did not arrive intact from Home PC, so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.');
     assert.equal(copy.uiFailedBody('Home PC', 'not-sent'), "Home PC did not send Plenum's screens. Try again.");
     assert.equal(copy.uiFailedBody('Home PC', 'stopped'), 'Plenum on Home PC stopped while the screens were loading.');
     assert.equal(copy.pendingLine('Home PC', { approvals: 2, runs: 1 }), 'On Home PC now: 2 approvals waiting, 1 run going.');
@@ -143,10 +143,12 @@ describe('routing and copy (Node, no browser)', () => {
     assert.equal(copy.storeLabel('web'), 'Open the release page');
   });
 
+  // Wave 4 (m2): the owner never reads the word UnifiedPush (the lines before: build/v06-before/wave4/m2/shell-screens.test.mjs).
   test('the Android push line names the chosen app, and gives the install hint when none is chosen (M15)', () => {
-    assert.equal(settings.unifiedPushLine('io.heckel.ntfy'), 'Notifications from closed app: through ntfy (UnifiedPush).');
-    assert.equal(settings.unifiedPushLine('org.example.push'), 'Notifications from closed app: through your UnifiedPush app.');
-    assert.equal(settings.unifiedPushLine(null), 'Install a UnifiedPush app such as ntfy to get notifications while Plenum is closed.');
+    assert.equal(settings.unifiedPushLine('io.heckel.ntfy'), 'Notifications while Plenum is closed come through ntfy.');
+    assert.equal(settings.unifiedPushLine('org.example.push'), 'Notifications while Plenum is closed come through your push app.');
+    assert.equal(settings.unifiedPushLine(null), 'Notifications while Plenum is closed need the free ntfy app. Install it, then tap On this phone.');
+    for (const d of ['io.heckel.ntfy', 'org.example.push', null]) assert.equal(/UnifiedPush/i.test(settings.unifiedPushLine(d)), false);
   });
 
   test('the strip copy and the driving line', () => {
@@ -564,7 +566,7 @@ describe('the router on a fake page (Node, fake core): screen requests, the way 
     mounted.io.go('settings-notify');
     const view = () => doc.getElementById('sh-view');
     const buttons = () => elementsOf(view()).filter(e => e.tagName === 'BUTTON').map(textOf);
-    const install = 'Install a UnifiedPush app such as ntfy to get notifications while Plenum is closed.';
+    const install = 'Notifications while Plenum is closed need the free ntfy app. Install it, then tap On this phone.';
     assert.equal(doc.body.getAttribute('data-screen'), 'settings-notify');
     assert.ok(textOf(view()).includes(install), 'no push app chosen: the install line');
     assert.ok(buttons().includes('Choose app'), 'the chooser reads Choose app');
@@ -574,7 +576,7 @@ describe('the router on a fake page (Node, fake core): screen requests, the way 
     assert.ok(elementsOf(view()).some(e => e.className === 'sh-msg' && textOf(e) === install), 'a failed choose shows the install line');
     core.snap = { ...core.snap, androidPush: { supported: true, distributor: 'io.heckel.ntfy' } };
     mounted.paint();
-    assert.ok(textOf(view()).includes('Notifications from closed app: through ntfy (UnifiedPush).'), 'the chosen ntfy app is named');
+    assert.ok(textOf(view()).includes('Notifications while Plenum is closed come through ntfy.'), 'the chosen ntfy app is named');
     assert.ok(buttons().includes('Choose app'));
     core.snap = { ...core.snap, androidPush: { supported: false, distributor: null } };
     mounted.paint();
@@ -953,7 +955,7 @@ describe('shell screens in the phone-size harness (S-01 to S-09)', { timeout: 90
       ['update-app', 'Home PC runs Plenum 2.0, which needs a newer Plenum app than this one (1.6). Update the app, then open it again.'],
       ['update-desktop', 'This app needs Plenum 1.0 or later on Home PC, which has 0.9. On the computer, open Settings › Updates and install the update.'],
       ['revoked', 'To use Plenum here again, add the phone at the computer under Settings › Phones.'],
-      ['ui-failed', 'A file from Home PC did not match its checksum, so the phone kept the copy it had. Try again; if it happens again, restart Plenum on the computer.'],
+      ['ui-failed', 'Part of Plenum did not arrive intact from Home PC, so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.'],
       ['ui-failed', 'On Home PC now: 2 approvals waiting, 1 run going.'],
       ['failed', 'Same network: no answer. Check that this phone is on the same Wi-Fi as the computer. Guest Wi-Fi often keeps devices apart.'],
       ['failed', 'Relay: Home PC is not connected to the relay. Check Settings › Phones › Relay on the computer.'],

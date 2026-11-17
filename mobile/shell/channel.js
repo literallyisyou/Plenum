@@ -16,7 +16,7 @@
 //   channel.onStopState(fn) -> unsubscribe              fn({ sid, state }) 'sending' | 'sent' | 'queued'
 //   channel.hello           the last HELLO payload, or null (getter)
 //   channel.state           the last state (getter)
-//   channel.reconnect()     an immediate attempt (app resume, visibility)
+//   channel.reconnect(why?) an immediate attempt (app resume, visibility, network change); why = { reason, hiddenMs } (w4-m1)
 //   channel.close()         ends the channel; the worker is terminated once it reports 'closed'
 //
 // Requests fail with an Error whose code is 'offline' (not connected), 'busy', 'lost' (the link dropped mid-request),
@@ -327,8 +327,15 @@ export function openChannel({
     },
     get hello() { return hello; },
     get state() { return state; },
-    reconnect() {
-      if (!closed) post({ op: 'reconnect' });
+    // w4-m1: why = { reason: 'resume' | 'network' | 'stop' | 'retry', hiddenMs } tells the worker what happened, so a return after a long time
+    // away or a network change dials beside the probe (channel.worker.js reconnectNow). No argument sends { op: 'reconnect' } as before.
+    reconnect({ reason = null, hiddenMs = null } = {}) {
+      if (closed) return;
+      post({
+        op: 'reconnect',
+        ...(typeof reason === 'string' && reason ? { reason } : {}),
+        ...(Number.isFinite(hiddenMs) && hiddenMs >= 0 ? { hiddenMs } : {}),
+      });
     },
     close() {
       if (closed) return;

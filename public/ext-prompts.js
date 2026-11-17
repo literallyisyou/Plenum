@@ -234,11 +234,11 @@
     try {
       data = JSON.parse(text);
     } catch {
-      MuseUI.toast('That file is not JSON.', 'bad');
+      MuseUI.toast('That file is not one Plenum exported. Choose a file saved from Export.', 'bad');
       return;
     }
     if (!data || typeof data !== 'object' || data.kind !== 'plenum-prompts' || !Array.isArray(data.prompts)) {
-      MuseUI.toast('That file is not a Plenum prompts export.', 'bad');
+      MuseUI.toast('That file is not one Plenum exported. Choose a file saved from Export.', 'bad');
       return;
     }
     try {
@@ -312,7 +312,8 @@
 
   // Asks first, then deletes, and redraws the drawer from the server's list.
   async function removePrompt(p, projectId, button) {
-    if (!confirm(`Delete /${p.name}? This cannot be undone.`)) return;
+    const sure = await MuseUI.confirm({ title: 'Delete prompt', body: `Delete /${p.name}? This cannot be undone.`, action: 'Delete prompt', tone: 'danger', focusCancel: true });
+    if (sure !== true) return;
     button.disabled = true;
     try {
       await MuseUI.api('/api/prompts/delete', { project: projectId, name: p.name });

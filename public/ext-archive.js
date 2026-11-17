@@ -89,6 +89,11 @@
   // and after a restore. Either can change what the line shows. The timer keeps the age text current.
   new MutationObserver(paint).observe(MuseUI.el.projName, { childList: true, characterData: true, subtree: true });
   new MutationObserver(paint).observe(MuseUI.el.chat, { childList: true });
-  setInterval(paint, 30000);
+  setInterval(() => {
+    if (document.visibilityState !== 'hidden') paint();
+  }, 30000);
+  document.addEventListener?.('visibilitychange', () => {
+    if (document.visibilityState === 'visible') paint();
+  });
   paint();
 })();

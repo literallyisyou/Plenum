@@ -23,6 +23,9 @@ const config: CapacitorConfig = {
     // Needed so the shell can open ws:// LAN channels from its https origin. The channel itself is
     // end-to-end encrypted (Noise), so the cleartext hop carries only ciphertext.
     allowMixedContent: true,
+    // The WebView's colour before the page draws. Capacitor takes one colour only, so this is the dark one (#0a0a11);
+    // MainActivity.java then sets the light one (#f6f6fb) in light mode, in the same onCreate, before the first frame.
+    backgroundColor: '#0a0a11',
     // Keep the WebView's remote debugging to debug builds (Capacitor's default behaviour).
     // Signing is never configured here: release builds read the keystore from environment
     // variables in CI only (android/app/build.gradle).

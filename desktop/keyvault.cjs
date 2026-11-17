@@ -6,6 +6,7 @@
 // A key is never logged and never put in an error message.
 const nodeFs = require('node:fs');
 const path = require('node:path');
+const { writeFileAtomic } = require('./atomic.cjs');
 
 // Every key the app stores, by environment variable name. lib/keys.mjs builds the same list from lib/api-providers.mjs.
 const KEY_NAMES = ['ANTHROPIC_API_KEY', 'XAI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'MISTRAL_API_KEY', 'GOOGLE_AI_API_KEY', 'OPENROUTER_API_KEY'];
@@ -106,12 +107,12 @@ function createKeyVault({ safeStorage, file, platform = process.platform, fs = n
     return aside;
   }
 
-  // Writes the file through a temporary file and a rename, so a crash cannot leave half a file. Only the owner can read it.
-  function writeRaw(keys) {
+  // Writes the file through a temporary file that is flushed to the disk and renamed (desktop/atomic.cjs), so a crash cannot leave half
+  // a file, and a rename that another program blocks for a moment (a sync client, antivirus) is tried again. Only the owner can read it.
+  // The temp file is removed when the write fails. The error is the file system's own and never holds the text written.
+  async function writeRaw(keys) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, keys }, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    await writeFileAtomic(file, JSON.stringify({ version: 1, keys }, null, 2), { fs, mode: 0o600 });
   }
 
   // Runs one change to the file at a time, so two saves close together cannot overwrite each other.
@@ -155,7 +156,7 @@ function createKeyVault({ safeStorage, file, platform = process.platform, fs = n
             // A file that cannot be read now is not rewritten from what is left of it.
             if (current.locked || current.damaged) throw new Error('The key store cannot be read.');
             for (const name of stale) current.keys[name] = Buffer.from(await safeStorage.encryptStringAsync(keys[name])).toString('base64');
-            writeRaw(current.keys);
+            await writeRaw(current.keys);
           } catch {
             // The old ciphertext still works; it is tried again at the next start.
           }
@@ -187,7 +188,7 @@ function createKeyVault({ safeStorage, file, platform = process.platform, fs = n
         }
       }
       raw.keys[name] = Buffer.from(encrypted).toString('base64');
-      writeRaw(raw.keys);
+      await writeRaw(raw.keys);
       return { ok: true, storage: 'keychain', note: mode.note };
     } catch (err) {
       return { ok: false, message: `The key could not be saved: ${scrub(err?.message ?? err, value).slice(0, 200)}` };
@@ -225,7 +226,7 @@ function createKeyVault({ safeStorage, file, platform = process.platform, fs = n
       // A key that is not in the file is already gone, so the file is not written for it (and no file is made when none exists).
       if (typeof raw.keys[name] === 'string') {
         delete raw.keys[name];
-        writeRaw(raw.keys);
+        await writeRaw(raw.keys);
       }
       return { ok: true, storage: 'keychain', note: mode.note };
     } catch (err) {

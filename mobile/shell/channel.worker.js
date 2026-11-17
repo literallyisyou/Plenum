@@ -12,7 +12,9 @@
 //   stop         { sid, project? }                             STOP with a 16-byte id; queued and retried for 60 s
 //   stopLocked   { sid, computer: { id, deviceId, stopKey, carriers, lastCarrier, lastUrl?, counter } }   Stop without unlocking: one signed
 //                                                              STOP_ONLY on a fresh socket (lib/remote/stop-only.mjs); no Noise session is opened
-//   reconnect    {}                                            an immediate attempt (app resume, visibility)
+//   reconnect    { reason?, hiddenMs? }                        an immediate attempt (app resume, visibility). w4-m1: reason 'network' (the phone's
+//                                                              network changed) or 'resume' with hiddenMs over RESUME_RACE_AFTER_MS also dials a
+//                                                              new session beside the probe of the one that is up
 //   pair         { payload, device, caps, extraUrls? }         the pairing link's payload; keys are made here
 //   pairCancel   {}                                            the codes did not match: CLOSE mismatch
 //   counterSaved { rid, ok, counter }                          the page stored the raised counter
@@ -42,7 +44,7 @@
 //
 // The request policy (the page is not trusted to keep it; MOBILE.json client_model): a 'page' request keeps the headers accept, content-type
 // and x-plenum-client-id and never reaches a /_bridge/ path. A 'shell' request (the shell's own calls) may also send x-plenum-notify-line and
-// POST /_bridge/log and /_bridge/ui-manifest. A path that does not start with '/', has a backslash or a '..' segment, or does not decode
+// POST /_bridge/log and /_bridge/ui-manifest, and (wave 5) POST /_bridge/presence. A path that does not start with '/', has a backslash or a '..' segment, or does not decode
 // ends 'refused'.
 //
 // Rules this file keeps (MOBILE.json transport and client_model):
@@ -54,7 +56,8 @@
 //     that won ever carries a handshake or a STOP_ONLY, so two sockets never send with counters that could arrive out of order. A way that
 //     opened and then failed is put aside and the rest are dialled again, so a round still ends with one answer for every address.
 //   - Three failed rounds: 'offline'. A relay close 4001 host-offline (or a CLOSE frame with that reason): 'asleep', retried on the same
-//     schedule for three rounds and then every 60 s. Revoked, update-app and update-desktop stop retries.
+//     schedule for three rounds and then every 60 s. Offline slows to every 30 s after 6 offline rounds and every 60 s after 12 (w4-m1).
+//     Revoked and update-app stop retries; update-desktop is retried every 60 s and on a return to the app (w4-m1).
 //   - Three rounds in which a carrier closes with 4401 and the others close with 4401 too or cannot be reached (the computer does not
 //     know this phone, e.g. removed while it was away): 'not-known', which the screens show as revoked. Retried every 60 s and never
 //     given up: the close code is not authenticated.
@@ -97,14 +100,33 @@ export const ASLEEP_RETRY_MS = 60000;
 export const PING_INTERVAL_MS = 25000;
 export const PING_MISSES = 2;
 export const PROBE_MS = 3000;   // a session that is up is probed with a PING when the app resumes or a Stop is pressed; no PONG in this time closes it
+// w4-m1 (battery): a phone that cannot reach its computer keeps the quick schedule (DELAYS_MS, then RETRY_CAP_MS) for its first
+// OFFLINE_SLOW_AFTER_ROUNDS offline rounds, then tries every OFFLINE_SLOW_MS, and after OFFLINE_SLOWEST_AFTER_ROUNDS offline rounds every
+// OFFLINE_SLOWEST_MS, as asleep does. A network change or a return to the app still tries at once.
+export const OFFLINE_SLOW_AFTER_ROUNDS = 6;
+export const OFFLINE_SLOW_MS = 30000;
+export const OFFLINE_SLOWEST_AFTER_ROUNDS = 12;
+export const OFFLINE_SLOWEST_MS = 60000;
+// w4-m1: 'update-desktop' (the computer's Plenum is older than this app) is retried every minute, so the phone connects once the computer is
+// updated. A return to the app tries at once.
+export const UPDATE_DESKTOP_RETRY_MS = 60000;
+// w4-m1 (fast resume): back after more than this long hidden, or on a network change, a session that is up is probed AND a new session is dialled
+// beside the probe; whichever answers first is kept and the other is closed, so a socket that died while the phone slept costs one dial, not
+// PROBE_MS plus a dial.
+export const RESUME_RACE_AFTER_MS = 20000;
+const RECONNECT_REASONS = Object.freeze(['resume', 'network', 'stop', 'retry']);
 export const DEFAULT_CAPS = Object.freeze(['ui-from-desktop', 'artifacts-iframe', 'push-none', 'share', 'save']);
 const CARRIERS = Object.freeze(['lan', 'tailscale', 'relay']);
 export const STOP_ONLY_WAIT_MS = 6000;
 export const MAX_SOCKET_MESSAGE = 65535 + 64;
 const PAGE_HEADERS = Object.freeze(['accept', 'content-type', 'x-plenum-client-id']);
 const SHELL_HEADERS = Object.freeze([...PAGE_HEADERS, 'x-plenum-notify-line']);
-const SHELL_BRIDGE_PATHS = Object.freeze(['/_bridge/log', '/_bridge/ui-manifest']);
-const TERMINAL = Object.freeze(['revoked', 'update-app', 'update-desktop', 'closed']);
+// Wave 5 (brb): /_bridge/presence (POST { visible }, whether the page is in front, so a hidden tab still gets its notifications) is the shell's
+// too; it is refused to the page, and to any method but POST.
+const SHELL_BRIDGE_PATHS = Object.freeze(['/_bridge/log', '/_bridge/ui-manifest', '/_bridge/presence']);
+const POST_ONLY_BRIDGE_PATHS = Object.freeze(['/_bridge/presence']);
+// w4-m1: 'update-desktop' is no longer here; it is retried every UPDATE_DESKTOP_RETRY_MS (see retryDelay).
+const TERMINAL = Object.freeze(['revoked', 'update-app', 'closed']);
 
 const utf8 = new TextEncoder();
 const utf8Decode = new TextDecoder();
@@ -276,6 +298,7 @@ export function requestPolicy(msg) {
     return null;
   }
   if (pathname.toLowerCase().startsWith('/_bridge/') && !(scope === 'shell' && SHELL_BRIDGE_PATHS.includes(pathname))) return null;
+  if (POST_ONLY_BRIDGE_PATHS.includes(pathname) && String(msg?.method || 'GET').toUpperCase() !== 'POST') return null;
   const allowed = scope === 'shell' ? SHELL_HEADERS : PAGE_HEADERS;
   const headers = {};
   if (msg?.headers && typeof msg.headers === 'object') {
@@ -318,6 +341,8 @@ export function createChannelCore(options = {}) {
   const pendingStops = new Map();
   const draining = new Set();   // sessions renewed away whose open streams are still running
   let unknownRounds = 0;        // consecutive rounds that ended with a 4401 and no other coded answer (see attempt)
+  let resumeRace = null;        // w4-m1: the dial beside the probe of a session that is up (raceResume), or null
+  let kickAfterAttempt = false; // w4-m1: the network changed while a round was dialling: a round that fails tries again soon, not on the slow schedule
 
   const transition = next => {
     if (next !== phase) {
@@ -413,6 +438,7 @@ export function createChannelCore(options = {}) {
       drainTimer: null,
       probe: null,
       hello: null,
+      onPong: null,   // w4-m1: set by raceResume while it waits for this session's answer
     };
     s.frames = new FrameSession({
       role: 'phone',
@@ -449,6 +475,12 @@ export function createChannelCore(options = {}) {
       }
       s.messages += 1;
       s.frames.receive(plain);
+      // w4-m1: the resume race waits for this session's PONG (FrameSession has no PONG callback; its pingOutstanding clears on the PONG).
+      if (s.onPong && !s.frames.isClosed && !s.frames.pingOutstanding) {
+        const fn = s.onPong;
+        s.onPong = null;
+        fn();
+      }
     };
     sock.onClose = info => {
       // The relay closes a phone with 4001 when the computer is not connected to it: the computer is asleep or its Plenum is not running.
@@ -694,14 +726,25 @@ export function createChannelCore(options = {}) {
     nextRetryAt = null;
   }
 
-  function scheduleRetry() {
+  // The wait before the next round. w4-m1: update-desktop every minute; offline slows to OFFLINE_SLOW_MS and then OFFLINE_SLOWEST_MS (battery).
+  function retryDelay() {
+    if (phase === 'not-known') return NOT_KNOWN_RETRY_MS;
+    if (phase === 'update-desktop') return UPDATE_DESKTOP_RETRY_MS;
+    if (phase === 'asleep') return failedRounds >= ASLEEP_SLOW_AFTER_ROUNDS ? ASLEEP_RETRY_MS : (DELAYS_MS[failedRounds] ?? RETRY_CAP_MS);
+    const offlineRounds = failedRounds - OFFLINE_ROUNDS + 1;   // the rounds that ended with the phone offline, this one included
+    if (offlineRounds > OFFLINE_SLOWEST_AFTER_ROUNDS) return OFFLINE_SLOWEST_MS;
+    if (offlineRounds > OFFLINE_SLOW_AFTER_ROUNDS) return OFFLINE_SLOW_MS;
+    return DELAYS_MS[failedRounds] ?? RETRY_CAP_MS;
+  }
+
+  // soon (w4-m1): the network changed while the round that failed was dialling; the next round is DELAYS_MS[0] away, not on the slow schedule.
+  function scheduleRetry({ soon = false } = {}) {
     if (closedByPage || !computer || TERMINAL.includes(phase)) return;
     clearRetry();
-    const slow = phase === 'not-known';
-    const sleepy = phase === 'asleep' && failedRounds >= ASLEEP_SLOW_AFTER_ROUNDS;
-    const delay = slow ? NOT_KNOWN_RETRY_MS : sleepy ? ASLEEP_RETRY_MS : (DELAYS_MS[failedRounds] ?? RETRY_CAP_MS);
+    const delay = soon ? DELAYS_MS[0] : retryDelay();
     nextRetryAt = clock.now() + delay;
-    if (phase !== 'asleep' && !slow) transition(failedRounds >= OFFLINE_ROUNDS ? 'offline' : 'reconnecting');
+    // asleep, not-known and update-desktop keep their own screen while they are retried.
+    if (!['asleep', 'not-known', 'update-desktop'].includes(phase)) transition(failedRounds >= OFFLINE_ROUNDS ? 'offline' : 'reconnecting');
     retryTimer = clock.setTimeout(() => {
       retryTimer = null;
       nextRetryAt = null;
@@ -777,7 +820,9 @@ export function createChannelCore(options = {}) {
       if (unknownRounds >= NOT_KNOWN_ROUNDS) transition('not-known');
       else if (reasons.includes('host-offline')) transition('asleep');
       else if (phase === 'not-known' || phase === 'asleep') transition('reconnecting');
-      scheduleRetry();
+      const soon = kickAfterAttempt;
+      kickAfterAttempt = false;
+      scheduleRetry({ soon });
     } finally {
       attempting = false;
       dialing = null;
@@ -794,7 +839,8 @@ export function createChannelCore(options = {}) {
     desktopName = String(s.hello?.desktopName ?? desktopName).slice(0, 60);
     const major = s.hello?.protocol?.major;
     if (major !== 1) {
-      // The phase is set before the close, so the close path sees a terminal state and does not retry.
+      // The phase is set before the close, so the close path sees it: update-app is terminal and does not retry; update-desktop (w4-m1) is
+      // tried again every UPDATE_DESKTOP_RETRY_MS, and an older computer's HELLO keeps the same screen.
       transition(major > 1 ? 'update-app' : 'update-desktop');
       s.frames.close(major > 1 ? 'update-app' : 'update-desktop');
       emitState();
@@ -854,14 +900,86 @@ export function createChannelCore(options = {}) {
   // B-118: an immediate attempt (the app resumed, or a Stop was pressed). With no session it dials now. With a session it cannot tell a live
   // socket from one that died silently (a phone that slept, a network that changed), so it asks: a PING, and a session that has not answered
   // in PROBE_MS is closed and dialled again at once. A live session answers in a moment and nothing else happens.
-  function reconnectNow() {
-    if (!computer || closedByPage || attempting || TERMINAL.includes(phase)) return;
+  //
+  // w4-m1: why = { reason, hiddenMs } from the page. After more than RESUME_RACE_AFTER_MS hidden, or when the network changed, the probe of a
+  // session that is up runs beside a new dial (raceResume): the first to answer is kept. A network change with no session also brings the
+  // offline schedule back to its quick cadence, and a round already dialling on the old network is followed by another one soon.
+  function reconnectNow(why = {}) {
+    if (!computer || closedByPage || TERMINAL.includes(phase)) return;
+    const network = why?.reason === 'network';
+    const longAway = Number.isFinite(why?.hiddenMs) && why.hiddenMs > RESUME_RACE_AFTER_MS;
     if (session) {
+      if (attempting) return;
       probeSession(session);
+      if (network || longAway) raceResume(session);
+      return;
+    }
+    if (network && failedRounds > OFFLINE_ROUNDS) failedRounds = OFFLINE_ROUNDS;
+    if (attempting) {
+      if (network) kickAfterAttempt = true;
       return;
     }
     clearRetry();
     attempt().catch(() => {});
+  }
+
+  // w4-m1: a new session dialled beside the probe of `old` (the session in use). Never two sessions: if old answers its PING first, the dial is
+  // stopped and a session it already made is closed unused; if the new session is ready first, it is adopted and old is closed (its open
+  // streams end 'lost', so the page asks again on the new one). attempting is held while it runs, so no other round starts beside it.
+  async function raceResume(old) {
+    if (resumeRace || attempting || !computer || old.closed || old.frames.isClosed) return;
+    if (!old.frames.pingOutstanding) return;   // it has answered already
+    const race = { scope: { stopped: false, cancel: null }, over: false };
+    resumeRace = race;
+    attempting = true;
+    dialing = race.scope;
+    old.onPong = () => {
+      // The session that was up answered: it is alive, the new dial is not needed.
+      if (race.over) return;
+      race.over = true;
+      stopDial(race.scope);
+    };
+    let round = { won: null };
+    try {
+      round = await raceCandidates(carrierCandidates(computer), race.scope, (candidate, sock) => connectSession(candidate, computer, sock));
+    } catch {
+      round = { won: null };
+    } finally {
+      attempting = false;
+      dialing = null;
+      resumeRace = null;
+      old.onPong = null;
+    }
+    const made = round.won;
+    const oldIsLive = session === old && !old.closed;
+    if (!made) {
+      // Nothing new: the old session answered (it carries on), or neither did and the old one closes on its probe as before.
+      if (!session && !closedByPage) {
+        failedRounds += 1;
+        const soon = kickAfterAttempt;
+        kickAfterAttempt = false;
+        scheduleRetry({ soon });
+      }
+      return;
+    }
+    if (race.over || closedByPage || TERMINAL.includes(phase) || (session && session !== old)) {
+      // The old session answered first (or the channel closed, or another session took over): the new one is closed unused.
+      made.retired = true;
+      made.frames.close('normal');
+      return;
+    }
+    race.over = true;
+    if (oldIsLive) {
+      // The new session was ready before the old one answered: the old one goes, its streams end 'lost'.
+      clock.clearTimeout(old.probe);
+      old.probe = null;
+      for (const id of Array.from(old.sidOf.keys())) endStream(old, id, 'lost', false);
+      old.retired = true;
+      session = null;
+      old.frames.close('replaced');
+    }
+    clearRetry();
+    adopt(made);
   }
 
   function probeSession(s) {
@@ -1305,7 +1423,10 @@ export function createChannelCore(options = {}) {
         case 'cancel': return cancelRequest(msg.sid);
         case 'stop': return startStop(msg);
         case 'stopLocked': return void stopLocked(msg).catch(() => post({ op: 'stopAck', sid: msg.sid, error: 'unreachable' }));
-        case 'reconnect': return reconnectNow();
+        case 'reconnect': return reconnectNow({
+          reason: RECONNECT_REASONS.includes(msg.reason) ? msg.reason : null,
+          hiddenMs: Number.isFinite(msg.hiddenMs) && msg.hiddenMs >= 0 ? msg.hiddenMs : null,
+        });
         case 'pairCancel': return cancelPairing();
         case 'counterSaved': {
           const waiter = rids.get(msg.rid);

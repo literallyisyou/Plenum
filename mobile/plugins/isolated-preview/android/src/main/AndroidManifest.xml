@@ -4,14 +4,15 @@
     <application>
         <!-- The preview runs in its own process (":isolatedpreview"): it has no Capacitor bridge, no JavaScript interface,
              no access to the app's memory and no task in the app switcher (excludeFromRecents). The window is secure
-             (FLAG_SECURE set by the activity), so the page cannot be captured. -->
+             (FLAG_SECURE set by the activity), so the page cannot be captured. The theme follows the phone's light or dark mode
+             (res/values and res/values-night styles.xml: DeviceDefault Light or dark, no action bar). -->
         <activity
             android:name="com.literallyisyou.plenum.isolatedpreview.IsolatedPreviewActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:process=":isolatedpreview"
             android:label="@string/isolated_preview_default_title"
-            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:theme="@style/Theme.IsolatedPreview.DayNight.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode|density" />
     </application>
 

@@ -5,6 +5,7 @@
 // /api/budget/reset, lib/budget.mjs); this file only words what the server sends. Subscription CLIs are never capped and are
 // not counted here.
 (function () {
+  const plain = (err, fallback) => (window.MuseUI?.plainError ? MuseUI.plainError(err, fallback) : (typeof err?.message === 'string' && err.message && !/^(The )?[Rr]equest failed \(\d+\)\.?$/.test(err.message) && !/Failed to fetch|NetworkError|undefined/.test(err.message) ? err.message : fallback));
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
@@ -240,7 +241,7 @@
       warnUsd = amountOf(warnInput.value);
       capUsd = amountOf(capInput.value);
     } catch (err) {
-      line.textContent = err.message;
+      line.textContent = plain(err, 'That amount could not be read. Check it and try again.');
       return;
     }
     saveLimits(warnUsd, capUsd, line, controls);
@@ -255,10 +256,11 @@
   }
 
   // Starts the running spend again from nothing. The limits stay. It asks first, because the total cannot be put back.
-  function resetFrom(line, controls) {
+  async function resetFrom(line, controls) {
     const id = projectId();
     if (!id || busy) return;
-    if (!window.confirm('Reset this project’s spend to $0? The total starts counting again from now, and the limits stay.')) return;
+    const sure = await MuseUI.confirm({ title: 'Reset spend', body: 'Reset this project’s spend to $0? The total starts counting again from now, and the limits stay.', action: 'Reset spend', tone: 'danger', focusCancel: true });
+    if (sure !== true) return;
     return send(id, '/api/budget/reset', { project: id }, line, controls, 'Spend reset.');
   }
 
@@ -274,8 +276,9 @@
       if (projectId() === id) accept(id, answer);
       MuseUI.toast(done);
     } catch (err) {
-      line.textContent = err.message;
-      MuseUI.toast(err.message, 'bad');
+      const said = plain(err, 'Plenum could not save that. Try again.');
+      line.textContent = said;
+      MuseUI.toast(said, 'bad');
     } finally {
       busy = false;
       for (const c of controls) c.disabled = false;

@@ -28,6 +28,26 @@
   function capsFor(win) {
     return isNative(win) ? ["ui-bundled", "artifacts-picture", "push-none", "share", "save", "camera", "lan-control"] : isLanPage(win) ? ["ui-from-desktop", "artifacts-picture", "push-none", "share", "save"] : ["ui-from-desktop", "artifacts-iframe", "push-webpush", "share", "save"];
   }
+  var WIDE_QUERY = "(min-width: 1000px) and (hover: hover) and (pointer: fine)", LAYOUT_KEY = "plenum-layout", LAYOUTS = Object.freeze(["phone", "wide"]);
+  function savedLayout(win) {
+    try {
+      let value = win?.localStorage?.getItem(LAYOUT_KEY) ?? null;
+      return LAYOUTS.includes(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  function windowLayout(win) {
+    try {
+      return win?.matchMedia?.(WIDE_QUERY)?.matches === !0 ? "wide" : "phone";
+    } catch {
+      return "phone";
+    }
+  }
+  function surfaceFor(win) {
+    return isNative(win) ? "phone" : savedLayout(win) ?? windowLayout(win);
+  }
+  var BRAND_NAMES = Object.freeze([[/edge/i, "Edge"], [/opera/i, "Opera"], [/firefox/i, "Firefox"], [/safari/i, "Safari"], [/google chrome|^chrome$/i, "Chrome"]]);
 
   // mobile/shell/stop.js
   var STOP_STATES = Object.freeze(["idle", "sending", "queued", "done", "failed"]);
@@ -36,12 +56,67 @@
     body: "The phone tried for 60 seconds. At the computer, press Stop on the bar or Ctrl+Alt+Esc. Moving the mouse also pauses a computer run."
   });
 
+  // mobile/shell/screens/copy2.js
+  var PART2_IDS = Object.freeze([
+    "pair-review",
+    "computers",
+    "install-ios",
+    "install-android",
+    "lan-web",
+    "connected",
+    "rename",
+    "forget",
+    "settings",
+    "settings-connection",
+    "settings-notify",
+    "settings-lock",
+    "phone-lock-off",
+    "settings-appearance",
+    "settings-dictation",
+    "debug",
+    "about",
+    "legal",
+    "demo-home",
+    "demo-run",
+    "demo-diff",
+    "demo-artifact",
+    // Wave 5 (brb): the code page at /pair/ and the card for a computer another tab of this browser holds.
+    "claim",
+    "other-tab"
+  ]);
+  var CLAIM_ERRORS = Object.freeze({
+    wrong: "That code does not match. Check it on your computer and try again.",
+    none: "No browser is being added right now. On your computer, click Add a browser, then type the new code.",
+    locked: "Too many tries. On your computer, click New code, then type it here.",
+    "too-many": "Too many tries in a minute. Wait a minute, then try again.",
+    network: "Plenum on your computer did not answer. Check that it is running and that this is the address the Add a browser window shows."
+  });
+  var LAYOUT_LABEL = Object.freeze({ auto: "Automatic", phone: "Phone", wide: "Computer" });
+  var LAYOUT_STRIP = (side) => `This window is now ${side}. Switch layout`, LAYOUT_SWITCH = "Switch", TAB_ELSEWHERE = "Plenum is open in another tab of this browser.", TAB_MOVED = "Plenum moved to another tab.", TAB_USE_HERE = "Use it here";
+  var ROW_MENU = Object.freeze({ connect: "Connect", ways: "Ways to reach it", rename: "Rename on this phone", forget: "Forget this computer" }), STATUS = Object.freeze({ online: "Online", asleep: "Asleep", unreachable: "Not reachable" });
+  var INSTALL_IOS_STEPS = Object.freeze(["Tap Share.", "Tap Add to Home Screen.", "Open Plenum from the Home Screen."]);
+  var WAYS_CARRIER = Object.freeze({ lan: "the same network", tailscale: "Tailscale", relay: "your relay" });
+  var NOTIFY_PERMISSION = Object.freeze({ granted: "Allowed", denied: "Blocked", default: "Not asked", unknown: "Not asked" });
+  var NOTIFY_FIX_TEXT = Object.freeze({
+    "no-distributor": "Plenum sends notifications through a small free app called ntfy. Install it, then come back and tap Turn on again.",
+    denied: "Notifications are blocked for Plenum in Android's settings.",
+    "denied-web": "Notifications are blocked for Plenum on this phone. Allow them in the phone's settings for Plenum, then tap Turn on again.",
+    timeout: "ntfy did not answer. Open ntfy once, then try again.",
+    failed: "Plenum could not turn notifications on. Check that the phone is connected to {computer}, then try again."
+  });
+  var LEGAL_ROWS = Object.freeze({ license: "License Agreement", privacy: "Privacy Notice", third: "Third-party notices" });
+
   // mobile/shell/boot.js
+  if (typeof window < "u" && typeof document < "u" && !window.__PLENUM_SHIM_NO_AUTOINSTALL__)
+    try {
+      document.documentElement?.setAttribute("data-surface", surfaceFor(window));
+    } catch {
+    }
   var DEV_BUILD = !1;
   function debugHooksOn(search, devBuild = DEV_BUILD) {
     return devBuild === !0 && /[?&](debug|demo|selftest)(=|&|$)/.test(String(search ?? ""));
   }
-  var FACADE_PLUGINS = Object.freeze(["App", "TextZoom", "Haptics", "Dictation", "IsolatedPreview", "Browser", "Share", "Filesystem"]), REQ_HEADERS = Object.freeze(["accept", "content-type", "x-plenum-client-id"]), RES_HEADERS = Object.freeze(["content-type", "cache-control", "content-security-policy", "x-content-type-options", "x-plenum-auth", "content-disposition", "content-length"]), NULL_BODY_STATUS = Object.freeze([101, 204, 205, 304]), ARTIFACT_VIEW = "/api/artifacts/view", MAX_WORKER_BODY = 32 * 1024 * 1024, STOP_LABELS = Object.freeze({ idle: "Stop", sending: "Stopping\u2026", queued: "Stop", done: "Stopped", failed: "Stop" }), TOAST_MS = 6e3, LOCK_TRY_AGAIN = "That did not unlock Plenum. Try again.", LOCK_PIN_LENGTH = 6, LOCK_STOP_ARMED_NOTE = "Enter your PIN. Plenum stops everything once it unlocks.", LOCK_STOP_READY_LABEL = "Stop everything", LOCK_STOP_UNLOCK_LABEL = "Unlock and stop everything", LOCK_UNKNOWN_NOTE = "Plenum could not read its lock settings, so it stays locked. Stop still works. Close Plenum and open it again.", LOCK_UNKNOWN_NO_STOP_NOTE = "Plenum could not read its lock settings, so it stays locked. This phone cannot send Stop from here. Press Stop on your computer (the Stop bar, or Ctrl+Alt+Esc). Close Plenum and open it again.", RECONNECT_STRIP_MS = 1500, utf8 = new TextEncoder();
+  var FACADE_PLUGINS = Object.freeze(["App", "TextZoom", "Haptics", "Dictation", "IsolatedPreview", "Browser", "Share", "Filesystem"]), REQ_HEADERS = Object.freeze(["accept", "content-type", "x-plenum-client-id"]), RES_HEADERS = Object.freeze(["content-type", "cache-control", "content-security-policy", "x-content-type-options", "x-plenum-auth", "content-disposition", "content-length"]), NULL_BODY_STATUS = Object.freeze([101, 204, 205, 304]), ARTIFACT_VIEW = "/api/artifacts/view", MAX_WORKER_BODY = 32 * 1024 * 1024, STOP_LABELS = Object.freeze({ idle: "Stop", sending: "Stopping\u2026", queued: "Stop", done: "Stopped", failed: "Stop" }), TOAST_MS = 6e3, LOCK_TRY_AGAIN = "That did not unlock Plenum. Try again.", LOCK_PIN_LENGTH = 6, LOCK_STOP_ARMED_NOTE = "Enter your PIN. Plenum stops everything once it unlocks.", LOCK_STOP_READY_LABEL = "Stop everything", LOCK_STOP_UNLOCK_LABEL = "Unlock and stop everything", LOCK_UNKNOWN_NOTE = "Plenum could not read its lock settings, so it stays locked. Stop still works. Close Plenum and open it again.", LOCK_UNKNOWN_NO_STOP_NOTE = "Plenum could not read its lock settings, so it stays locked. This phone cannot send Stop from here. Press Stop on your computer (the Stop bar, or Ctrl+Alt+Esc). Close Plenum and open it again.", RECONNECT_STRIP_MS = 1500, LAYOUT_STRIP_MS = 1e3, utf8 = new TextEncoder();
   function fetchError() {
     return new TypeError("Failed to fetch");
   }
@@ -123,7 +198,15 @@
     return globalThis.btoa(text);
   }
   function installShim(options = {}) {
-    let win = options.win, doc = options.doc ?? win?.document ?? null;
+    let win = options.win, doc = options.doc ?? win?.document ?? null, surface = options.surface === "wide" || options.surface === "phone" ? options.surface : surfaceFor(win);
+    try {
+      doc?.documentElement?.setAttribute?.("data-surface", surface);
+    } catch {
+    }
+    try {
+      win?.performance?.mark?.("plenum-surface");
+    } catch {
+    }
     if (!win || !win.location) throw new TypeError("installShim needs a window with a location");
     let origFetch = options.origFetch ?? (typeof win.fetch == "function" ? win.fetch.bind(win) : null), core = options.core ?? null, coreOf = () => core, log = options.log ?? (() => {
     }), ResponseCtor = options.Response ?? win.Response, ReadableStreamCtor = options.ReadableStream ?? win.ReadableStream, decoder = new TextDecoder(), cap = win.Capacitor, native = cap?.isNativePlatform?.() === !0, pluginOf = (name) => options.plugins?.[name] ?? core?.plugin?.(name) ?? (FACADE_PLUGINS.includes(name) ? cap?.Plugins?.[name] : null) ?? null, later = (fn, ms) => {
@@ -140,7 +223,7 @@
         tries < 150 && later(() => attempt(tries + 1), 200);
       };
       attempt(0);
-    }, drives = /* @__PURE__ */ new Map(), helloDriving = null, helloKey = null, reconnectSince = null, connState = { status: "idle" }, locked = !1, stopView = { state: "idle", text: "", seq: 0 }, helloInfo = null, lockInfo = { mode: "off" }, hadSession = !1, lockStop = { ready: !1, computerName: "" }, notice = null, noticeAt = 0, noticeShown = null, noticeClosed = null, sheetClosed = null, lockNote = "", pinDigits = "", pinBusy = !1, pinShown = !1, stopArmed = !1, prefsTheme = "follow";
+    }, drives = /* @__PURE__ */ new Map(), helloDriving = null, helloKey = null, reconnectSince = null, connState = { status: "idle" }, locked = !1, stopView = { state: "idle", text: "", seq: 0 }, helloInfo = null, lockInfo = { mode: "off" }, hadSession = !1, lockStop = { ready: !1, computerName: "" }, notice = null, noticeAt = 0, noticeShown = null, noticeClosed = null, sheetClosed = null, lockNote = "", pinDigits = "", pinBusy = !1, pinShown = !1, stopArmed = !1, prefsTheme = "follow", tabView = null, layoutOffer = null;
     function drivingLabel() {
       if (drives.size) {
         let d = [...drives.values()][0], of = d.limits?.steps ? ` of ${d.limits.steps}` : "";
@@ -229,6 +312,7 @@
       return prefsTheme === "dark" || prefsTheme === "light" ? prefsTheme : win.matchMedia?.("(prefers-color-scheme: dark)")?.matches === !0 ? "dark" : "light";
     }
     function fireTheme() {
+      applyBars();
       let now = themeNow();
       if (now !== lastTheme) {
         lastTheme = now;
@@ -237,6 +321,28 @@
             fn(now);
           } catch {
           }
+      }
+    }
+    let barsStyle = null, barsOf = () => options.plugins?.SystemBars ?? core?.plugin?.("SystemBars") ?? cap?.Plugins?.SystemBars ?? null;
+    function applyBars() {
+      if (!native || !boundCore) return;
+      let plugin = null;
+      try {
+        plugin = barsOf();
+      } catch {
+        plugin = null;
+      }
+      if (typeof plugin?.setStyle != "function") return;
+      let style = themeNow() === "dark" ? "DARK" : "LIGHT";
+      if (style !== barsStyle) {
+        barsStyle = style;
+        try {
+          Promise.resolve(plugin.setStyle({ style })).catch(() => {
+            barsStyle === style && (barsStyle = null);
+          });
+        } catch {
+          barsStyle = null;
+        }
       }
     }
     function setZoomFactor(factor) {
@@ -280,7 +386,7 @@
     }
     let shell = {
       desktop: !1,
-      surface: "phone",
+      surface,
       platform,
       app,
       token: () => "0".repeat(64),
@@ -555,7 +661,13 @@
         lockStop.ready ? Promise.resolve(coreOf()?.stop?.()).catch(() => {
         }) : lockMethod() === "pin" ? armStop() : unlockFromOverlay(!0).catch(() => {
         });
-      }), els.lock.append(els.lockTitle, els.lockLine, els.lockDots, els.lockCount, els.lockNote, els.lockPad, els.unlock, els.unlockStop), doc.body.append(els.strip, els.stop, els.toast, els.sheet, els.lock), doc.head && !doc.getElementById?.("plenum-shell-css")) {
+      }), els.lock.append(els.lockTitle, els.lockLine, els.lockDots, els.lockCount, els.lockNote, els.lockPad, els.unlock, els.unlockStop), els.layout = build("div", "plenum-layout-strip", "plenum-layout-strip"), els.layout.setAttribute("role", "status"), els.layout.hidden = !0, els.layoutText = build("span", null, "plenum-layout-text"), els.layoutSwitch = button(LAYOUT_SWITCH, "sh-link plenum-layout-switch", () => {
+        win.location?.reload?.();
+      }), els.layout.append(els.layoutText, els.layoutSwitch), els.tab = build("section", "plenum-tab", "plenum-tab"), els.tab.setAttribute("role", "dialog"), els.tab.setAttribute("aria-labelledby", "plenum-tab-text"), els.tab.hidden = !0, els.tabText = build("p", "plenum-tab-text", "plenum-tab-text"), els.tabUse = button(TAB_USE_HERE, "plenum-tab-use", () => {
+        let id = tabView?.computer;
+        id && coreOf()?.connect && Promise.resolve(coreOf().connect(id)).catch(() => {
+        });
+      }), els.tab.append(els.tabText, els.tabUse), doc.body.append(els.strip, els.layout, els.tab, els.stop, els.toast, els.sheet, els.lock), doc.head && !doc.getElementById?.("plenum-shell-css")) {
         let link = build("link", "plenum-shell-css", null);
         link.setAttribute("rel", "stylesheet"), link.setAttribute("href", `${options.shellBase ?? "/shell/"}styles.css`), doc.head.append(link);
       }
@@ -568,7 +680,7 @@
       let conn = connectionView(), name = conn.desktopName || "your computer", when = conn.lastSeen ? ` Last seen ${conn.lastSeen}.` : "", text = conn.state === "reconnecting" ? `Reconnecting to ${name}\u2026` : conn.state === "offline" ? `Can't reach ${name}.${when}` : conn.state === "asleep" ? `${name} is asleep or Plenum is closed.${when} Plenum reconnects when it wakes.` : "", reconnecting = conn.state === "reconnecting";
       reconnecting ? reconnectSince === null && (reconnectSince = Date.now(), later(paint, RECONNECT_STRIP_MS + 10)) : reconnectSince = null;
       let waited = !reconnecting || Date.now() - reconnectSince >= RECONNECT_STRIP_MS;
-      els.strip.hidden = text === "" || connState.status === "idle" || !waited, els.strip.setAttribute("data-state", conn.state), els.stripText.textContent = text, paintLock();
+      els.strip.hidden = text === "" || connState.status === "idle" || !waited, els.strip.setAttribute("data-state", conn.state), els.stripText.textContent = text, paintLayout(), paintTab(), paintLock();
       for (let fn of Array.from(connListeners))
         try {
           fn(connectionView());
@@ -590,6 +702,23 @@
       let stopShown = locked && ["sending", "queued", "done", "failed"].includes(stopView.state) && !!stopView.text;
       els.lockNote.textContent = stopShown ? stopView.text : unknown ? lockStop.ready ? LOCK_UNKNOWN_NOTE : LOCK_UNKNOWN_NO_STOP_NOTE : lockNote;
     }
+    function paintLayout() {
+      els.layout && (els.layout.hidden = layoutOffer === null, layoutOffer !== null && (els.layoutText.textContent = LAYOUT_STRIP(layoutOffer === "wide" ? "wide" : "narrow")));
+    }
+    function paintTab() {
+      if (!els.tab) return;
+      let state = tabView?.state, shown = (state === "elsewhere" || state === "moved") && !locked;
+      els.tab.hidden = !shown, shown && (els.tabText.textContent = state === "moved" ? TAB_MOVED : TAB_ELSEWHERE);
+    }
+    let layoutTimer = null;
+    function checkLayout() {
+      layoutTimer = null;
+      let want = savedLayout(win) ? surface : windowLayout(win);
+      layoutOffer = want !== surface ? want : null, paintLayout();
+    }
+    function layoutMoved() {
+      layoutTimer !== null && win.clearTimeout?.(layoutTimer), layoutTimer = later(checkLayout, LAYOUT_STRIP_MS);
+    }
     function paintResult() {
       let note = notice, open = !!note && noticeClosed !== note.seq, waiting = open && note.tone === "warn" && stopView.state === "queued", show = open && Date.now() - noticeAt < TOAST_MS || waiting;
       els.toast.hidden = !show, show && (els.toastText.textContent = note.text, els.toast.setAttribute("data-tone", note.tone ?? "info")), els.sheet.hidden = !(stopView.state === "failed" && sheetClosed !== stopView.seq);
@@ -603,13 +732,13 @@
           let key = JSON.stringify(snapshot.hello.pending?.driving ?? null);
           key !== helloKey && (helloKey = key, helloDriving = snapshot.hello.pending?.driving ?? null);
         }
-        lockInfo = snapshot.lock ?? lockInfo, lockStop = snapshot.lockStop ?? lockStop, hadSession = !!snapshot.activeId || Array.isArray(snapshot.computers) && snapshot.computers.length > 0 || hadSession, snapshot.hello && (helloInfo = {
+        lockInfo = snapshot.lock ?? lockInfo, lockStop = snapshot.lockStop ?? lockStop, tabView = snapshot.tab ?? null, hadSession = !!snapshot.activeId || Array.isArray(snapshot.computers) && snapshot.computers.length > 0 || hadSession, snapshot.hello && (helloInfo = {
           deviceId: snapshot.hello.deviceId ?? helloInfo?.deviceId ?? "",
           tier: snapshot.hello.tier ?? helloInfo?.tier ?? null,
           caps: Array.isArray(snapshot.hello.caps) ? snapshot.hello.caps.filter((c) => typeof c == "string") : helloInfo?.caps ?? []
         }, helloInfo.deviceId && shell.device.id !== helloInfo.deviceId && (shell.device.id = helloInfo.deviceId)), snapshot.notice && snapshot.notice.seq !== notice?.seq && (notice = snapshot.notice, noticeAt = Date.now(), later(paint, TOAST_MS + 50));
         let theme = snapshot.prefs?.theme ?? "follow";
-        theme !== prefsTheme && (prefsTheme = theme, fireTheme());
+        theme !== prefsTheme && (prefsTheme = theme, fireTheme()), applyBars();
         let intent = snapshot.intent;
         if (intent && !intent.taken && intent.seq !== lastRouteSeq) {
           lastRouteSeq = intent.seq;
@@ -653,7 +782,15 @@
         });
       });
     }
-    if ((origFetch || win.fetch) && (win.fetch = shimFetch), win.plenumShell = shell, doc?.documentElement && doc.documentElement.setAttribute("data-surface", "phone"), debugHooksOn(win.location.search) && (win.plenumPhoneDebug = {
+    if ((origFetch || win.fetch) && (win.fetch = shimFetch), win.plenumShell = shell, doc?.documentElement && doc.documentElement.setAttribute("data-surface", surface), !native && doc && typeof win.addEventListener == "function") {
+      win.addEventListener("resize", layoutMoved);
+      try {
+        let wide = win.matchMedia?.(WIDE_QUERY);
+        wide?.addEventListener ? wide.addEventListener("change", layoutMoved) : wide?.addListener && wide.addListener(layoutMoved);
+      } catch {
+      }
+    }
+    if (debugHooksOn(win.location.search) && (win.plenumPhoneDebug = {
       ...win.plenumPhoneDebug ?? {},
       connection(state) {
         connState = { ...connState, status: state === "connected" ? "connected" : state === "asleep" ? "asleep" : state === "reconnecting" ? "reconnecting" : "offline" }, paint();
@@ -690,7 +827,7 @@
       });
     }), { shell, shimFetch, noteDriveEvent, paint, mount, syncFromCore, els, drives, setHelloDriving: (v) => {
       helloDriving = v, paint();
-    } };
+    }, surface, checkLayout };
   }
   typeof window < "u" && typeof document < "u" && !window.__PLENUM_SHIM_NO_AUTOINSTALL__ && installShim({ win: window, doc: document, origFetch: window.fetch ? window.fetch.bind(window) : null, log: () => {
   } });

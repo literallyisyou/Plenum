@@ -12,15 +12,30 @@ export const DEFAULT_MESSAGE_FOR_DISTRIBUTOR = 'Plenum';
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 // Every kind the computer sends (lib/remote/push.mjs EVENT_KINDS). A kind that is missing here is shown as "Plenum has an update."
 // with its own words lost, so the two lists are pinned to each other (mobile/test/plugins.test.mjs).
-export const PUSH_KINDS = Object.freeze(['approval', 'handover', 'finished', 'failed', 'limit', 'needs', 'test']);
+// 'clear' (wave 4) is not shown: it carries only the tag of a notification to take down (an answered approval, a fixed problem).
+export const PUSH_KINDS = Object.freeze(['approval', 'handover', 'finished', 'failed', 'limit', 'needs', 'test', 'clear']);
 export const PUSH_ACTIONS = Object.freeze(['deny', 'stop', 'approve']);
 export const NOTIFICATION_CHANNELS = Object.freeze({
   approvals: 'plenum-approvals',
   finished: 'plenum-finished',
+  problems: 'plenum-problems',
   limits: 'plenum-limits',
 });
+// The four channels as Android's notification settings list them. The Kotlin side creates them when the plugin loads, from
+// res/values/strings.xml with the same names and descriptions (pinned by mobile/test/plugins.test.mjs); the shell may create them
+// again for its own local notifications with these values, which changes nothing. importance: 4 high, 3 default (Android's numbers).
+// Problems is its own channel id: Android cannot raise or split a channel once it exists, so failures could not move otherwise.
+export const NOTIFICATION_CHANNEL_LIST = Object.freeze([
+  Object.freeze({ id: 'plenum-approvals', name: 'Approvals and your turn', description: 'Something is waiting for your OK, or a model needs you to do a step.', importance: 4 }),
+  Object.freeze({ id: 'plenum-finished', name: 'Finished runs', description: 'A run or a council finished.', importance: 3 }),
+  Object.freeze({ id: 'plenum-problems', name: 'Problems', description: 'A run failed, or something stopped working and needs a look.', importance: 3 }),
+  Object.freeze({ id: 'plenum-limits', name: 'Limits', description: 'A plan or spend limit was reached.', importance: 3 }),
+]);
 // Taps and notification actions open the app at this prefix plus the desktop's route, for example plenum://app/#deny=<id>.
 export const INTENT_PREFIX = 'plenum://app';
+// An approval notification removes itself after the push lifetime (lib/remote/push.mjs PUSH_TTL_S), a backstop for a lost 'clear'.
+export const APPROVAL_TIMEOUT_MS = 3600 * 1000;
+export const GROUP_MAX = 64;
 
 const INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -29,7 +44,14 @@ const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 const HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/;
 const TAG_RE = /^plenum-[0-9a-f]{32}$/;
-const ROUTE_RE = /^\/#[\x21-\x7e]{1,200}$/;
+// A tag the phone may cancel: a computer's tag, or 'plenum', the tag a payload without a valid one is shown under.
+const CANCEL_TAG_RE = /^plenum(?:-[0-9a-f]{32})?$/;
+const COMPUTER_RE = /^[0-9a-f]{64}$/;
+// The routes the computer names (lib/remote/push.mjs buildPushText) and nothing else. Ids are the safe characters every route carries
+// (letters, digits, dots, dashes, underscores; the shell's parseNotificationHash allows the same 80). The phone may add '&nt=<tag>' (the
+// notification to take down after acting) and '&computer=<64 hex>' (the computer that sent it), in that order. PlenumNotifier.kt
+// ROUTE_PATTERN is the same expression.
+const ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/;
 
 export class UnifiedPushError extends Error {
   constructor(code, message) {
@@ -142,8 +164,22 @@ function parseJsonObject(text) {
 
 // Validates one desktop payload (version 1 of lib/remote/push.mjs). Unknown fields are ignored; an unknown kind or
 // version returns null, so the shell shows the generic "Plenum has an update" path instead of acting on it.
+//
+// Wave 4 (old payloads parse as before): optional `group` (text up to 64 characters: notifications of one business or project are
+// bundled; longer or empty means none) and `silent` (true: shown without sound). Kind 'clear' carries only `tag`, the notification to
+// take down; a clear without a valid computer tag is refused (null), so it can never take down something else.
 export function parsePushPayload(value) {
   if (!isPlainObject(value) || value.v !== 1 || !PUSH_KINDS.includes(value.kind)) return null;
+  const ids = isPlainObject(value.ids) ? value.ids : {};
+  const idsOut = {
+    computer: cleanText(ids.computer, 80),
+    project: cleanText(ids.project, 80),
+    approval: cleanText(ids.approval, 80),
+  };
+  if (value.kind === 'clear') {
+    if (typeof value.tag !== 'string' || !TAG_RE.test(value.tag)) return null;
+    return { v: 1, kind: 'clear', title: '', body: '', tag: value.tag, tap: '/#home', actions: [], silent: true, ids: idsOut };
+  }
   const title = cleanText(value.title, 120) || 'Plenum';
   const body = cleanText(value.body, 240) || 'Plenum has an update.';
   const tag = typeof value.tag === 'string' && TAG_RE.test(value.tag) ? value.tag : 'plenum';
@@ -159,8 +195,8 @@ export function parsePushPayload(value) {
       }
     }
   }
-  const ids = isPlainObject(value.ids) ? value.ids : {};
-  return {
+  const group = typeof value.group === 'string' && value.group.length <= GROUP_MAX ? cleanText(value.group, GROUP_MAX) : '';
+  const out = {
     v: 1,
     kind: value.kind,
     title,
@@ -169,18 +205,53 @@ export function parsePushPayload(value) {
     tap,
     actions,
     firstLine: firstLine || undefined,
-    ids: {
-      computer: cleanText(ids.computer, 80),
-      project: cleanText(ids.project, 80),
-      approval: cleanText(ids.approval, 80),
-    },
+    ids: idsOut,
   };
+  if (group) out.group = group;
+  if (value.silent === true) out.silent = true;
+  return out;
+}
+
+// The computer that sent a payload, when it named itself with its 64-hex id; '' otherwise (the shell then acts on the open one).
+export function computerOf(payload) {
+  const id = payload?.ids?.computer;
+  return typeof id === 'string' && COMPUTER_RE.test(id) ? id : '';
 }
 
 // An approve route carries the first line the notification showed, so the server can match the card (MOBILE-UI 10).
-export function routeForAction(action, firstLine) {
-  if (action.action !== 'approve' || !firstLine) return action.route;
-  return `${action.route}&line=${encodeURIComponent(firstLine)}`;
+// With `where` ({ tag, computer }, wave 4) an action route also ends in '&nt=<tag>' (the shell takes that notification down after it
+// acted) and '&computer=<64 hex>' (with two computers paired, the action reaches the one that sent it). PlenumNotifier.kt routeFor is
+// the same rule. Without `where` the route is what it was before wave 4.
+export function routeForAction(action, firstLine, where) {
+  let route = action.action === 'approve' && firstLine ? `${action.route}&line=${encodeURIComponent(firstLine)}` : action.route;
+  if (where && PUSH_ACTIONS.includes(action.action)) {
+    if (typeof where.tag === 'string' && TAG_RE.test(where.tag)) route += `&nt=${where.tag}`;
+    if (typeof where.computer === 'string' && COMPUTER_RE.test(where.computer)) route += `&computer=${where.computer}`;
+  }
+  return route;
+}
+
+// The tap route of a payload: the computer's tap, plus '&computer=<64 hex>' when the payload named its computer (PlenumNotifier.kt tapFor).
+export function tapRouteFor(payload) {
+  const computer = computerOf(payload);
+  return computer ? `${payload.tap}&computer=${computer}` : payload.tap;
+}
+
+// A tag the plugin's cancel({ tag }) takes: a computer's tag or 'plenum'.
+export function normaliseNotificationTag(value) {
+  if (typeof value !== 'string' || !CANCEL_TAG_RE.test(value)) {
+    throw new UnifiedPushError('bad-tag', 'That is not a Plenum notification tag.');
+  }
+  return value;
+}
+
+// The channel of cancelAll({ channel }): one of the four, or undefined for all of Plenum's push notifications.
+export function normaliseChannel(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !Object.values(NOTIFICATION_CHANNELS).includes(value)) {
+    throw new UnifiedPushError('bad-channel', 'That is not one of Plenum’s notification channels.');
+  }
+  return value;
 }
 
 export function intentUrlForRoute(route) {
@@ -191,10 +262,15 @@ export function intentUrlForRoute(route) {
 export function channelForKind(kind) {
   // needs: a business left things on the owner's list. The computer sends it under the approvals switch, so it uses that channel.
   if (kind === 'approval' || kind === 'handover' || kind === 'needs') return NOTIFICATION_CHANNELS.approvals;
+  // failed (wave 4): its own channel, so problems can be tuned apart from finished runs.
+  if (kind === 'failed') return NOTIFICATION_CHANNELS.problems;
   if (kind === 'limit') return NOTIFICATION_CHANNELS.limits;
   return NOTIFICATION_CHANNELS.finished;
 }
 
+// One `message` event of the plugin. shown: the plugin's own service already showed this message as a notification (Plenum was
+// behind), so the shell must not show a local one for it. clear: the service took down the notification of
+// that tag and the shell shows nothing for it (payload.kind is 'clear').
 export function parseMessageEvent(event) {
   if (!isPlainObject(event)) throw new UnifiedPushError('bad-event', 'The push event is not an object.');
   const instance = normaliseInstance(event.instance);
@@ -202,7 +278,7 @@ export function parseMessageEvent(event) {
   const bytes = decodeBase64(event.content);
   const text = decrypted ? decodeUtf8(bytes) : null;
   const payload = text === null ? null : parsePushPayload(parseJsonObject(text));
-  return { instance, decrypted, bytes, text, payload };
+  return { instance, decrypted, bytes, text, payload, shown: event.shown === true, clear: payload?.kind === 'clear' };
 }
 
 // The endpoint is the distributor's https push address. The key set (P-256 public key and auth secret) is passed on

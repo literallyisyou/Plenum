@@ -16,17 +16,30 @@
 // { signal }), stop(project), lock(), unlock(method, pin), connect(id), openShell(hash), takeRoute(), log(line) and plugin(name). The facade has
 // no key, no lock-set or forget call and no raw channel, and release builds set neither window.plenumShellCore nor window.plenumNative.
 // Without a facade the shim answers "not connected" and the UI's own connection line says so. The native plugins come from the facade
-// (plugin(name), the eight names the UI uses) or, for a bridge that only has Capacitor.Plugins, from there; they are looked up when they
-// are used, because they register a moment after this script runs.
+// (plugin(name), the eight names the UI uses, and since wave 4 (m3) SystemBars with setStyle only, which this shim uses to keep the status bar
+// in Plenum's theme) or, for a bridge that only has Capacitor.Plugins, from there; they are looked up when they are used, because they
+// register a moment after this script runs.
 //
 // Nothing here stores a key, a token or a Noise value. Nothing logs a path with a query.
 //
 // The module exports installShim(options) for the Node suites. In a page it installs itself (unless window.__PLENUM_SHIM_NO_AUTOINSTALL__).
+//
+// Wave 5 (brb): the layout. The page is marked data-surface="wide" or "phone" (device.js surfaceFor) before anything else runs here: "wide"
+// is the desktop's own layout (ext-phone.js stays inert, so no phone bar and no Stop dock) with the Stop in the title bar's right end, where the
+// desktop app keeps its window controls; "phone" is the phone frame as before. shell.surface says the same. A window resized past the 1000 px
+// line is not switched live: after a second, one quiet strip offers to reload in the other layout (#plenum-layout-strip). Two tabs of one
+// browser on one computer: the tab that is not connected shows #plenum-tab with "Use it here" (app.js createTabGuard).
 import { isUiPath } from '../../lib/remote/ui-manifest.mjs';
-import { capsFor, isLanPage, platformFor } from './device.js';
+import { capsFor, isLanPage, platformFor, savedLayout, surfaceFor, WIDE_QUERY, windowLayout } from './device.js';
 import { STOP_FAILURE_TEXT } from './stop.js';
+import { LAYOUT_STRIP, LAYOUT_SWITCH, TAB_ELSEWHERE, TAB_MOVED, TAB_USE_HERE } from './screens/copy2.js';
 
 export { capsFor, isLanPage, platformFor };
+
+// The first thing the page does: the layout marker, so the desktop's stylesheets lay the page out once, in the chosen layout.
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.__PLENUM_SHIM_NO_AUTOINSTALL__) {
+  try { document.documentElement?.setAttribute('data-surface', surfaceFor(window)); } catch { /* installShim sets it again */ }
+}
 
 // The release gate (plan C7): true for the unbundled sources the Node suites import and for --dev builds, false in a release build.
 const DEV_BUILD = typeof __PLENUM_DEV_BUILD__ !== 'undefined' ? __PLENUM_DEV_BUILD__ === true : true;
@@ -61,6 +74,8 @@ export const LOCK_UNKNOWN_NOTE = 'Plenum could not read its lock settings, so it
 export const LOCK_UNKNOWN_NO_STOP_NOTE = 'Plenum could not read its lock settings, so it stays locked. This phone cannot send Stop from here. Press Stop on your computer (the Stop bar, or Ctrl+Alt+Esc). Close Plenum and open it again.';
 // B-132: the strip that says Reconnecting waits this long, so a first connect or a quick hop does not flash it (the UI's own strip waits as long).
 export const RECONNECT_STRIP_MS = 1500;
+// Wave 5 (brb): how long after the last resize (or the last change of the wide query) the layout strip waits before it shows.
+export const LAYOUT_STRIP_MS = 1000;
 const utf8 = new TextEncoder();
 
 // ----- small helpers -----
@@ -174,6 +189,11 @@ export function base64Of(bytes) {
 export function installShim(options = {}) {
   const win = options.win;
   const doc = options.doc ?? win?.document ?? null;
+  // Wave 5 (brb): the layout, first. A suite may name it (options.surface); a page asks device.js. The mark lets a suite compare the moment
+  // the layout was set with the first paint (performance 'paint' entries).
+  const surface = options.surface === 'wide' || options.surface === 'phone' ? options.surface : surfaceFor(win);
+  try { doc?.documentElement?.setAttribute?.('data-surface', surface); } catch { /* a document without attributes */ }
+  try { win?.performance?.mark?.('plenum-surface'); } catch { /* no performance timeline */ }
   if (!win || !win.location) throw new TypeError('installShim needs a window with a location');
   const origFetch = options.origFetch ?? (typeof win.fetch === 'function' ? win.fetch.bind(win) : null);
   let core = options.core ?? null;
@@ -231,6 +251,10 @@ export function installShim(options = {}) {
   let pinShown = false;     // the pad was on screen at the last paint
   let stopArmed = false;    // "Unlock and stop everything" was chosen in PIN mode: one Stop goes out once the PIN has unlocked
   let prefsTheme = 'follow';
+  // Wave 5 (brb): another tab of this browser holds this computer ({ state: 'elsewhere' | 'moved', computer }), or null.
+  let tabView = null;
+  // Wave 5 (brb): the layout this window now calls for when it is not the page's ('wide' or 'phone'), or null.
+  let layoutOffer = null;
 
   function drivingLabel() {
     if (drives.size) {
@@ -380,11 +404,33 @@ export function installShim(options = {}) {
   }
 
   function fireTheme() {
+    applyBars();
     const now = themeNow();
     if (now === lastTheme) return;
     lastTheme = now;
     for (const fn of [...themeListeners]) {
       try { fn(now); } catch { /* listener error */ }
+    }
+  }
+
+  // Wave 4 (m3): the status bar follows the theme the page draws (Plenum's Theme setting, else the phone's), not only the phone's: Capacitor's
+  // SystemBars follows the phone, so Dark in Plenum on a light phone drew dark icons on the dark page. 'DARK' is the style for a dark page
+  // (light icons; SystemBars.java setAppearanceLightStatusBars(!style.equals("DARK"))), 'LIGHT' for a light one. Only on a native app, only
+  // once the shell has said which theme is chosen (the facade's first state), and once per change. The facade hands over setStyle only.
+  let barsStyle = null;
+  const barsOf = () => options.plugins?.SystemBars ?? core?.plugin?.('SystemBars') ?? cap?.Plugins?.SystemBars ?? null;
+  function applyBars() {
+    if (!native || !boundCore) return;
+    let plugin = null;
+    try { plugin = barsOf(); } catch { plugin = null; }
+    if (typeof plugin?.setStyle !== 'function') return;
+    const style = themeNow() === 'dark' ? 'DARK' : 'LIGHT';
+    if (style === barsStyle) return;
+    barsStyle = style;
+    try {
+      Promise.resolve(plugin.setStyle({ style })).catch(() => { if (barsStyle === style) barsStyle = null; });
+    } catch {
+      barsStyle = null;
     }
   }
 
@@ -435,7 +481,7 @@ export function installShim(options = {}) {
 
   const shell = {
     desktop: false,
-    surface: 'phone',
+    surface,
     platform,
     app,
     token: () => '0'.repeat(64),
@@ -864,7 +910,26 @@ export function installShim(options = {}) {
     });
     els.lock.append(els.lockTitle, els.lockLine, els.lockDots, els.lockCount, els.lockNote, els.lockPad, els.unlock, els.unlockStop);
 
-    doc.body.append(els.strip, els.stop, els.toast, els.sheet, els.lock);
+    // Wave 5 (brb): the layout strip (a window resized past the 1000 px line) and the other-tab card (two tabs of one browser on one computer).
+    els.layout = build('div', 'plenum-layout-strip', 'plenum-layout-strip');
+    els.layout.setAttribute('role', 'status');
+    els.layout.hidden = true;
+    els.layoutText = build('span', null, 'plenum-layout-text');
+    els.layoutSwitch = button(LAYOUT_SWITCH, 'sh-link plenum-layout-switch', () => { win.location?.reload?.(); });
+    els.layout.append(els.layoutText, els.layoutSwitch);
+
+    els.tab = build('section', 'plenum-tab', 'plenum-tab');
+    els.tab.setAttribute('role', 'dialog');
+    els.tab.setAttribute('aria-labelledby', 'plenum-tab-text');
+    els.tab.hidden = true;
+    els.tabText = build('p', 'plenum-tab-text', 'plenum-tab-text');
+    els.tabUse = button(TAB_USE_HERE, 'plenum-tab-use', () => {
+      const id = tabView?.computer;
+      if (id && coreOf()?.connect) Promise.resolve(coreOf().connect(id)).catch(() => {});
+    });
+    els.tab.append(els.tabText, els.tabUse);
+
+    doc.body.append(els.strip, els.layout, els.tab, els.stop, els.toast, els.sheet, els.lock);
     if (doc.head && !doc.getElementById?.('plenum-shell-css')) {
       const link = build('link', 'plenum-shell-css', null);
       link.setAttribute('rel', 'stylesheet');
@@ -909,6 +974,8 @@ export function installShim(options = {}) {
     els.strip.hidden = text === '' || connState.status === 'idle' || !waited;
     els.strip.setAttribute('data-state', conn.state);
     els.stripText.textContent = text;
+    paintLayout();
+    paintTab();
     paintLock();
     for (const fn of Array.from(connListeners)) {
       try { fn(connectionView()); } catch { /* listener error */ }
@@ -949,6 +1016,36 @@ export function installShim(options = {}) {
     // The Stop result shows under the button while it is on its way or has ended; else the unknown-lock line, else the PIN note.
     const stopShown = locked && ['sending', 'queued', 'done', 'failed'].includes(stopView.state) && Boolean(stopView.text);
     els.lockNote.textContent = stopShown ? stopView.text : unknown ? (lockStop.ready ? LOCK_UNKNOWN_NOTE : LOCK_UNKNOWN_NO_STOP_NOTE) : lockNote;
+  }
+
+  // Wave 5 (brb): the layout strip, when the window now calls for the other layout.
+  function paintLayout() {
+    if (!els.layout) return;
+    els.layout.hidden = layoutOffer === null;
+    if (layoutOffer !== null) els.layoutText.textContent = LAYOUT_STRIP(layoutOffer === 'wide' ? 'wide' : 'narrow');
+  }
+
+  // Wave 5 (brb): the other-tab card. Stop stays above it and still works (the shell moves the session here and stops).
+  function paintTab() {
+    if (!els.tab) return;
+    const state = tabView?.state;
+    const shown = (state === 'elsewhere' || state === 'moved') && !locked;
+    els.tab.hidden = !shown;
+    if (shown) els.tabText.textContent = state === 'moved' ? TAB_MOVED : TAB_ELSEWHERE;
+  }
+
+  // The window was resized (or the wide query changed): after LAYOUT_STRIP_MS of quiet, the strip shows when the window now calls for the
+  // other layout, and goes when it calls for this one again. A layout the person chose in the settings is kept, so no strip then.
+  let layoutTimer = null;
+  function checkLayout() {
+    layoutTimer = null;
+    const want = savedLayout(win) ? surface : windowLayout(win);
+    layoutOffer = want !== surface ? want : null;
+    paintLayout();
+  }
+  function layoutMoved() {
+    if (layoutTimer !== null) win.clearTimeout?.(layoutTimer);
+    layoutTimer = later(checkLayout, LAYOUT_STRIP_MS);
   }
 
   // The toast and the sheet (F2): the result of a Stop is on screen where the person is looking, not only inside the button.
@@ -994,6 +1091,7 @@ export function installShim(options = {}) {
       }
       lockInfo = snapshot.lock ?? lockInfo;
       lockStop = snapshot.lockStop ?? lockStop;
+      tabView = snapshot.tab ?? null;
       hadSession = Boolean(snapshot.activeId) || (Array.isArray(snapshot.computers) && snapshot.computers.length > 0) || hadSession;
       // The phone's own id and tier come with the HELLO and are kept while the computer is away (a locked or reconnecting phone is the same phone).
       if (snapshot.hello) {
@@ -1015,6 +1113,8 @@ export function installShim(options = {}) {
         prefsTheme = theme;
         fireTheme();
       }
+      // Wave 4 (m3): the first state names the theme, so the status bar is set from it (once; fireTheme sets it again on a change).
+      applyBars();
       const intent = snapshot.intent;
       if (intent && !intent.taken && intent.seq !== lastRouteSeq) {
         lastRouteSeq = intent.seq;
@@ -1072,7 +1172,16 @@ export function installShim(options = {}) {
 
   if (origFetch || win.fetch) win.fetch = shimFetch;
   win.plenumShell = shell;
-  if (doc?.documentElement) doc.documentElement.setAttribute('data-surface', 'phone');
+  if (doc?.documentElement) doc.documentElement.setAttribute('data-surface', surface);
+  // Wave 5 (brb): a browser window resized past the line is offered the other layout (never on the apps, which are always the phone's).
+  if (!native && doc && typeof win.addEventListener === 'function') {
+    win.addEventListener('resize', layoutMoved);
+    try {
+      const wide = win.matchMedia?.(WIDE_QUERY);
+      if (wide?.addEventListener) wide.addEventListener('change', layoutMoved);
+      else if (wide?.addListener) wide.addListener(layoutMoved);
+    } catch { /* the resize event still works */ }
+  }
   if (debugHooksOn(win.location.search)) {
     win.plenumPhoneDebug = {
       ...(win.plenumPhoneDebug ?? {}),
@@ -1131,7 +1240,7 @@ export function installShim(options = {}) {
     }, () => {});
   });
 
-  return { shell, shimFetch, noteDriveEvent, paint, mount, syncFromCore, els, drives, setHelloDriving: v => { helloDriving = v; paint(); } };
+  return { shell, shimFetch, noteDriveEvent, paint, mount, syncFromCore, els, drives, setHelloDriving: v => { helloDriving = v; paint(); }, surface, checkLayout };
 }
 
 // In a page, boot.js installs itself before app.js runs. The Node suites set the flag and call installShim themselves.

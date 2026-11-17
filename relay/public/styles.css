@@ -1370,3 +1370,179 @@ html[data-stop-side="left"] #plenum-stop {
   margin: 8px 0;
   color: var(--text-2);
 }
+
+/* Wave 4 (m2): why notifications did not turn on, the one button that fixes it, and the line under it. A calm colour: it is a next step, not
+   an error the person made. */
+.sh-fix {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 4px;
+  max-width: 100%;
+}
+
+.sh-fix .sh-msg {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.sh-fix .sh-btn {
+  min-height: 44px;
+}
+
+/* ---- Wave 5 (brb): a browser on another computer ----
+   The layout strip (a window resized past the 1000 px line) and the other-tab card (two tabs of one browser on one computer), on the UI page
+   (boot.js). In the phone layout they sit under the Stop (z 70): the strip over the bottom edge, the card over the whole page. */
+#plenum-layout-strip,
+#plenum-layout-strip *,
+#plenum-tab,
+#plenum-tab * {
+  box-sizing: border-box;
+}
+
+#plenum-layout-strip[hidden],
+#plenum-tab[hidden] {
+  display: none !important;
+}
+
+#plenum-layout-strip {
+  position: fixed;
+  left: calc(var(--sa-left) + 16px);
+  right: calc(var(--sa-right) + 84px);
+  bottom: calc(var(--sa-bottom) + 72px);
+  z-index: 67;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--surface-3);
+  color: var(--text);
+  font: 500 14px/1.35 var(--ui);
+}
+
+#plenum-layout-strip .plenum-layout-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#plenum-layout-strip .plenum-layout-switch {
+  flex: none;
+  min-height: 36px;
+}
+
+#plenum-tab {
+  position: fixed;
+  inset: 0;
+  z-index: 66;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: calc(var(--sa-top) + 16px) calc(var(--sa-right) + 16px) calc(var(--sa-bottom) + 16px) calc(var(--sa-left) + 16px);
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+#plenum-tab .plenum-tab-text {
+  margin: 0;
+  max-width: 32em;
+  font: 600 20px/1.35 var(--display);
+}
+
+#plenum-tab .plenum-tab-use {
+  min-height: 48px;
+  min-width: 200px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 15px/1.35 var(--ui);
+  cursor: pointer;
+}
+
+/* The computer layout (html[data-surface="wide"], boot.js): the desktop's own page, with the shell's pieces above it. The desktop app keeps the
+   title bar's right end free for the window controls (public/style.css --win-controls, which the title bar's padding and its wrapped rows
+   leave clear); a browser has no window controls, so the Stop takes that place and the reserve is its width. The Stop shows its mark and the
+   word, and sits above every layer the desktop page has (the License Agreement gate is z 1000), so Settings, a drawer, a dialog or the gate
+   never cover it. The lock and the Stop result sit above the Stop, as on the phone. */
+html[data-surface="wide"] {
+  --win-controls: 120px;
+}
+
+html[data-surface="wide"] #plenum-stop {
+  top: 8px;
+  right: 12px;
+  bottom: auto;
+  left: auto;
+  z-index: 10000;
+  gap: 8px;
+  width: auto;
+  min-width: 96px;
+  max-width: 104px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font: 600 14px/1 var(--ui);
+}
+
+html[data-surface="wide"] #plenum-stop .plenum-stop-label {
+  position: static !important;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: hidden;
+  clip: auto;
+  text-overflow: ellipsis;
+}
+
+html[data-surface="wide"] #plenum-conn-strip {
+  position: fixed;
+  top: calc(var(--bar-h, 52px) + 8px);
+  left: 50%;
+  right: auto;
+  z-index: 9999;
+  width: max-content;
+  max-width: min(640px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  border-radius: 10px;
+  box-shadow: var(--shadow-1);
+}
+
+html[data-surface="wide"] #plenum-layout-strip {
+  left: 16px;
+  right: auto;
+  bottom: 16px;
+  z-index: 9999;
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+html[data-surface="wide"] #plenum-tab {
+  z-index: 9998;
+}
+
+html[data-surface="wide"] .plenum-toast {
+  left: auto;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10001;
+  width: min(440px, calc(100vw - 32px));
+}
+
+html[data-surface="wide"] .plenum-stop-sheet {
+  left: 50%;
+  right: auto;
+  z-index: 10002;
+  width: min(560px, 100vw);
+  transform: translateX(-50%);
+}
+
+html[data-surface="wide"] #plenum-lock {
+  z-index: 10010;
+}

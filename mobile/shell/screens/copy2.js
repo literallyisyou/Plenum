@@ -8,7 +8,62 @@ export const PART2_IDS = Object.freeze([
   'settings', 'settings-connection', 'settings-notify', 'settings-lock', 'phone-lock-off', 'settings-appearance', 'settings-dictation',
   'debug', 'about', 'legal',
   'demo-home', 'demo-run', 'demo-diff', 'demo-artifact',
+  // Wave 5 (brb): the code page at /pair/ and the card for a computer another tab of this browser holds.
+  'claim', 'other-tab',
 ]);
+
+// ---- Wave 5 (brb): a browser on another computer ----
+// The code page at /pair/ (the computer's Settings › Phones › Add a browser shows the address and the code).
+export const CLAIM_TITLE = 'Open Plenum in this browser';
+export const CLAIM_LEAD = 'On your computer, open Plenum, then Settings › Phones › Add a browser. Type the code it shows.';
+export const CLAIM_LABEL = 'Code';
+export const CLAIM_HELP = '12 letters and numbers. Dashes and spaces do not matter.';
+export const CLAIM_CONTINUE = 'Continue';
+export const CLAIM_ERRORS = Object.freeze({
+  wrong: 'That code does not match. Check it on your computer and try again.',
+  none: 'No browser is being added right now. On your computer, click Add a browser, then type the new code.',
+  locked: 'Too many tries. On your computer, click New code, then type it here.',
+  'too-many': 'Too many tries in a minute. Wait a minute, then try again.',
+  network: 'Plenum on your computer did not answer. Check that it is running and that this is the address the Add a browser window shows.',
+});
+export const CLAIM_PLAIN_HTTP = 'This page is not encrypted. Chat, approvals and Stop work here. Notifications and some Copy buttons need the secure Tailscale address.';
+export const CLAIM_PAIRED = name => `This browser is already paired with ${name}.`;
+export const CLAIM_OPEN = 'Open Plenum';
+export const CLAIM_AGAIN = 'Pair again';
+// The name field on Welcome and on the review screen of a browser.
+export const BROWSER_NAME_LABEL = "This browser's name";
+// The notifications step after pairing, on a secure wide page.
+export const NOTIFY_BODY_BROWSER = 'Get a notification when an approval waits or a run ends, even when this tab is in the background.';
+// Shell settings › Appearance (web only): the layout this device uses (device.js LAYOUT_KEY).
+export const LAYOUT_TITLE = 'Layout on this device';
+export const LAYOUT_LABEL = Object.freeze({ auto: 'Automatic', phone: 'Phone', wide: 'Computer' });
+export const LAYOUT_NOT_KEPT = 'This browser could not keep the choice. Its site storage may be blocked.';
+export const LAYOUT_NOTE = 'Automatic uses the computer layout in a window at least 1000 pixels wide with a mouse or trackpad. A change shows the next time Plenum opens.';
+// The UI page (boot.js): a window resized past the line.
+export const LAYOUT_STRIP = side => `This window is now ${side}. Switch layout`;
+export const LAYOUT_SWITCH = 'Switch';
+// Two tabs of one browser on one computer.
+export const TAB_ELSEWHERE = 'Plenum is open in another tab of this browser.';
+export const TAB_MOVED = 'Plenum moved to another tab.';
+export const TAB_USE_HERE = 'Use it here';
+// The pairing screens after the code page, for an offer the computer made with Add a browser (pairing form 'browser'). The browser's
+// window on the computer is titled "Add a browser", its code lasts 5 minutes and there is nothing to scan; the phone's words stay below
+// and in copy.js. Wave 5 integration (phone area).
+export const PAIR_REVIEW_LEAD_BROWSER = 'Pair only if you clicked Add a browser on your own computer just now and typed the code its window shows.';
+export const PAIR_REVIEW_HOSTS_BROWSER = 'This browser will connect to:';
+export const PAIR_REVIEW_NOTE_BROWSER = 'A computer you pair with runs its own screens in this browser.';
+export const CODE_TEXT_BROWSER = 'shows a code in the Add a browser window. If it is the same, click Allow there.';
+export const MISMATCH_BODY_BROWSER = 'Stopped. Click Deny on your computer, then click Add a browser again. A different code can mean another device used the same code.';
+export const DENIED_BODY_BROWSER = 'did not allow this browser. To try again, click Add a browser on the computer, then type the new code.';
+export const EXPIRED_BODY_BROWSER = 'The code expired. On your computer, click New code, then type the new code.';
+// The button on those screens: back to the code page at /pair/ on this same address.
+export const TYPE_NEW_CODE = 'Type the new code';
+// The shell's settings on a browser (a page in the computer layout, or one paired through Add a browser).
+export const SETTINGS_TITLE_BROWSER = 'Browser settings';
+export const SETTINGS_THIS_BROWSER = 'THIS BROWSER';
+export const RENAME_TITLE_BROWSER = 'Rename in this browser';
+export const RENAME_HELP_BROWSER = 'Only this browser shows this name. The computer keeps its own name.';
+export const FORGET_BODY_BROWSER = 'This browser deletes its key for {computer}. {computer} keeps listing this browser until you remove it there under Settings › Phones.';
 
 export const COMPUTERS_TITLE = 'Plenum';
 export const COMPUTERS_LABEL = 'COMPUTERS';
@@ -93,6 +148,49 @@ export const NOTIFY_PERMISSION = Object.freeze({ granted: 'Allowed', denied: 'Bl
 export const NOTIFY_DENIED_HINT = 'Turn them on in Settings for Plenum on this phone.';
 export const APPROVE_NOTIFY_TEXT = 'The notification shows one line of the card. Approving from it runs that edit or command on {computer} without opening the card or the lines under it. Your phone asks for Face ID, your fingerprint or your PIN first. Deny and Stop never need this switch.';
 export const APPROVE_BLOCKED_TEXT = 'A blocked command never shows Approve on a notification.';
+
+// Turning notifications on (wave 4, m2): what the phone says for each reason a turn-on stopped, with the one thing to do about it.
+export const NOTIFY_FIX_TEXT = Object.freeze({
+  'no-distributor': 'Plenum sends notifications through a small free app called ntfy. Install it, then come back and tap Turn on again.',
+  denied: "Notifications are blocked for Plenum in Android's settings.",
+  'denied-web': 'Notifications are blocked for Plenum on this phone. Allow them in the phone\x27s settings for Plenum, then tap Turn on again.',
+  timeout: 'ntfy did not answer. Open ntfy once, then try again.',
+  failed: 'Plenum could not turn notifications on. Check that the phone is connected to {computer}, then try again.',
+});
+export const NOTIFY_GET_NTFY = 'Get ntfy';
+export const NOTIFY_FDROID = 'ntfy is also on F-Droid: f-droid.org/packages/io.heckel.ntfy';
+export const NOTIFY_OPEN_SETTINGS = 'Open notification settings';
+export const NOTIFY_SETTINGS_WHERE = 'Open Settings on the phone, then Apps, then Plenum, then Notifications, and turn them on.';
+export const NOTIFY_COMES_BACK = 'Plenum checks again when you come back.';
+export const NOTIFY_TEST_ON_WAY = 'A test notification is on its way.';
+export const NOTIFY_TEST_FAILED = 'The test notification could not be sent. Check that the phone is connected to {computer}, then try again.';
+export const NOTIFY_REPAIRED = 'Notifications had stopped reaching this phone. Plenum turned them back on.';
+export const NOTIFY_LAST = when => `Last notification ${when}`;
+
+// The turn-on reason (push.js enable, app.js enableNotifications) as { text, button, help }: the sentence, the button that fixes it
+// ({ label, action: 'get-ntfy' | 'open-settings' } or null) and a line under it (or null), or null for a reason copy.js lockFailText words.
+// platform: 'android' | 'ios' | 'web'.
+export function notifyFixFor(reason, { platform = 'android', computer = 'your computer' } = {}) {
+  const android = platform === 'android';
+  const on = String(computer || 'your computer');
+  switch (reason) {
+    case 'no-distributor':
+      return { text: NOTIFY_FIX_TEXT['no-distributor'], button: { label: NOTIFY_GET_NTFY, action: 'get-ntfy' }, help: NOTIFY_FDROID };
+    case 'denied':
+      return android
+        ? { text: NOTIFY_FIX_TEXT.denied, button: { label: NOTIFY_OPEN_SETTINGS, action: 'open-settings' }, help: null }
+        : { text: NOTIFY_FIX_TEXT['denied-web'], button: null, help: null };
+    case 'timeout':
+    case 'registration':
+      return { text: NOTIFY_FIX_TEXT.timeout, button: null, help: null };
+    // These two keep the lock step's own words (copy.js lockFailText): the screen uses that when this answers null.
+    case 'other-computer':
+    case 'unavailable':
+      return null;
+    default:
+      return { text: fillName(NOTIFY_FIX_TEXT.failed, on), button: null, help: null };
+  }
+}
 
 // Lock (6.13, 6.17, 14.1)
 export const LOCK_TITLE = 'App lock';

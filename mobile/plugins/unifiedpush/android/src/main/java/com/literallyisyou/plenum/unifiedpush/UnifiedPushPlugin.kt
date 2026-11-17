@@ -29,6 +29,8 @@ class UnifiedPushPlugin : Plugin() {
 
     override fun load() {
         live = WeakReference(this)
+        // The four channels exist from the first start, so the person can tune them before the first push arrives.
+        PlenumNotifier.ensureChannels(context)
     }
 
     override fun handleOnStart() {
@@ -58,6 +60,35 @@ class UnifiedPushPlugin : Plugin() {
         out.put("failures", UnifiedPushStore.failures(ctx))
         out.put("registrations", JSONArray(UnifiedPushStore.registrations(ctx)))
         out.put("visible", UnifiedPushStore.visible)
+        out.put("endpointChanged", UnifiedPushStore.endpointChanged(ctx))
+        call.resolve(out)
+    }
+
+    /** Takes down the notification of one tag (the shell does this after it acted on a notification's action). */
+    @PluginMethod
+    fun cancel(call: PluginCall) {
+        val tag = call.getString("tag")
+        if (tag == null || !PlenumNotifier.isCancelTag(tag)) {
+            call.reject("That is not a Plenum notification tag.", "bad-tag")
+            return
+        }
+        val count = PlenumNotifier.cancelTag(context, tag)
+        val out = JSObject()
+        out.put("cancelled", count)
+        call.resolve(out)
+    }
+
+    /** Takes down the notifications on Plenum's channels that are showing, or only those on one channel. */
+    @PluginMethod
+    fun cancelAll(call: PluginCall) {
+        val channel = call.getString("channel")?.takeIf { it.isNotEmpty() }
+        if (channel != null && channel !in PlenumNotifier.CHANNELS) {
+            call.reject("That is not one of Plenum's notification channels.", "bad-channel")
+            return
+        }
+        val tags = PlenumNotifier.cancelAll(context, channel)
+        val out = JSObject()
+        out.put("cancelled", tags.size)
         call.resolve(out)
     }
 
@@ -183,13 +214,15 @@ class UnifiedPushPlugin : Plugin() {
         private var live: WeakReference<UnifiedPushPlugin>? = null
 
         /**
-         * Delivers an event from the push service. Does nothing when the bridge is not alive; the endpoint and the
-         * failures are also kept in UnifiedPushStore, so the shell reads them with getState() on its next start.
+         * Delivers an event from the push service. Does nothing when the bridge is not alive and returns false then; the
+         * endpoint, the failures and the endpointChanged flag are also kept in UnifiedPushStore, so the shell reads them with
+         * getState() on its next start.
          */
-        internal fun deliver(event: String, data: JSObject, retain: Boolean) {
-            val plugin = live?.get() ?: return
-            val screen = plugin.activity ?: return
+        internal fun deliver(event: String, data: JSObject, retain: Boolean): Boolean {
+            val plugin = live?.get() ?: return false
+            val screen = plugin.activity ?: return false
             screen.runOnUiThread { plugin.emit(event, data, retain) }
+            return true
         }
     }
 }

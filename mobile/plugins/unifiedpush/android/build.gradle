@@ -6,11 +6,14 @@ ext {
     androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.1'
     androidxCoreVersion = project.hasProperty('androidxCoreVersion') ? rootProject.ext.androidxCoreVersion : '1.17.0'
     unifiedpushConnectorVersion = '3.3.5'
-    kotlinVersion = '2.2.10'
+    kotlinVersion = rootProject.ext.has('kotlin_version') ? rootProject.ext.kotlin_version : '2.2.10'
 }
 
 buildscript {
-    ext.kotlin_version = '2.2.10'
+    // The app's root build.gradle puts one Kotlin Gradle plugin on the classpath (variables.gradle kotlin_version); this module
+    // uses that version when it is there, so the plugin is not loaded in three versions, and its own pin when built alone.
+    def own_kotlin_version = '2.2.10'
+    ext.kotlin_version = rootProject.ext.has('kotlin_version') ? rootProject.ext.kotlin_version : own_kotlin_version
     repositories {
         google()
         mavenCentral()

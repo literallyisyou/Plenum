@@ -15,12 +15,16 @@
 //   registered by name (the package's index.js is   App, Haptics, Browser, Share, Filesystem, TextZoom, Network, LocalNotifications, the barcode
 //   only registerPlugin(name) plus a web fallback)  scanner ('CapacitorBarcodeScanner', whose web fallback would add a camera library to the
 //                                                  shell), and the app's own PlenumPrivacy (android/.../PlenumPrivacyPlugin.java).
+//   from @capacitor/core itself                    SystemBars (wave 4, m3: the status bar follows Plenum's theme, not only the phone's). Core
+//                                                  registers it when it is imported, so it is taken from there: a second registerPlugin of
+//                                                  the same name only warns and hands back the same object. Its native side is part of the
+//                                                  Capacitor Android library (com.getcapacitor.plugin.SystemBars), registered by the Bridge.
 // Those packages stay in mobile/package.json: `cap sync` reads them to wire the native side.
 //
 // The result of buildNative() is what app.js hands to the store, the lock, the push code and the screens, and what boot.js reads through
 // window.plenumNative. Nothing here stores or logs a key: the secure-storage adapter passes values straight through.
 
-import { Capacitor, WebView, registerPlugin } from '@capacitor/core';
+import { Capacitor, SystemBars, WebView, registerPlugin } from '@capacitor/core';
 import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
 import { Dictation } from '../plugins/dictation/src/index.js';
@@ -31,6 +35,11 @@ import { UnifiedPush } from '../plugins/unifiedpush/src/index.js';
 export const REGISTERED_NAMES = Object.freeze([
   'App', 'Haptics', 'Browser', 'Share', 'Filesystem', 'TextZoom', 'Network', 'LocalNotifications', 'CapacitorBarcodeScanner', 'PlenumPrivacy',
 ]);
+
+// Wave 4 (m3): the plugins the shell reads that @capacitor/core registers itself (they are handed over as parts, not registered again).
+// SystemBars' style names the bar's background (@capacitor/core SystemBarsStyle; SystemBars.java setAppearanceLightStatusBars(!"DARK")):
+// 'DARK' draws light icons, for Plenum's dark page; 'LIGHT' draws dark icons.
+export const CORE_NAMES = Object.freeze(['SystemBars']);
 
 // The barcode scanner's option defaults (@capacitor/barcode-scanner 3.x index.js) and enum values (definitions.js), kept here so the shell
 // does not bundle the package's web scanner.
@@ -69,7 +78,7 @@ export function scanOutcome(error, result) {
   return { ok: false, reason: 'failed' };
 }
 
-// parts: { registerPlugin, WebView, SecureStorage, BiometricAuth, Dictation, IsolatedPreview, UnifiedPush }. The Node suites pass fakes.
+// parts: { registerPlugin, WebView, SystemBars, SecureStorage, BiometricAuth, Dictation, IsolatedPreview, UnifiedPush }. The Node suites pass fakes.
 // platform: Capacitor.getPlatform(), 'android' | 'ios' | 'web'. Only iOS has the Keychain setting.
 export function buildNative(parts, { platform = '' } = {}) {
   const register = parts.registerPlugin;
@@ -97,6 +106,7 @@ export function buildNative(parts, { platform = '' } = {}) {
       await parts.SecureStorage.setDefaultKeychainAccess(1); // whenUnlockedThisDeviceOnly; a refusal throws, so no key is stored
     },
     BiometricAuth: parts.BiometricAuth,
+    SystemBars: parts.SystemBars ?? null,
     WebView: parts.WebView,
     UnifiedPush: parts.UnifiedPush,
     Dictation: parts.Dictation,
@@ -126,7 +136,7 @@ export function buildNative(parts, { platform = '' } = {}) {
 
 // The real plugins. Called once by app.js on a phone.
 export async function loadNativePlugins() {
-  const native = buildNative({ registerPlugin, WebView, SecureStorage, BiometricAuth, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
+  const native = buildNative({ registerPlugin, WebView, SystemBars, SecureStorage, BiometricAuth, Dictation, IsolatedPreview, UnifiedPush }, { platform: Capacitor.getPlatform() });
   await native.configureStorage();
   return native;
 }

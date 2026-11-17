@@ -41,6 +41,14 @@
 .remote-offer-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .remote-offer-code { margin: 0; font: 600 20px/1.2 var(--mono); color: var(--text); letter-spacing: 0.04em; }
 
+/* Add a browser (wave 5): the short address of the code page with its Copy, and the row "This browser" on a paired browser's page. */
+.remote-browser-row, .remote-this-browser {
+  display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--bg);
+}
+.remote-browser-label { margin: 0; font: 600 13px/1.35 var(--display); color: var(--text); }
+.remote-browser-url { min-width: 0; font: 12.5px/1.4 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+
 /* The paired phones: one row each, with the name, a sentence about it, its control and its removal. */
 .remote-devices, .remote-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
 .remote-device {
