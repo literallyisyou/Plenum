@@ -943,7 +943,10 @@ export function installShim(options = {}) {
   function paint() {
     if (!els.stop) return;
     const driving = drives.size > 0 || helloDriving !== null;
-    const running = Number(coreOf()?.state?.()?.hello?.pending?.runs) || 0;
+    // w7 follow-up: the computer counts runs in pending.running (runs: the demo replay and older fixtures; screens/copy.js runsGoing).
+    const pending = coreOf()?.state?.()?.hello?.pending;
+    const count = Number(pending?.running ?? pending?.runs);
+    const running = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
     if (driving) {
       els.stop.setAttribute('data-driving', '');
       els.stop.setAttribute('aria-description', `A model is driving: ${drivingLabel()}`);

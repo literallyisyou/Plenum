@@ -53,6 +53,8 @@
   let headRefs = {};           // the header count and Stop all, patched in place
   let paintSig = '';
   let reqSeq = 0;
+  // The read of the list on its way: its project, its number, and whether a poll asked for one more meanwhile.
+  const flight = { id: null, seq: 0, again: false };
   let pollTick = 0;
   let refreshTimer = 0;
   // The board: scope -> { state, meta, step } for the run rows on screen, patched in place like the agent rows.
@@ -256,9 +258,19 @@
     changed();
   }
 
+  // Whether a stream event belongs to the project on screen. server.mjs puts the run's thread on every event: Main's thread id is the
+  // project id, and the project's other threads are in MuseUI.state.threads. The stream keeps reading a run after a switch to another
+  // project, so an agent of that run must not show in this project's list (panels-a-23). An event with no thread is taken, as before.
+  function ofThisProject(ev) {
+    if (typeof ev.thread !== 'string' || !ev.thread) return true;
+    if (ev.thread === activeId()) return true;
+    return (MuseUI.state.threads ?? []).some(t => t && t.id === ev.thread);
+  }
+
   // This window's run stream (the muse:stream event app.js sends for every event of a run it reads).
   function onStream(ev) {
     if (!ev || typeof ev.type !== 'string' || ev.type.indexOf('agent-') !== 0) return;
+    if (!ofThisProject(ev)) return;
     checkProject();
     const id = String(ev.id ?? '');
     if (!id) return;
@@ -292,7 +304,16 @@
       changed();
       return;
     }
+    // One read at a time for a project: a poll while one is on its way asks for one more after it. Otherwise a server slower than the poll
+    // gets a pile of reads, and every answer is dropped for being older than the newest request, so the list never shows.
+    if (flight.id === id) {
+      flight.again = true;
+      return;
+    }
     const seq = ++reqSeq;
+    flight.id = id;
+    flight.seq = seq;
+    flight.again = false;
     const asked = Date.now();
     try {
       const data = await MuseUI.api(`/api/agents/live?project=${encodeURIComponent(id)}`);
@@ -302,7 +323,16 @@
       loadError = '';
     } catch (err) {
       if (seq !== reqSeq || id !== project) return;
-      loadError = err?.message || 'The server did not answer.';
+      loadError = MuseUI.plainError ? MuseUI.plainError(err, 'The server did not answer.') : err?.message || 'The server did not answer.';
+    } finally {
+      if (flight.seq === seq) {
+        const again = flight.again;
+        flight.id = null;
+        flight.seq = 0;
+        flight.again = false;
+        // The read a poll or a Try again asked for meanwhile starts now.
+        if (again) refresh();
+      }
     }
     changed();
   }
@@ -479,7 +509,10 @@
     }
 
     // The board's cards that wait, then the runs of every project with the agents of the project on screen under their run.
-    if (board && board.approvals.length) out.push(section(`Waiting for you (${board.approvals.length})`, board.approvals.map(waitingRow)));
+    if (board && board.approvals.length) {
+      const batch = MuseUI.pendingApprovalControl?.(board.approvals, { board: true });
+      out.push(section(`Waiting for you (${board.approvals.length})`, board.approvals.map(waitingRow), batch));
+    }
     if (board) {
       if (board.runs.length || live.length) out.push(section('Running', runningNodes(board, live)));
     } else if (live.length) {
@@ -656,6 +689,7 @@
       loaded,
       loadError,
       project,
+      MuseUI.threads?.scope(),
       // The board's shape: which runs, cards and ended runs there are, and which card is open. Their clocks and steps are patched in place.
       board ? [board.runs.map(r => [r.scope, r.projectId, r.projectName, r.threadName]), board.approvals.map(c => [c.approvalId, c.projectName, c.threadName, c.summary]), board.recent.map(r => [r.scope, r.endedAt, r.status, r.error]), expanded] : null,
     ]);

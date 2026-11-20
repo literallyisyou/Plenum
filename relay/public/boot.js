@@ -675,7 +675,7 @@
     }
     function paint() {
       if (!els.stop) return;
-      let driving = drives.size > 0 || helloDriving !== null, running = Number(coreOf()?.state?.()?.hello?.pending?.runs) || 0;
+      let driving = drives.size > 0 || helloDriving !== null, pending = coreOf()?.state?.()?.hello?.pending, count = Number(pending?.running ?? pending?.runs), running = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
       driving ? (els.stop.setAttribute("data-driving", ""), els.stop.setAttribute("aria-description", `A model is driving: ${drivingLabel()}`)) : (els.stop.removeAttribute("data-driving"), running > 0 ? els.stop.setAttribute("aria-description", running === 1 ? "1 run is going" : `${running} runs are going`) : els.stop.removeAttribute("aria-description")), els.stop.setAttribute("data-state", stopView.state), els.stopLabel.textContent = STOP_LABELS[stopView.state] ?? "Stop", els.stopNote.textContent = stopView.text || "", paintResult();
       let conn = connectionView(), name = conn.desktopName || "your computer", when = conn.lastSeen ? ` Last seen ${conn.lastSeen}.` : "", text = conn.state === "reconnecting" ? `Reconnecting to ${name}\u2026` : conn.state === "offline" ? `Can't reach ${name}.${when}` : conn.state === "asleep" ? `${name} is asleep or Plenum is closed.${when} Plenum reconnects when it wakes.` : "", reconnecting = conn.state === "reconnecting";
       reconnecting ? reconnectSince === null && (reconnectSince = Date.now(), later(paint, RECONNECT_STRIP_MS + 10)) : reconnectSince = null;

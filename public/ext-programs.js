@@ -719,13 +719,18 @@
       select.dataset.fk = fk(entry.id, 'model');
       select.disabled = off;
       select.setAttribute('aria-label', `Model for ${label}`);
-      select.append(new Option('Automatic', ''));
       const prefix = `${str(entry.provider)}:`;
-      const own = list(catalog).filter(c => c.ref.startsWith(prefix));
-      for (const c of own) select.append(new Option(c.offered ? c.label : `${c.label} (not offered now)`, c.ref));
       const chosen = str(entry.model);
-      if (chosen && !own.some(c => c.ref === chosen)) select.append(new Option(chosen, chosen));
-      select.value = chosen;
+      MuseUI.trackModelMenu(select, value => {
+        const available = MuseUI.catalog.length
+          ? MuseUI.modelChoices(value).map(c => ({ ref: `${c.provider}:${c.id}`, label: c.label, offered: c.offered !== false }))
+          : list(catalog);
+        const own = available.filter(c => c.ref.startsWith(prefix) && (c.offered || c.ref === value));
+        select.replaceChildren(new Option('Automatic', ''));
+        for (const c of own) select.append(new Option(c.offered ? c.label : `${c.label} (not offered now)`, c.ref));
+        if (value && !own.some(c => c.ref === value)) select.append(new Option(value, value));
+        select.value = value;
+      }, chosen);
       select.addEventListener('change', () => setModel(entry, select.value));
       row.append(runs, select);
       li.append(row);

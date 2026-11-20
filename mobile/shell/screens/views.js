@@ -570,7 +570,7 @@ function uiFailed(ctx, io) {
   return frame(ctx, io, {
     title: "Plenum's screens did not load",
     body: [
-      para(ctx.cause === 'worker' ? WORKER_TEXT : C.uiFailedBody(ctx.computer, ctx.cause), 'sh-note'),
+      para(ctx.cause === 'worker' ? WORKER_TEXT : C.uiFailedBody(ctx.computer, ctx.cause, ctx.versions ?? null), 'sh-note'),
       pending ? para(pending, 'sh-help') : null,
     ],
     actions: [

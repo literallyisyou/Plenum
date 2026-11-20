@@ -1,50 +1,84 @@
-/* Chat history panel styles. Colour and type come from the tokens in style.css, so the panel follows both themes.
-   The sidebar link reuses .side-link from style.css. */
+/* Search entry points and drawer follow the app's theme and type. */
+.ext-history-side {
+  flex: none;
+  width: auto;
+  margin: 0 10px 5px;
+  border: 1px solid var(--line);
+  background: var(--fill-1);
+}
+.app[data-strip] .ext-history-side { margin-inline: 6px; justify-content: center; }
+.app[data-strip] .ext-history-link-label { display: none; }
+.ext-history-top { flex: none; -webkit-app-region: no-drag; }
 
-.ext-history-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ext-history-panel, .ext-history-bar {
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 0;
+}
 .ext-history-input {
-  flex: 1 1 180px; min-width: 0;
-  padding: 8px 12px; border-radius: 8px;
+  width: 100%; min-width: 0; min-height: 40px;
+  padding: 9px 12px; border-radius: 9px;
   border: 1px solid var(--line-2); background: var(--fill-1); color: var(--text);
   font: 14px var(--ui);
 }
 .ext-history-input::placeholder { color: var(--muted); }
-.ext-history-bar .ghost { flex: none; }
-/* The "All projects" switch: a checkbox and its label, kept on one line beside the box. */
-.ext-history-scope {
-  flex: none; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
-  color: var(--text-2); font-size: 12.5px; white-space: nowrap;
+.ext-history-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.ext-history-scopes {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin: 0; min-width: 0; padding: 3px; border: 1px solid var(--line); border-radius: 9px;
 }
-.ext-history-scope input { margin: 0; accent-color: var(--accent); }
-.ext-history-note { margin: 2px 4px 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
-
-/* The status line is where a result's text goes when the chat does not show that message. */
-.ext-history-status { margin: 0 4px; color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
-.ext-history-status p { margin: 0 0 6px; }
-.ext-history-status:empty { display: none; }
-.ext-history-full {
-  padding: 10px 12px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--fill-1);
-  color: var(--text); font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere;
+.ext-history-scopes legend, .ext-history-scopes input {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
+.ext-history-scopes label { display: flex; }
+.ext-history-scopes label > span {
+  display: flex; align-items: center; min-height: 30px; padding: 0 9px;
+  border-radius: 6px; color: var(--text-2);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.ext-history-scopes input:checked + span { color: var(--text); background: var(--fill-2); }
+.ext-history-scopes input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ext-history-scopes input:disabled + span { opacity: .5; cursor: default; }
+.ext-history-export { white-space: nowrap; }
+.ext-history-note, .ext-history-error {
+  margin: 0 4px; color: var(--muted); font-size: 12.5px; line-height: 1.5;
+}
+.ext-history-error { color: var(--text); }
+.ext-history-note:empty, .ext-history-error:empty { margin: 0; height: 0; }
 
-.ext-history-list { display: flex; flex-direction: column; gap: 8px; }
+.ext-history-list {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 0; padding: 0; list-style: none;
+}
+.ext-history-list:empty { display: none; }
 .ext-history-result {
   display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%;
   padding: 10px 12px; border-radius: 12px; text-align: left;
-  border: 1px solid var(--line);
-  background: var(--fill-1);
+  border: 1px solid var(--line); background: var(--fill-1);
   transition: border-color 120ms var(--ease), background-color 120ms var(--ease);
 }
 .ext-history-result:hover { border-color: var(--line-2); background: var(--fill-2); }
-.ext-history-who { color: var(--text-2); font: 600 12px/1.3 var(--ui); }
-/* With "All projects" on, each result names its project on a line of its own, above who wrote it. */
-.ext-history-project { color: var(--accent); font: 600 11.5px/1.3 var(--ui); overflow-wrap: anywhere; }
+.ext-history-result[aria-busy="true"] { cursor: progress; }
+.ext-history-title { color: var(--text); font: 630 13.5px/1.35 var(--ui); overflow-wrap: anywhere; }
+.ext-history-title > .ext-history-snippet { font: inherit; }
+.ext-history-context { color: var(--text-2); font: 500 12px/1.3 var(--ui); overflow-wrap: anywhere; }
 .ext-history-snippet { color: var(--text); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .ext-history-snippet mark {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
   color: inherit; border-radius: 3px; padding: 0 2px;
 }
+.ext-history-closed {
+  display: inline-block; margin-inline-start: 6px; padding: 1px 5px;
+  border-radius: 5px; background: var(--fill-2); color: var(--muted); font-size: 11px;
+}
+.ext-history-action { color: var(--accent); font-size: 12px; margin-top: 2px; }
 
-/* The chat turn the search jumped to is outlined for a moment. */
-.turn.ext-history-hit { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
+.turn.ext-history-hit { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 12px; }
+
+html[data-surface="phone"] .ext-history-side,
+html[data-surface="phone"] .ext-history-input,
+html[data-surface="phone"] .ext-history-export,
+html[data-surface="phone"] .ext-history-top,
+html[data-surface="phone"] .ext-history-scopes label > span { min-height: 44px; }
+html[data-surface="phone"] .ext-history-top { min-width: 44px; }
+html[data-surface="phone"] .ext-history-input { font-size: 16px; }

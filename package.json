@@ -19,6 +19,7 @@
     "desktop": "electron .",
     "computer:smoke": "electron desktop/computer/smoke.cjs",
     "check": "node scripts/check.mjs",
+    "test": "node scripts/test-core.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "stamp": "node scripts/stamp-build.mjs",
     "legal": "node scripts/build-legal.mjs",
@@ -86,9 +87,15 @@
       "!node_modules/pdfjs-dist/types/**",
       "!node_modules/pdfjs-dist/image_decoders/**",
       "!node_modules/pdfjs-dist/build/**",
+      "!node_modules/pdfjs-dist/legacy/{web,image_decoders}/**",
+      "!node_modules/pdfjs-dist/legacy/build/*.min.mjs",
       "!node_modules/@napi-rs/**"
     ],
     "extraFiles": [
+      {
+        "from": "docs/FUNDS-ADAPTER.md",
+        "to": "docs/FUNDS-ADAPTER.md"
+      },
       {
         "from": "LICENSE.txt",
         "to": "LICENSE.txt"
@@ -136,6 +143,8 @@
         "!node_modules/pdfjs-dist/types/**",
         "!node_modules/pdfjs-dist/image_decoders/**",
         "!node_modules/pdfjs-dist/build/**",
+        "!node_modules/pdfjs-dist/legacy/{web,image_decoders}/**",
+        "!node_modules/pdfjs-dist/legacy/build/*.min.mjs",
         "!node_modules/@napi-rs/**",
         "!node_modules/koffi/build/koffi/{darwin_*,freebsd_*,linux_*,musl_*,openbsd_*,win32_arm64,win32_ia32}/**"
       ],
@@ -195,6 +204,8 @@
         "!node_modules/pdfjs-dist/types/**",
         "!node_modules/pdfjs-dist/image_decoders/**",
         "!node_modules/pdfjs-dist/build/**",
+        "!node_modules/pdfjs-dist/legacy/{web,image_decoders}/**",
+        "!node_modules/pdfjs-dist/legacy/build/*.min.mjs",
         "!node_modules/@napi-rs/**",
         "!node_modules/koffi/build/koffi/{freebsd_*,linux_*,musl_*,openbsd_*,win32_*}/**"
       ]
@@ -225,6 +236,8 @@
         "!node_modules/pdfjs-dist/types/**",
         "!node_modules/pdfjs-dist/image_decoders/**",
         "!node_modules/pdfjs-dist/build/**",
+        "!node_modules/pdfjs-dist/legacy/{web,image_decoders}/**",
+        "!node_modules/pdfjs-dist/legacy/build/*.min.mjs",
         "!node_modules/@napi-rs/**",
         "!node_modules/koffi/build/koffi/{darwin_*,freebsd_*,musl_*,openbsd_*,win32_*,linux_arm*,linux_ia32,linux_loong64,linux_riscv64d}/**"
       ]

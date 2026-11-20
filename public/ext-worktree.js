@@ -176,6 +176,13 @@
     });
   }
 
+  // git refused the project folder because another account owns it (tools-13). The server's sentence names the safe.directory command
+  // that fixes it; this one is for an answer that came without it.
+  function untrustedText(data) {
+    const said = typeof data?.error === 'string' ? data.error.trim() : '';
+    return said || 'git does not trust this folder because another account owns it, so threads cannot work in isolated copies. Mark it as safe with git config --global --add safe.directory, then open this again.';
+  }
+
   // The Settings > This project section "Isolated copies".
   function renderSettingsSection(card) {
     const pid = activeProject();
@@ -190,6 +197,10 @@
       .then(data => {
         if (!body.isConnected) return;
         body.replaceChildren();
+        if (data.untrusted) {
+          body.append(MU.para(untrustedText(data)));
+          return;
+        }
         if (!data.repo) {
           body.append(MU.para(data.noGit ? 'git is not installed, so threads cannot work in isolated copies.' : 'This folder is not a git repository, so threads share the folder and one of them is the writer.'));
           return;
@@ -291,8 +302,18 @@
     if (pid) {
       MU.api(`/api/worktrees/info?project=${enc(pid)}`)
         .then(data => {
+          if (!container.isConnected) return;
+          // A folder git does not trust gets git's sentence, which names the command that fixes it, in place of the toggle (tools-13).
+          if (data.untrusted) {
+            const why = make('p', 'ext-thread-note', untrustedText(data));
+            why.setAttribute('role', 'status');
+            why.setAttribute('data-wt-note', 'untrusted');
+            wrap.replaceChildren(why);
+            wrap.hidden = false;
+            return;
+          }
           // A folder that is not a repository, or no git, shows no toggle at all.
-          if (!container.isConnected || !data.repo) return;
+          if (!data.repo) return;
           wrap.hidden = false;
           settingsForm(form, pid, data.settings);
           takeInfo(data);
@@ -540,7 +561,7 @@
   // ---------- Discard ----------
 
   // The commits on the copy's branch that deleting the branch would drop, as the server counts them now. Throws with the server's reason when
-  // it cannot say, so Discard does nothing rather than delete a branch it has not counted.
+  // it cannot say; Discard then still discards the copy, but never offers to delete a branch it has not counted.
   async function commitsOn(id) {
     const data = await MU.api(`/api/worktrees/status?project=${enc(activeProject())}&thread=${enc(id)}`);
     if (!Number.isInteger(data.ahead)) throw new Error(data.error || 'Plenum could not count the commits on the branch.');
@@ -551,25 +572,30 @@
     const t = threadById(id);
     if (!t?.worktree) return;
     const branch = t.worktree.branch;
-    let commits;
+    // A copy whose folder or branch was removed outside Plenum cannot be counted. It can still be discarded (DECISIONS 112: always), but
+    // then the branch is kept: there is no tick to delete a branch whose commits nobody counted.
+    let commits = null;
     try {
       commits = await commitsOn(id);
-    } catch (err) {
-      MU.toast(err.message, 'bad');
-      return;
+    } catch {
+      commits = null;
     }
+    const counted = Number.isInteger(commits);
     const noun = commits === 1 ? '1 commit' : `${commits} commits`;
-    const check = { label: commits > 0 ? `Also delete the branch (${noun} on it will be lost)` : 'Also delete the branch', checked: false };
+    const check = counted ? { label: commits > 0 ? `Also delete the branch (${noun} on it will be lost)` : 'Also delete the branch', checked: false } : null;
+    const keep = counted
+      ? `The branch ${branch ?? ''} is kept unless you tick the box.`
+      : `Plenum could not count the commits on the branch ${branch ?? ''}, so the branch is kept. Delete it with git later if you no longer need it.`;
     const sure = await MU.confirm({
       title: 'Discard the isolated copy',
-      body: `Discard this thread's isolated copy? Changes that were not committed in it are lost. The branch ${branch ?? ''} is kept unless you tick the box.`,
+      body: `Discard this thread's isolated copy? Changes that were not committed in it are lost. ${keep}`,
       action: 'Discard',
       tone: 'danger',
-      check,
+      ...(check ? { check } : {}),
     });
     if (!sure) return;
     // Deleting a branch with commits of its own drops them, so a ticked box is asked once more. Keep branch (the safe button, and Escape) keeps it.
-    let deleteBranch = check.checked === true;
+    let deleteBranch = check?.checked === true;
     if (deleteBranch && commits > 0) {
       deleteBranch = await MU.confirm({
         title: `Delete the branch and its ${noun}?`,

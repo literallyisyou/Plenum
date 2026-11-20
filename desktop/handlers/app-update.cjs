@@ -762,12 +762,44 @@ function onCleanStart() {
 // box offers to put the previous version back, and this returns true (the core then shows no box of its own and does not quit; the
 // choice here ends in a quit). Otherwise it returns false and opens nothing. The version that failed is remembered and never
 // downloaded again (see onAvailable).
-function onStartFailed(sh) {
+// shell-9: a first start that only ran out of time (info.code null, with info.waitForAnswer from main.cjs) may be slow, not broken: the
+// first start after an update is the one antivirus reads the new files in. It is given EXTRA_START_WAIT_MS more, once, with no box. When
+// the server answers then, nothing is recorded (the state hook records the clean start). When it does not, or it ends, the start is a
+// failed one as before: failedStart and the box. A quit during the wait records nothing, so the next start tries the version again.
+const EXTRA_START_WAIT_MS = 60_000;
+let extraWaitUsed = false;
+function onStartFailed(sh, info) {
   start(sh);
   const saved = readUpdateState();
   const first = versionPair(saved.firstStart);
   if (!first) return false;
-  const { from, to } = first;
+  if (info?.code === null && typeof info.waitForAnswer === 'function' && !extraWaitUsed) {
+    extraWaitUsed = true;
+    log(`warn: the first start of ${first.to} did not answer within the start limit; it gets ${EXTRA_START_WAIT_MS / 1000} s more before it counts as failed`);
+    Promise.resolve()
+      .then(() => info.waitForAnswer(EXTRA_START_WAIT_MS))
+      .catch(() => 'no-answer')
+      .then(outcome => {
+        if (outcome === 'answered') {
+          log(`the first start of ${first.to} answered within the extra time`);
+          return;
+        }
+        if (outcome === 'quitting') {
+          log(`the app quit while the first start of ${first.to} was given more time; it is tried again at the next start`);
+          return;
+        }
+        // The record may have changed while it waited (a clean start after all): it is read again.
+        const now = versionPair(readUpdateState().firstStart);
+        if (now) failStart(now);
+      });
+    return true;
+  }
+  failStart(first);
+  return true;
+}
+
+// The first start after an update did not work: failedStart is written and one box offers the previous version. Every choice quits.
+function failStart({ from, to }) {
   failed = { from, to, at: Date.now() };
   mergeUpdateState({ failedStart: failed, firstStart: null, pending: null });
   post();
@@ -804,7 +836,6 @@ function onStartFailed(sh) {
     log(`error: the start-failed box could not be shown (${oneLine(err?.message, 80)})`);
     quit();
   }
-  return true;
 }
 
 // Runs a kept installer silently and leaves it to finish after this app quits.

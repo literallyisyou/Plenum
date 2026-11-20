@@ -11,7 +11,6 @@
   // ---------- the presets ----------
 
   const MODE_NAME = { ask: 'Ask first', auto: 'Auto-approve', all: 'Approve all' };
-  const RANK = { ask: 0, auto: 1, all: 2 };
   const ALL_COVERS = { computer: true, browser: true };
   const deepFreeze = v => {
     if (v && typeof v === 'object' && !Object.isFrozen(v)) { Object.freeze(v); for (const x of Object.values(v)) deepFreeze(x); }
@@ -126,9 +125,7 @@
   // The order keeps every project at or below the more open of "before" and "after" between two requests, so a stop half way never leaves a
   // project in Approve all, or answering more cards, than the person chose (and never without the Approve all question):
   //  'project': the project's own fields, one request. projectId names it (the page captures it before it asks anything).
-  //  'all': the app's mode first when the preset is not more open than the app default is now (a project that is cleared follows the default,
-  //         so the default must not be the more open one), then every project goes back to following the default (its own approval fields are
-  //         cleared), then the app's mode and, for Hands-off, its Approve all covers last.
+  //  'all': the app default and project overrides change together in one settings request.
   //  'new': a project that follows the default today is first given its current values, so it keeps what it has (a pin never changes what a
   //         project uses), then the app default last.
   function plan(presetId, scope, state, projectId) {
@@ -148,17 +145,7 @@
       return [{ kind: 'project', project: p.id, label: p.name, patch }];
     }
     if (scope === 'all') {
-      const steps = [];
-      const modeFirst = RANK[f.approvals] <= RANK[state?.approvals ?? 'ask'];
-      if (modeFirst) steps.push({ kind: 'app', label: 'the app default', patch: { approvals: f.approvals } });
-      for (const p of projects) {
-        const patch = { approvals: null, approveAllBlocked: false, codersCannotAsk: 'run' };
-        if (f.approveAllCovers) patch.approveAllCovers = null;
-        steps.push({ kind: 'project', project: p.id, label: p.name, patch });
-      }
-      // The same request twice is not sent.
-      if (!(modeFirst && !f.approveAllCovers)) steps.push(app);
-      return steps;
+      return [{ kind: 'app', label: 'all projects and the app default', patch: { ...appPatch, approvalsScope: 'all-projects' } }];
     }
     if (scope === 'new') {
       const steps = [];
@@ -338,7 +325,11 @@
       if (covers.length) {
         try { MuseUI.notice?.('approve-all-covers', { before: MuseUI.el.form }); } catch { /* a notice is an extra */ }
       }
-      if (reopen) closeSheet(true);
+      // The sheet already stepped aside for the Approve all question (Hands-off): the focus goes back to the control that opened it.
+      if (reopen) {
+        if (sheet && !sheet.dlg.hidden) closeSheet(true);
+        else if (opener && typeof opener.focus === 'function') opener.focus();
+      }
       return true;
     } catch (err) {
       MuseUI.toast(err.message, 'bad');
@@ -464,6 +455,8 @@
     more.addEventListener('click', () => { closeSheet(false); MuseUI.settings?.open?.('app', 'safety'); });
     dlg.append(head, lead, panel, more);
     scrim.addEventListener('click', () => closeSheet(true));
+    // The sheet itself can hold the focus, so a click on its plain text keeps the focus inside it and Escape still reaches this handler.
+    dlg.tabIndex = -1;
     dlg.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
         e.preventDefault();

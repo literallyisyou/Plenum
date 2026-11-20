@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plenum portfolio drafts</title>
+  <link rel="stylesheet" href="portfolio.css">
+  <script type="module" src="portfolio.mjs"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">PLENUM</div>
+    <h1>Portfolio drafts</h1>
+    <p>Open a Plenum packet and copy each field into your portfolio editor.</p>
+    <p><button id="local-packet" type="button">Load this PC’s Plenum portfolio</button></p>
+    <label for="packet">Import another packet (.json)</label>
+    <input id="packet" type="file" accept=".json,application/json">
+    <p id="notice" role="status"></p>
+  </header>
+  <main id="workspace" hidden>
+    <label for="item">Portfolio item</label>
+    <select id="item"></select>
+    <p id="progress"></p>
+    <section id="fields" aria-label="Draft fields"></section>
+    <section id="gallery" aria-label="Gallery images" hidden>
+      <div class="row">
+        <h2>Gallery</h2>
+        <button id="zip" type="button">Save images as ZIP</button>
+      </div>
+      <div id="images"></div>
+    </section>
+    <footer>
+      <label class="check"><input id="entered" type="checkbox"> Mark as entered</label>
+      <button id="close" type="button">Close packet</button>
+    </footer>
+  </main>
+</body>
+</html>

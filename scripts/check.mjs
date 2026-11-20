@@ -7,7 +7,8 @@
 //    must name a file that exists, and every named import of one ES module from another must be an export of it. V8 itself does
 //    the second check: all the modules are linked together without being run, so `export *`, `export { a as b }`, default
 //    exports and cycles are judged by the engine and not by a pattern. Imports of node: modules are checked against the real
-//    export list of the running Node. A package that is imported must be listed in package.json and installed.
+//    export list of the running Node. Packages named in static imports or literal import()/require() must be declared and present.
+//    Packages and non-ES-module targets are never run. Their exports and package subpaths are left to runtime checks.
 //
 // One command, no network, nothing started, nothing written. About a second on a developer PC.
 //   node scripts/check.mjs [--root <folder>]     --root checks another copy of the project (the default is this one).
@@ -19,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { builtinModules } from 'node:module';
+import { createRequire, isBuiltin } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -38,9 +39,21 @@ if (typeof vm.SourceTextModule !== 'function') {
   process.exit(run.status ?? 2);
 }
 
-const rootArg = args.indexOf('--root');
-const ROOT = path.resolve(rootArg >= 0 && args[rootArg + 1] ? args[rootArg + 1] : path.join(path.dirname(SELF), '..'));
+if (args.length && (args.length !== 2 || args[0] !== '--root' || !args[1] || args[1].startsWith('--'))) {
+  console.error('Usage: node scripts/check.mjs [--root <folder>]');
+  process.exit(2);
+}
+const ROOT = path.resolve(args[1] ?? path.join(path.dirname(SELF), '..'));
 const started = Date.now();
+
+let pkg;
+try {
+  pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) throw new Error('expected a JSON object');
+} catch (e) {
+  console.error(`check: cannot read package.json in ${ROOT}: ${e.message}`);
+  process.exit(2);
+}
 
 // ---------- what is checked ----------
 const TOP_FILES = ['server.mjs', 'plenum.mjs'];
@@ -61,14 +74,21 @@ function report(file, line, message) {
 function listFiles() {
   const out = [];
   const walk = dir => {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+      report(rel(dir), null, `cannot list source directory (${e.code ?? 'error'})`);
+      return;
+    }
     for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); } else if (e.isFile() && SOURCE.test(e.name)) out.push(full);
     }
   };
-  for (const f of TOP_FILES) { const p = path.join(ROOT, f); if (fs.existsSync(p)) out.push(p); }
+  for (const f of TOP_FILES) {
+    const p = path.join(ROOT, f);
+    if (fs.existsSync(p)) out.push(p);
+    else report(f, null, 'required source file is missing');
+  }
   for (const d of TOP_DIRS) walk(path.join(ROOT, d));
   return out;
 }
@@ -121,15 +141,23 @@ for (const file of files) {
 const isRelative = spec => spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..' || spec.startsWith('file:');
 const fileExists = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 const dirExists = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
-function toPath(from, spec) { return spec.startsWith('file:') ? fileURLToPath(spec) : path.resolve(path.dirname(from), spec); }
-// Node's CommonJS lookup for require('./x'): the exact name, then .js .json .node, then a folder's index.
+function esmPath(from, spec) {
+  try { return fileURLToPath(new URL(spec, pathToFileURL(from))); } catch { return null; }
+}
+// Use Node's lookup so directory entries honor their package.json and no module code is run.
 function resolveRequire(from, spec) {
-  const p = toPath(from, spec);
-  for (const cand of [p, p + '.js', p + '.json', p + '.node', path.join(p, 'index.js'), path.join(p, 'index.json')]) if (fileExists(cand)) return cand;
-  return null;
+  try { return createRequire(from).resolve(spec); } catch { return null; }
 }
 // An ES module's lookup: the exact file, nothing else (Node adds no extension and reads no folder index).
-const resolveEsm = (from, spec) => { const p = toPath(from, spec); return fileExists(p) ? p : null; };
+const resolveEsm = (from, spec) => { const p = esmPath(from, spec); return p && fileExists(p) ? p : null; };
+const declared = new Set(Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies }));
+const pkgNameOf = spec => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
+function checkPackage(file, spec, label, line = null) {
+  const name = pkgNameOf(spec);
+  const dir = path.join(ROOT, 'node_modules', ...name.split('/'));
+  if (!declared.has(name)) report(rel(file), line, `${label} needs the package "${name}", which package.json does not list`);
+  else if (!dirExists(dir)) report(rel(file), line, `${label} needs the package "${name}", which is not installed (run npm ci)`);
+}
 
 // Lines that are plainly comments are skipped, so a sentence that quotes require('./x') is not a reference.
 const codeLines = src => src.split('\n').map(l => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l)).join('\n');
@@ -141,20 +169,22 @@ for (const file of files) {
   const k = kind.get(file);
   const scan = (re, resolver, label) => {
     for (const m of src.matchAll(re)) {
-      if (!isRelative(m[2])) continue;
-      if (!resolver(file, m[2])) report(rel(file), src.slice(0, m.index).split('\n').length, `${label}('${m[2]}') names a file that does not exist`);
+      const spec = m[2];
+      const line = src.slice(0, m.index).split('\n').length;
+      const reference = `${label}('${spec}')`;
+      if (isRelative(spec)) {
+        if (!resolver(file, spec)) report(rel(file), line, `${reference} names a file that does not exist`);
+      } else if (!isBuiltin(spec) && !spec.startsWith('#') && !spec.includes(':') && !path.isAbsolute(spec)) {
+        checkPackage(file, spec, reference, line);
+      }
     }
   };
   if (k === 'cjs') scan(REQUIRE_RE, resolveRequire, 'require');
-  if (k !== 'classic') scan(DYNAMIC_RE, k === 'esm' ? resolveEsm : resolveRequire, 'import');
+  if (k !== 'classic') scan(DYNAMIC_RE, resolveEsm, 'import');
 }
 
 // ---------- 3. named imports, by linking the modules (nothing is run) ----------
-const pkg = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')); } catch { return {}; } })();
-const declared = new Set(Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies }));
-const BUILTIN = new Set(builtinModules.flatMap(n => [n, `node:${n}`]));
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const pkgNameOf = spec => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
 
 // What each import clause asks for, read with a plain pattern. It is used only to give a non-ES-module target (a CommonJS file, a JSON file,
 // a package) the names that are asked of it: V8 needs a module's export names before it will link to it, and Node itself decides those
@@ -170,10 +200,9 @@ function namesOfClause(clause) {
 const foreignNames = new Map(); // key (an absolute path, a node: name or a package name) -> Set of export names to give it
 const addForeign = (key, names) => { const s = foreignNames.get(key) ?? new Set(['default']); for (const n of names) s.add(n); foreignNames.set(key, s); };
 const keyFor = (from, spec) => {
-  if (BUILTIN.has(spec)) return { type: 'builtin', key: spec.startsWith('node:') ? spec : `node:${spec}` };
+  if (isBuiltin(spec)) return { type: 'builtin', key: spec.startsWith('node:') ? spec : `node:${spec}` };
   if (isRelative(spec)) {
-    const p = toPath(from, spec);
-    return { type: 'file', key: p };
+    return { type: 'file', key: esmPath(from, spec) };
   }
   return { type: 'package', key: pkgNameOf(spec), spec };
 };
@@ -196,14 +225,13 @@ async function realBuiltinNames(key) {
 }
 
 let requestLog = []; // { importer, spec, key } for every link request of the current pass
-let builtinProblems = [];
 async function linker(spec, referencing) {
   const importer = fileURLToPath(referencing.identifier);
   const t = keyFor(importer, spec);
   requestLog.push({ importer, spec, key: t.key, type: t.type });
   if (t.type === 'file') {
     if (esm.has(t.key)) return esm.get(t.key);
-    if (!fileExists(t.key)) {
+    if (!t.key || !fileExists(t.key)) {
       report(rel(importer), null, `import '${spec}' names a file that does not exist`);
       return foreignModule(t.key);
     }
@@ -215,9 +243,7 @@ async function linker(spec, referencing) {
     return foreignModule(t.key);
   }
   // a package
-  const dir = path.join(ROOT, 'node_modules', ...t.key.split('/'));
-  if (!declared.has(t.key)) report(rel(importer), null, `import '${spec}' needs the package "${t.key}", which package.json does not list`);
-  else if (!dirExists(dir)) report(rel(importer), null, `import '${spec}' needs the package "${t.key}", which is not installed (run npm ci)`);
+  checkPackage(importer, spec, `import '${spec}'`);
   return foreignModule(t.key);
 }
 const foreignCache = new Map();
@@ -295,4 +321,4 @@ if (findings.length || stoppedEarly) {
   console.log(`check: ${findings.length} problem${findings.length === 1 ? '' : 's'} in ${files.length} files (${ms} ms).`);
   process.exit(1);
 }
-console.log(`check: ok. ${files.length} files parsed, ${linkedCount} ES modules linked with every named import found (${ms} ms).`);
+console.log(`check: ok. ${files.length} files parsed, ${linkedCount} ES modules linked. Local ES module and Node builtin exports checked (${ms} ms).`);

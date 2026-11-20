@@ -137,9 +137,9 @@ function stopCardFromRecord(record) {
   };
   return STOP_CARD_KINDS.includes(record.lastCarrier) && (card.lastCarrier = record.lastCarrier), typeof record.lastUrl == "string" && ways.some((w) => w.url === record.lastUrl) && (card.lastUrl = record.lastUrl), card;
 }
-var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LIST, APPROVAL_TIMEOUT_MS, GROUP_MAX, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, COMPUTER_RE, ROUTE_RE, UnifiedPushError, STOP_CARD_KINDS, STOP_CARD_MAX_WAYS, STOP_KEY_RE, WAY_URL_RE, init_core = __esm({
+var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUSH_KINDS, PUSH_ACTIONS, AUTH_ACTIONS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LIST, APPROVAL_TIMEOUT_MS, GROUP_MAX, INSTANCE_RE, BASE64URL_RE, BASE64_RE, HTTPS_URL_RE, TAG_RE, COMPUTER_RE, ROUTE_RE, UnifiedPushError, STOP_CARD_KINDS, STOP_CARD_MAX_WAYS, STOP_KEY_RE, WAY_URL_RE, init_core = __esm({
   "mobile/plugins/unifiedpush/src/core.js"() {
-    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test", "clear"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve"]), NOTIFICATION_CHANNELS = Object.freeze({
+    UNIFIEDPUSH_EVENTS = Object.freeze(["endpoint", "registrationFailed", "unregistered", "tempUnavailable", "message"]), FAILED_REASONS = Object.freeze(["INTERNAL_ERROR", "NETWORK", "ACTION_REQUIRED", "VAPID_REQUIRED"]), DEFAULT_INSTANCE = "default", MAX_MESSAGE_BYTES = 256 * 1024, PUSH_KINDS = Object.freeze(["approval", "handover", "finished", "failed", "limit", "needs", "test", "clear"]), PUSH_ACTIONS = Object.freeze(["deny", "stop", "approve", "yes", "no"]), AUTH_ACTIONS = Object.freeze(["approve", "yes"]), NOTIFICATION_CHANNELS = Object.freeze({
       approvals: "plenum-approvals",
       finished: "plenum-finished",
       problems: "plenum-problems",
@@ -149,7 +149,7 @@ var UNIFIEDPUSH_EVENTS, FAILED_REASONS, DEFAULT_INSTANCE, MAX_MESSAGE_BYTES, PUS
       Object.freeze({ id: "plenum-finished", name: "Finished runs", description: "A run or a council finished.", importance: 3 }),
       Object.freeze({ id: "plenum-problems", name: "Problems", description: "A run failed, or something stopped working and needs a look.", importance: 3 }),
       Object.freeze({ id: "plenum-limits", name: "Limits", description: "A plan or spend limit was reached.", importance: 3 })
-    ]), APPROVAL_TIMEOUT_MS = 3600 * 1e3, GROUP_MAX = 64, INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, COMPUTER_RE = /^[0-9a-f]{64}$/, ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/, UnifiedPushError = class extends Error {
+    ]), APPROVAL_TIMEOUT_MS = 3600 * 1e3, GROUP_MAX = 64, INSTANCE_RE = /^[A-Za-z0-9._-]{1,64}$/, BASE64URL_RE = /^[A-Za-z0-9_-]+$/, BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/, HTTPS_URL_RE = /^https:\/\/\S{1,2000}$/, TAG_RE = /^plenum-[0-9a-f]{32}$/, COMPUTER_RE = /^[0-9a-f]{64}$/, ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve|yes|no)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/, UnifiedPushError = class extends Error {
       constructor(code, message) {
         super(message), this.name = "UnifiedPushError", this.code = code;
       }
@@ -2877,13 +2877,20 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
     if (settings = null, !isValidPin(pin)) return { ok: !1, reason: "format" };
     if ((await readSettings()).mode !== "off") return { ok: !1, reason: "mode" };
     let salt = randomBytes(16), dk = await deviceKey(!0), pinKey = dk ? await pinKeyV2(pin, salt, iterations, dk) : derivePinKey(pin, salt, iterations), nonce = randomBytes(12), ct = gcm(pinKey, nonce, VERIFIER_AAD).encrypt(VERIFIER_TEXT), keys = await plainKeys(null);
+    return await store.meta.put("pin", { v: dk ? 2 : 1, salt: b64u.enc(salt), iterations, nonce: b64u.enc(nonce), ct: b64u.enc(ct) }), await writeSettings({ mode: "pin", failures: 0, lockedUntil: 0 }), pinKeyHeld = pinKey, await settleRecords(pinKey), { ok: !0, keys };
+  }
+  async function settleRecords(key, older = null) {
     for (let rec of await store.list()) {
-      let key = keys.get(rec.id);
-      if (!key) continue;
-      let next = { ...rec, myPriv: wrapKey(key, pinKey, rec.id) };
-      await store.put(next);
+      let plain = null;
+      if (typeof rec.myPriv == "string") plain = b64u.dec(rec.myPriv);
+      else if (rec.myPriv && older)
+        try {
+          plain = unwrapKey(rec.myPriv, older, rec.id);
+        } catch {
+          plain = null;
+        }
+      plain && await store.put({ ...rec, myPriv: wrapKey(plain, key, rec.id) });
     }
-    return await store.meta.put("pin", { v: dk ? 2 : 1, salt: b64u.enc(salt), iterations, nonce: b64u.enc(nonce), ct: b64u.enc(ct) }), await writeSettings({ mode: "pin", failures: 0, lockedUntil: 0 }), pinKeyHeld = pinKey, { ok: !0, keys };
   }
   async function unlockPinInner(pin) {
     settings = null;
@@ -2915,14 +2922,12 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
     }
     let held = pinKey;
     if (pinRecord.v !== 2 && subtle && store.kind === "web") {
-      let made = await deviceKey(!0), v2 = await pinKeyV2(pin, salt, pinRecord.iterations, made), keysV1 = await plainKeys(pinKey);
-      for (let rec of await store.list()) {
-        let key = keysV1.get(rec.id);
-        key && await store.put({ ...rec, myPriv: wrapKey(key, v2, rec.id) });
-      }
+      let made = await deviceKey(!0), v2 = await pinKeyV2(pin, salt, pinRecord.iterations, made);
+      await settleRecords(v2, pinKey);
       let nonce = randomBytes(12), ct = gcm(v2, nonce, VERIFIER_AAD).encrypt(VERIFIER_TEXT);
       await store.meta.put("pin", { v: 2, salt: pinRecord.salt, iterations: pinRecord.iterations, nonce: b64u.enc(nonce), ct: b64u.enc(ct) }), held = v2;
-    }
+    } else
+      await settleRecords(held);
     return await writeSettings({ ...s, failures: 0, lockedUntil: 0 }), locked = !1, pinKeyHeld = held, { ok: !0, keys: await plainKeys(held) };
   }
   async function enablePasskeyInner() {
@@ -2951,9 +2956,8 @@ function createLock({ store, now = () => Date.now(), biometric = null, passkey =
         let key = unlocked.keys.get(rec.id);
         key && await store.put({ ...rec, myPriv: b64u.enc(key) });
       }
-      await store.meta.remove("pin"), await store.meta.remove(DEVICE_META);
-    } else s.mode === "passkey" && await store.meta.remove("passkey");
-    return await writeSettings({ mode: "off", failures: 0, lockedUntil: 0 }), locked = !1, pinKeyHeld = null, memory?.clear(), { ok: !0 };
+    }
+    return await writeSettings({ mode: "off", failures: 0, lockedUntil: 0 }), s.mode === "pin" ? (await store.meta.remove("pin"), await store.meta.remove(DEVICE_META)) : s.mode === "passkey" && await store.meta.remove("passkey"), locked = !1, pinKeyHeld = null, memory?.clear(), { ok: !0 };
   }
   return api;
 }
@@ -3213,6 +3217,45 @@ function createStopController({ channel, clock = globalThis, computerName = "" }
   };
 }
 
+// mobile/shell/answer.js
+var ANSWER_PATH = "/api/phone-answer/quick", ANSWER_TEXT = Object.freeze({
+  offline: "Not connected. Open Today to answer it.",
+  failed: "Could not reach your computer. Open Today to answer it.",
+  old: "That notification is more than a minute old. Open Today to answer it."
+}), isAnswerLink = (link) => !!link && (link.kind === "yes" || link.kind === "no") && typeof link.id == "string" && link.id !== "";
+async function answerFromNotification(link, { whenConnected, postJson, say = () => {
+}, emitRoute = () => {
+}, refresh = () => {
+} } = {}) {
+  let kind = link?.kind;
+  if (!isAnswerLink(link)) return { ok: !1, reason: "no link" };
+  let openToday = () => {
+    try {
+      emitRoute({ kind: "today" });
+    } catch {
+    }
+  }, up = !1;
+  try {
+    up = await whenConnected() === !0;
+  } catch {
+    up = !1;
+  }
+  if (!up)
+    return say(ANSWER_TEXT.offline, "warn"), openToday(), refresh(), { ok: !1, reason: "offline", kind };
+  let out = null;
+  try {
+    out = await postJson(ANSWER_PATH, { id: link.id, answer: kind });
+  } catch {
+    out = null;
+  }
+  if (out?.ok === !0) {
+    let said = typeof out.json?.said == "string" ? out.json.said.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200) : "";
+    return say(said || (kind === "yes" ? "Answered: Yes." : "Answered: No."), "ok"), refresh(), { ok: !0, reason: null, kind };
+  }
+  let refused = [400, 403, 409].includes(out?.status) && typeof out.reason == "string" && out.reason && out.reason !== "failed";
+  return say(refused ? out.reason.slice(0, 300) : ANSWER_TEXT.failed, "warn"), openToday(), refresh(), { ok: !1, reason: out?.status === 409 ? "changed" : out?.status === 403 ? "refused" : "failed", kind };
+}
+
 // mobile/shell/debug.js
 var PATTERNS = [
   [/x-plenum-token\s*[:=]\s*\S+/gi, "x-plenum-token: [redacted]"],
@@ -3314,7 +3357,7 @@ function headLink(head) {
   if (PLACES.includes(head)) return { kind: head };
   if (head === "settings=limit") return { kind: "settings", section: "limit" };
   let m = /^(deny|approve|waiting|handover|today)=([A-Za-z0-9_.-]{1,80})$/.exec(head);
-  return m && ID.test(m[2]) ? { kind: m[1], id: m[2] } : (m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(head), m ? { kind: "chat", project: m[1] } : null);
+  return m && ID.test(m[2]) ? { kind: m[1], id: m[2] } : (m = /^(yes|no)=([1-9]\d{0,14}\.[0-9a-f]{32})$/.exec(head), m ? { kind: m[1], id: m[2] } : (m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(head), m ? { kind: "chat", project: m[1] } : null));
 }
 function isRouteLink(link) {
   return !!link && ROUTE_KINDS.includes(link.kind);
@@ -3390,7 +3433,7 @@ function notificationFor(payload) {
       id: a.action,
       title: a.title,
       requiresAuthentication: !0,
-      destructive: a.action !== "approve",
+      destructive: a.action !== "approve" && a.action !== "yes",
       foreground: !1
     })),
     extra: { tap: payload.tap, routes, line: payload.firstLine ?? "", computer: payload.ids?.computer ?? "", tag: payload.tag }
@@ -3986,7 +4029,7 @@ function rewriteIndex(html, ctx = {}) {
 }
 
 // mobile/shell/ui-loader.js
-var CACHE_PREFIX = "plenum-ui-", ACTIVE_CACHE = "plenum-ui-active", ACTIVE_PATH = "/__plenum/active.json", SHA_HEADER = "x-plenum-sha256", SIZE_HEADER = "x-plenum-size", MAX_FILE_BYTES = 16 * 1024 * 1024, MAX_MANIFEST_BYTES = 1024 * 1024, BOOT_FILE = "shell/boot.js", SHELL_FILES = Object.freeze([BOOT_FILE, "shell/shell.js", "shell/channel.worker.js", "shell/styles.css"]), VERSION_FILE = "version.json", utf82 = new TextEncoder(), utf8Decode = new TextDecoder(), HEX64 = /^[0-9a-f]{64}$/, UiError = class extends Error {
+var CACHE_PREFIX = "plenum-ui-", SECOND_SLOT = "-b", ACTIVE_CACHE = "plenum-ui-active", ACTIVE_PATH = "/__plenum/active.json", SHA_HEADER = "x-plenum-sha256", SIZE_HEADER = "x-plenum-size", MAX_FILE_BYTES = 16 * 1024 * 1024, MAX_MANIFEST_BYTES = 1024 * 1024, BOOT_FILE = "shell/boot.js", SHELL_FILES = Object.freeze([BOOT_FILE, "shell/shell.js", "shell/channel.worker.js", "shell/styles.css"]), VERSION_FILE = "version.json", utf82 = new TextEncoder(), utf8Decode = new TextDecoder(), HEX64 = /^[0-9a-f]{64}$/, UiError = class extends Error {
   constructor(code, message) {
     super(message ?? code), this.name = "UiError", this.code = code;
   }
@@ -4003,6 +4046,26 @@ function verifyBytes(bytes, entry) {
   if (bytes.byteLength !== entry.size) throw new UiError("size", `${entry.path} is ${bytes.byteLength} bytes, not ${entry.size}`);
   if (sha256Hex(bytes) !== entry.sha256) throw new UiError("verify", `${entry.path} does not match the manifest`);
   return !0;
+}
+var THEMED_HTML = /<html lang="en"((?: data-theme="(?:dark|light)")?(?: data-legal="pending")?)>/;
+function unthemedIndex(bytes) {
+  let text = utf8Decode.decode(bytes), m = THEMED_HTML.exec(text);
+  return !m || !m[1] ? null : utf82.encode(`${text.slice(0, m.index)}<html lang="en">${text.slice(m.index + m[0].length)}`);
+}
+function verifiedCopy(bytes, entry) {
+  try {
+    return verifyBytes(bytes, entry), bytes;
+  } catch (err) {
+    if (entry.path !== "/") throw err;
+    let plain = unthemedIndex(bytes);
+    if (!plain) throw err;
+    try {
+      verifyBytes(plain, entry);
+    } catch {
+      throw err;
+    }
+    return plain;
+  }
 }
 function checkManifest(value) {
   let bad = (why) => new UiError("manifest", `The computer sent a damaged UI manifest (${why}).`);
@@ -4115,8 +4178,33 @@ async function bundledShellSha(readBundled) {
     return null;
   }
 }
+var BUNDLED_NOTE = "bundled.json";
 function androidStorage({ files, webView, root = "plenum-ui" }) {
-  let base = (name) => `${root}/${name}`, slotOn = (name) => ({
+  let base = (name) => `${root}/${name}`, notePath = `${root}/${BUNDLED_NOTE}`;
+  async function readNote() {
+    try {
+      let bytes = await files.read(notePath), value = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
+      return !value || typeof value != "object" || !Number.isFinite(value.at) ? null : {
+        computerId: computerOf(value.computerId),
+        at: value.at,
+        cause: typeof value.cause == "string" ? value.cause.slice(0, 20) : null,
+        desktopVersion: typeof value.desktopVersion == "string" ? value.desktopVersion.slice(0, 40) : null,
+        appVersion: typeof value.appVersion == "string" ? value.appVersion.slice(0, 40) : null
+      };
+    } catch {
+      return null;
+    }
+  }
+  async function writeNote(note) {
+    await files.write(notePath, utf82.encode(JSON.stringify(note)));
+  }
+  async function clearNote() {
+    try {
+      typeof files.remove == "function" ? await files.remove(notePath) : await files.write(notePath, utf82.encode("null"));
+    } catch {
+    }
+  }
+  let slotOn = (name) => ({
     async get(path) {
       let bytes = await files.read(`${base(name)}/${fileNameFor(path)}`);
       return bytes ? { bytes, sha256: null, size: bytes.byteLength } : null;
@@ -4130,7 +4218,7 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
     if (!index) throw new UiError("storage", "The index is missing.");
     for (let file of await bundledShellFiles(readBundled)) await files.write(`${dir}/${fileNameFor(file.path)}`, file.bytes);
     let html = rewriteIndex(utf8Decode.decode(index), { shellBase });
-    await files.write(`${dir}/index.html`, utf82.encode(html)), await beforeServe?.(), await webView?.persistServerBasePath({ path: dir }), await webView?.setServerBasePath({ path: dir });
+    await files.write(`${dir}/index.html`, utf82.encode(html)), await clearNote(), await beforeServe?.(), await webView?.persistServerBasePath({ path: dir }), await webView?.setServerBasePath({ path: dir });
   }
   async function readActive() {
     let bytes = await files.read(`${root}/active.json`), record = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
@@ -4138,6 +4226,14 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
   }
   async function writeActive(record) {
     await files.write(`${root}/active.json`, utf82.encode(JSON.stringify(record)));
+  }
+  async function servedFolder() {
+    if (typeof webView?.getServerBasePath != "function") return { known: !0, path: null };
+    try {
+      return { known: !0, path: String((await webView.getServerBasePath())?.path ?? "").replace(/\/+$/, "") };
+    } catch {
+      return { known: !1, path: null };
+    }
   }
   async function activateWithShell(record, opts = {}) {
     let shellSha256 = await bundledShellSha(opts.readBundled);
@@ -4151,11 +4247,11 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
   return {
     readActive,
     writeActive,
+    readNote,
+    writeNote,
+    clearNote,
     async openSlot(name) {
       return slotOn(name);
-    },
-    async dropSlot(name) {
-      await files.removeDir(base(name));
     },
     activate,
     // "Use the copy in this app" (ui-host.js useCopy): the copy on the phone is served again, with this app's shell files.
@@ -4173,10 +4269,27 @@ function androidStorage({ files, webView, root = "plenum-ui" }) {
       }
       return await activateWithShell(record, opts), !0;
     },
+    // w7r (review): the pull of a half-filled slot drops it, and that is never the folder the WebView serves either (nor any folder when the
+    // WebView cannot say which it serves: the next clean-up removes a leftover).
+    async dropSlot(name) {
+      let served = await servedFolder();
+      !served.known || base(name) === served.path || await files.removeDir(base(name));
+    },
+    // w7 (follow-up): never the folder the WebView serves. A copy staged on a page that runs an older copy (ui-host.js refreshStaged) leaves
+    // that page's folder in place until the page has moved; the next clean-up removes it. A WebView that cannot say which folder it serves
+    // keeps every folder this time (a folder too many costs space; a folder removed under the page breaks it).
     async dropSlotsExcept(name) {
+      let served = await servedFolder();
+      if (!served.known) return;
       let dirs = await files.listDirs?.(root) ?? [];
       for (let dir of dirs)
-        dir !== name && dir.startsWith(CACHE_PREFIX) && await files.removeDir(base(dir));
+        dir !== name && dir.startsWith(CACHE_PREFIX) && base(dir) !== served.path && await files.removeDir(base(dir));
+    },
+    // w7r (review): true when the WebView serves this slot's folder, false when it serves another (or there is no WebView to ask), null when
+    // it cannot say. The loader then pulls into a second folder (see pull).
+    async servesSlot(name) {
+      let served = await servedFolder();
+      return served.known ? base(name) === served.path : null;
     }
   };
 }
@@ -4207,27 +4320,29 @@ function createUiLoader({
     }
     return checkManifest(value);
   }
-  async function alreadyCurrent(prev, loadedHash, computerId = null) {
+  async function alreadyCurrent(prev, loadedHash, computerId = null, activate = !0) {
     let reload = shouldReload({ loadedHash, nextHash: prev.hash, reloadedFor: prev.reloadedFor ?? null }), owner = computerOf(computerId), moved = computerOf(prev.computerId) !== owner, record = prev;
-    (reload || moved) && (record = { ...prev, computerId: owner, ...reload ? { reloadedFor: prev.hash } : {} }, await storage.writeActive(record));
-    try {
-      await storage.ensureActive?.(record, { readBundled, shellBase });
-    } catch (err) {
-      log(`ui: ${err.code ?? "error"}`);
-    }
-    return { status: "current", hash: prev.hash, generation: prev.generation, changed: [], reload, record };
+    if ((reload || moved) && (record = { ...prev, computerId: owner, ...reload ? { reloadedFor: prev.hash } : {} }, await storage.writeActive(record)), activate)
+      try {
+        await storage.ensureActive?.(record, { readBundled, shellBase });
+      } catch (err) {
+        log(`ui: ${err.code ?? "error"}`);
+      }
+    return { status: "current", hash: prev.hash, generation: prev.generation, changed: [], reload, record, staged: !activate };
   }
-  async function pull({ loadedHash = null, computerId = null } = {}) {
+  async function pull({ loadedHash = null, computerId = null, activate = !0 } = {}) {
     if (platform === "ios") throw new UiError("refused", "iOS runs the bundled UI; desktop files are refused.");
     let next = await fetchManifest(), prev = await storage.readActive();
-    if (prev && prev.hash === next.hash && prev.complete) return alreadyCurrent(prev, loadedHash, computerId);
-    let cacheName = cacheNameFor(next), slot = await storage.openSlot(cacheName), previousSlot = prev && prev.cacheName !== cacheName ? await storage.openSlot(prev.cacheName) : null, diff = diffFiles(prev?.files ?? null, next, () => previousSlot !== null), changed = [];
+    if (prev && prev.hash === next.hash && prev.complete) return alreadyCurrent(prev, loadedHash, computerId, activate);
+    let cacheName = cacheNameFor(next);
+    await storage.servesSlot?.(cacheName) === !0 && (cacheName = `${cacheName}${SECOND_SLOT}`);
+    let slot = await storage.openSlot(cacheName), previousSlot = prev && prev.cacheName !== cacheName ? await storage.openSlot(prev.cacheName) : null, diff = diffFiles(prev?.files ?? null, next, () => previousSlot !== null), changed = [];
     try {
       for (let entry of diff.changed) {
         let have = await slot.get(entry.path);
         if (have && have.size === entry.size && sha256Hex(have.bytes) === entry.sha256) continue;
         let bytes = await fetchFile(entry.path, MAX_FILE_BYTES);
-        verifyBytes(bytes, entry), await slot.put(entry.path, bytes, entry), changed.push(entry.path);
+        await slot.put(entry.path, verifiedCopy(bytes, entry), entry), changed.push(entry.path);
       }
       for (let path of diff.reused) {
         let old = await previousSlot.get(path), entry = next.files.find((f) => f.path === path);
@@ -4235,7 +4350,7 @@ function createUiLoader({
           await slot.put(path, old.bytes, entry);
         else {
           let bytes = await fetchFile(path, MAX_FILE_BYTES);
-          verifyBytes(bytes, entry), await slot.put(path, bytes, entry), changed.push(path);
+          await slot.put(path, verifiedCopy(bytes, entry), entry), changed.push(path);
         }
       }
       let shellFiles = await bundledShellFiles(readBundled);
@@ -4264,25 +4379,58 @@ function createUiLoader({
       computerId: computerOf(computerId),
       shellSha256
     };
-    return await storage.writeActive(record), await storage.activate?.(record, { readBundled, shellBase }), await storage.dropSlotsExcept(cacheName), { status: "updated", hash: next.hash, generation: next.generation, changed, reload, record };
+    return await storage.writeActive(record), activate && await storage.activate?.(record, { readBundled, shellBase }), await storage.dropSlotsExcept(cacheName), { status: "updated", hash: next.hash, generation: next.generation, changed, reload, record, staged: !activate };
   }
   return {
     pull,
     // The HELLO's uiManifestHash decides whether anything needs fetching: equal hashes need no manifest request at all.
-    async check({ helloHash = null, loadedHash = null, computerId = null } = {}) {
+    async check({ helloHash = null, loadedHash = null, computerId = null, activate = !0 } = {}) {
       if (platform === "ios") throw new UiError("refused", "iOS runs the bundled UI; desktop files are refused.");
       let prev = await storage.readActive();
-      return prev && prev.complete && helloHash && prev.hash === helloHash ? alreadyCurrent(prev, loadedHash, computerId) : pull({ loadedHash, computerId });
+      return prev && prev.complete && helloHash && prev.hash === helloHash ? alreadyCurrent(prev, loadedHash, computerId, activate) : pull({ loadedHash, computerId, activate });
     },
     current: () => storage.readActive()
   };
 }
 
 // mobile/shell/ui-host.js
-var SHELL_QUERY = "shell", SHELL_PAGE_KEY = "plenum-shell-page", SHELL_BASE_KEY = "plenum-shell-base", SHELL_LINK_KEY = "plenum-shell-link", UI_ROOT = "plenum-ui", BUNDLED_UI_FOLDER = "ui", SW_WAIT_MS = 4e3, DATA = "DATA";
+var SHELL_QUERY = "shell", SHELL_PAGE_KEY = "plenum-shell-page", SHELL_BASE_KEY = "plenum-shell-base", SHELL_LINK_KEY = "plenum-shell-link", UI_ROOT = "plenum-ui", BUNDLED_UI_FOLDER = "ui", SHELL_ASSET = "public", BUNDLED_UI_ASSET = `public/${BUNDLED_UI_FOLDER}`, SW_WAIT_MS = 4e3, DATA = "DATA";
 function causeOf(error) {
   let code = error?.code ?? "";
-  return code === "worker" ? "worker" : code === "fetch" ? "not-sent" : code === "cancelled" || code === "closed" || code === "stopped" || code === "offline" ? "stopped" : "checksum";
+  return code === "worker" ? "worker" : code === "version" ? "version" : code === "fetch" ? "not-sent" : code === "cancelled" || code === "closed" || code === "stopped" || code === "offline" || code === "lost" ? "stopped" : "checksum";
+}
+function failLine(error) {
+  let code = error?.code ?? "error";
+  return error instanceof UiError && error.message && error.message !== code ? `ui: ${code} (${String(error.message).slice(0, 160)})` : `ui: ${code}`;
+}
+function releaseOf(value) {
+  let m = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-([0-9A-Za-z.-]{1,40}))?(?:\+[0-9A-Za-z.-]{0,40})?$/.exec(String(value ?? "").trim());
+  if (!m) return null;
+  let parts = [Number(m[1]), Number(m[2]), Number(m[3])], pre = m[4] ?? "";
+  return { text: `${parts.join(".")}${pre ? `-${pre}` : ""}`, parts, pre };
+}
+function compareRelease(a, b) {
+  for (let i = 0; i < 3; i++) if (a.parts[i] !== b.parts[i]) return a.parts[i] - b.parts[i];
+  return a.pre === b.pre ? 0 : a.pre ? b.pre ? a.pre < b.pre ? -1 : 1 : -1 : 1;
+}
+function bundledFit(bundled, hello) {
+  let app = releaseOf(bundled?.version), desktop = releaseOf(hello?.desktopVersion), out = (fits, why, update = null) => ({ fits, why, app: app?.text ?? null, desktop: desktop?.text ?? null, update }), majorText = String(bundled?.protocol ?? "").split(".")[0], major = /^\d{1,4}$/.test(majorText) ? Number(majorText) : null;
+  if (!app || major === null) return out(!1, "unknown");
+  if (hello?.protocol?.major !== major) return out(!1, "protocol");
+  if (!desktop) return out(!1, "unknown");
+  let order = compareRelease(desktop, app);
+  return order === 0 ? out(!0, null) : out(!1, "version", order < 0 ? "desktop" : "app");
+}
+async function readBundledVersion(readBundled) {
+  if (!readBundled) return null;
+  try {
+    let bytes = await readBundled(VERSION_FILE);
+    if (!bytes || !bytes.byteLength || bytes.byteLength > 64 * 1024) return null;
+    let value = JSON.parse(new TextDecoder().decode(bytes));
+    return !value || typeof value != "object" ? null : { version: String(value.version ?? "").slice(0, 40), protocol: String(value.protocol ?? "").slice(0, 10) };
+  } catch {
+    return null;
+  }
 }
 function toBase64(bytes) {
   let text = "";
@@ -4311,6 +4459,13 @@ function filesOver(filesystem) {
     async removeDir(rel) {
       try {
         await filesystem.rmdir({ path: rel, directory: DATA, recursive: !0 });
+      } catch {
+      }
+    },
+    // w7: one file (the built-in screens' note). A Filesystem without deleteFile gets the file written as null, which reads as no note.
+    async remove(rel) {
+      try {
+        typeof filesystem.deleteFile == "function" ? await filesystem.deleteFile({ path: rel, directory: DATA }) : await filesystem.writeFile({ path: rel, data: toBase64(new TextEncoder().encode("null")), directory: DATA, recursive: !0 });
       } catch {
       }
     },
@@ -4350,6 +4505,16 @@ function bundledReader(fetchImpl, base) {
     let name = String(rel).replace(/^shell\//, "");
     try {
       let res = await fetchImpl(new URL(name, base).href, { cache: "no-store" });
+      return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+    } catch {
+      return null;
+    }
+  };
+}
+function bundledUiReader(fetchImpl, base) {
+  return async (rel) => {
+    try {
+      let res = await fetchImpl(new URL(String(rel), base).href, { cache: "no-store" });
       return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
     } catch {
       return null;
@@ -4424,12 +4589,52 @@ function createUiHost({
       return null;
     }
   }
+  async function onBundledPage() {
+    if (kind !== "android" || typeof native?.WebView?.getServerBasePath != "function") return !1;
+    try {
+      let here = await native.WebView.getServerBasePath();
+      return String(here?.path ?? "").replace(/^\/+|\/+$/g, "") === BUNDLED_UI_ASSET;
+    } catch {
+      return !1;
+    }
+  }
+  function readerFor(bundledPage) {
+    return (bundledPage ? bundledUiReader : bundledReader)(env.fetch.bind(env), location().href);
+  }
+  async function openBundled({ hello, computerId, error }) {
+    let failed = (cause2 = causeOf(error), extra = {}) => ({ ok: !1, cause: cause2, code: error?.code ?? "error", ...extra }), webView = native?.WebView;
+    if (typeof webView?.setServerAssetPath != "function") return failed();
+    let fit = bundledFit(await readBundledVersion(readerFor(!1)), hello);
+    if (!fit.fits)
+      return log(`ui: built-in screens do not fit (${fit.why}${fit.app ? ` ${fit.app}` : ""}${fit.desktop ? ` vs ${fit.desktop}` : ""})`), fit.why === "version" ? failed("version", { versions: { app: fit.app, desktop: fit.desktop, update: fit.update } }) : failed();
+    let cause = causeOf(error);
+    try {
+      await androidStore().writeNote({ computerId: typeof computerId == "string" ? computerId : null, at: Date.now(), cause, desktopVersion: fit.desktop, appVersion: fit.app });
+    } catch {
+    }
+    try {
+      let set = webView.setServerAssetPath({ path: BUNDLED_UI_ASSET }), keep = webView.persistServerBasePath?.();
+      await Promise.all([set, keep]);
+    } catch (err) {
+      return log(`ui: built-in screens did not open (${err?.code ?? "error"})`), failed();
+    }
+    return log(`ui: using the built-in screens (${cause})`), { ok: !0, status: "bundled", navigated: !0, cause, code: error?.code ?? "error" };
+  }
+  async function refreshStaged({ hello, computerId, mayMove, reason, bundledPage }) {
+    let channel = channelOf();
+    if (!channel) throw new UiError("offline", "The phone is not connected.");
+    let storage = androidStore(), readBundled = readerFor(bundledPage), result = await loaderFactory({ channel, storage, platform: "android", shellBase: "/shell/", readBundled }).check({ helloHash: hello?.uiManifestHash || null, loadedHash: null, computerId, activate: !1 }), page = (moved2) => bundledPage ? { bundled: !moved2 } : {};
+    if (!(result?.status === "current" && result.record?.complete === !0) || !mayMove || reason === "resume") return { ok: !0, changed: !1, reload: !1, ...page(!1), staged: result?.record?.complete === !0 };
+    let moved = await storage.ensureActive(result.record, { readBundled, shellBase: "/shell/" });
+    return moved ? log(bundledPage ? "ui: moved from the built-in screens to the computer's copy" : "ui: moved to the newer copy from the computer") : bundledPage || await storage.dropSlotsExcept(result.record.cacheName).catch(() => {
+    }), { ok: !0, changed: moved, reload: !1, ...page(moved), staged: !0, switched: moved };
+  }
   function buildLoader() {
     let channel = channelOf();
     if (!channel) throw new UiError("offline", "The phone is not connected.");
     if (kind === "android") {
-      let storage = androidStore(), base = location().href;
-      return loaderFactory({ channel, storage, platform: "android", shellBase: "/shell/", readBundled: bundledReader(env.fetch.bind(env), base) });
+      let storage = androidStore();
+      return loaderFactory({ channel, storage, platform: "android", shellBase: "/shell/", readBundled: readerFor(!1) });
     }
     if (!env.caches) throw new UiError("worker", "This browser cannot keep Plenum's screens.");
     return loaderFactory({ channel, storage: webStorage(env.caches), platform: "web", shellBase: "/shell/" });
@@ -4480,31 +4685,66 @@ function createUiHost({
           if (!base) throw new UiError("storage", "The bundled screens are not where the app expects them.");
           return remember(SHELL_BASE_KEY, base), await webView.setServerBasePath({ path: `${base}/${BUNDLED_UI_FOLDER}` }), { ok: !0, status: "bundled", navigated: !0 };
         }
+        if (kind === "android") {
+          let result2;
+          try {
+            result2 = await buildLoader().check({ helloHash: hello?.uiManifestHash ?? null, loadedHash, computerId });
+          } catch (error) {
+            return log(failLine(error)), await openBundled({ hello, computerId, error });
+          }
+          return onProgress({ done: 1, total: 1 }), { ok: !0, status: result2.status, navigated: !0, reload: result2.reload };
+        }
         let result = await buildLoader().check({ helloHash: hello?.uiManifestHash ?? null, loadedHash, computerId });
-        if (onProgress({ done: 1, total: 1 }), kind === "android")
-          return { ok: !0, status: result.status, navigated: !0, reload: result.reload };
-        if (!await workerControls()) throw new UiError("worker", "No service worker controls this page.");
+        if (onProgress({ done: 1, total: 1 }), !await workerControls()) throw new UiError("worker", "No service worker controls this page.");
         return this.rememberShellPage(), location().replace("/"), { ok: !0, status: result.status, navigated: !0, reload: result.reload };
       } catch (error) {
-        return log(`ui: ${error?.code ?? "error"}`), { ok: !1, cause: causeOf(error), code: error?.code ?? "error" };
+        return log(failLine(error)), { ok: !1, cause: causeOf(error), code: error?.code ?? "error" };
       }
     },
     // On the UI page: asks whether the computer has a newer UI. { ok, changed, reload }. The page reloads once per new UI (the loader's
     // shouldReload keeps the count), and the caller does the reload.
-    async refresh({ hello, loadedHash = null, computerId = null } = {}) {
+    // w7: reason is 'hello' (a HELLO arrived) or 'resume' (the app came back); mayMove (app.js uiMayMove) says nothing is running. On every
+    // Android UI page this stages the computer's copy and moves to it only as refreshStaged says (the built-in page also stages on a resume;
+    // a page that runs a copy from the computer asks for nothing then, as the web page does: the HELLO already did).
+    async refresh({ hello, loadedHash = null, computerId = null, mayMove = !1, reason = "hello" } = {}) {
       if (kind === "lan" || kind === "ios") return { ok: !0, changed: !1, reload: !1 };
       try {
+        if (await onBundledPage()) return await refreshStaged({ hello, computerId, mayMove: mayMove === !0, reason, bundledPage: !0 });
+        if (reason === "resume") return { ok: !0, changed: !1, reload: !1 };
+        if (kind === "android") return await refreshStaged({ hello, computerId, mayMove: mayMove === !0, reason, bundledPage: !1 });
         let result = await buildLoader().check({ helloHash: hello?.uiManifestHash ?? null, loadedHash, computerId });
         return { ok: !0, changed: result.status === "updated", reload: result.reload === !0 };
       } catch (error) {
-        return log(`ui: ${error?.code ?? "error"}`), { ok: !1, changed: !1, reload: !1, cause: causeOf(error) };
+        return log(failLine(error)), { ok: !1, changed: !1, reload: !1, cause: causeOf(error) };
+      }
+    },
+    // w7: which screens this phone uses for its computer, for Phone settings and About (Android only; elsewhere null):
+    //   { kind: 'bundled', computerId, cause }   the built-in screens, opened because that computer could not send its own (the note)
+    //   { kind: 'computer', computerId, files }  a complete copy from that computer, every file checked against its manifest
+    async uiSource() {
+      if (kind !== "android") return null;
+      try {
+        let storage = androidStore(), note = await storage.readNote();
+        if (note) return { kind: "bundled", computerId: note.computerId, cause: note.cause };
+        let record = await storage.readActive();
+        return record?.complete === !0 && Array.isArray(record.files) ? { kind: "computer", computerId: record.computerId ?? null, files: record.files.length } : null;
+      } catch {
+        return null;
       }
     },
     // Which computer the UI on this page came from (one UI per computer): the active record's computerId on web and Android (null when it is not
     // known: no record, or one written before the id was kept), and 'any' where the page cannot tell and the computer serves it (the LAN page, the
     // iPhone's bundled copy).
+    // w7: the Android page on the built-in screens answers the computer its note names (it was checked against that one), or 'any' without a
+    // note, so it never sends the person round through the shell page again for the same computer.
     async uiComputerId() {
       if (kind === "lan" || kind === "ios") return "any";
+      if (await onBundledPage())
+        try {
+          return (await androidStore().readNote())?.computerId ?? "any";
+        } catch {
+          return "any";
+        }
       try {
         let storage = kind === "android" ? androidStore() : env.caches ? webStorage(env.caches) : null, record = storage ? await storage.readActive() : null;
         return typeof record?.computerId == "string" && record.computerId ? record.computerId : null;
@@ -4536,7 +4776,7 @@ function createUiHost({
           if (!copy) throw new UiError("storage", "There is no copy of the screens on this phone.");
           return await copy.storage.activateCopy(copy.record, { readBundled: bundledReader(env.fetch.bind(env), location().href), shellBase: "/shell/" }), { ok: !0, status: "copy", navigated: !0 };
         } catch (error) {
-          return log(`ui: ${error?.code ?? "error"}`), { ok: !1, cause: causeOf(error), code: error?.code ?? "error" };
+          return log(failLine(error)), { ok: !1, cause: causeOf(error), code: error?.code ?? "error" };
         }
       return kind === "web" && await this.loadedHash() !== null && await workerControls() ? (this.rememberShellPage(), location().replace("/"), { ok: !0, status: "copy", navigated: !0 }) : { ok: !1, cause: "worker", code: "worker" };
     },
@@ -4566,7 +4806,7 @@ function createUiHost({
       let webView = native?.WebView;
       if (!webView)
         return await unpark(), !1;
-      let base = kind === "android" ? null : recall(SHELL_BASE_KEY), switchPage = kind === "android" ? webView.setServerAssetPath ? () => webView.setServerAssetPath({ path: "public" }) : null : base && webView.setServerBasePath ? () => webView.setServerBasePath({ path: base }) : null;
+      let base = kind === "android" ? null : recall(SHELL_BASE_KEY), switchPage = kind === "android" ? webView.setServerAssetPath ? () => webView.setServerAssetPath({ path: SHELL_ASSET }) : null : base && webView.setServerBasePath ? () => webView.setServerBasePath({ path: base }) : null;
       if (!switchPage)
         return await unpark(), !1;
       text && await linkStore?.put(text);
@@ -4874,6 +5114,12 @@ function makeFacade(shell, plugins) {
     plugin: (name) => name === "SystemBars" ? bars : FACADE_PLUGINS.includes(name) ? plugins?.[name] ?? null : null
   });
 }
+function uiMayMove(hello, stopState = "idle") {
+  let pending = hello?.pending;
+  if (!pending || typeof pending != "object") return !1;
+  let running = Number(pending.running ?? pending.runs);
+  return !Number.isFinite(running) || running !== 0 ? !1 : stopState !== "sending" && stopState !== "queued";
+}
 function createLinkStore(meta, now = () => Date.now()) {
   return {
     async put(text) {
@@ -4940,7 +5186,8 @@ function demoHello(replayView) {
     caps: ["demo"],
     pending: {
       approvals: waiting,
-      runs: running,
+      running,
+      // the computer's name for the count (lib/remote/index.mjs pendingNow)
       driving: drive ? { app: drive.app, step: drive.step, of: drive.of } : null
     },
     minShell: null
@@ -5165,7 +5412,7 @@ function createShell({
   let computers = [], activeId = null, channel = null, channelState = { status: "idle", carrier: null, desktopName: "", lastSeen: null, since: 0, nextRetryAt: null, failedRounds: 0, failure: null }, hello = null, stopCtl = null, stopView = { state: "idle", ack: null, error: null, text: "", seq: 0 }, notice = null, noticeSeq = 0, stopSeq = 0, pendingLink = null, pendingPair = null, forceUi = !1, screenRequest = null, screenSeq = 0, pairing = null, pairingFlow = null, lockStatus = { mode: "off", locked: !1, failures: 0, waitSec: 0 }, lockStop = { ready: !1, computerName: "" }, lockedCtl = null, lockedFor = null, selftest = null, booted = !1, lockKnown = () => {
   }, lockRead = new Promise((resolve) => {
     lockKnown = resolve;
-  }), lockUnreadable = !1, loaded = !1, started = !1, prefs = normalisePrefs(null), pushKnown = null, approveStored = !1, hiddenAt = null, updateAskedBy = null, pairedSeq = 0, pairedId = null, ui = { state: "idle", cause: null, progress: null, hasCopy: !1 }, loadedUiHash, refreshingUi = !1, holdUi = !1, leaving = !1, intent = initialIntent && typeof initialIntent == "object" ? { ...initialIntent, seq: 1, taken: !1 } : null, intentSeq = intent ? 1 : 0, dictationState = null, androidPushState = null, pushLastAt = null, pushRepaired = !1, fixWaiting = null, lastEnableReason = null, notifySetup = null, notifySeq = 0, rechecking = !1, tab = null, claimHere = [], replay = mode === "demo" ? createReplay(session_default) : null, unlockedKeys = /* @__PURE__ */ new Map(), subs = /* @__PURE__ */ new Set(), wall = () => typeof stopClock?.now == "function" ? stopClock.now() : Date.now(), parked = parkedStop ?? createParkedStop(store.meta, wall), stopPressedAt = null, stopComputer = "";
+  }), lockUnreadable = !1, loaded = !1, started = !1, prefs = normalisePrefs(null), pushKnown = null, approveStored = !1, hiddenAt = null, updateAskedBy = null, pairedSeq = 0, pairedId = null, ui = { state: "idle", cause: null, progress: null, hasCopy: !1 }, uiSource = null, loadedUiHash, refreshingUi = !1, holdUi = !1, leaving = !1, intent = initialIntent && typeof initialIntent == "object" ? { ...initialIntent, seq: 1, taken: !1 } : null, intentSeq = intent ? 1 : 0, dictationState = null, androidPushState = null, pushLastAt = null, pushRepaired = !1, fixWaiting = null, lastEnableReason = null, notifySetup = null, notifySeq = 0, rechecking = !1, tab = null, claimHere = [], replay = mode === "demo" ? createReplay(session_default) : null, unlockedKeys = /* @__PURE__ */ new Map(), subs = /* @__PURE__ */ new Set(), wall = () => typeof stopClock?.now == "function" ? stopClock.now() : Date.now(), parked = parkedStop ?? createParkedStop(store.meta, wall), stopPressedAt = null, stopComputer = "";
   function notePress(id) {
     stopView.state === "sending" || stopView.state === "queued" || (stopPressedAt = wall(), stopComputer = id ?? "");
   }
@@ -5253,7 +5500,7 @@ function createShell({
     demo: replay ? replay.view() : null,
     paired: { seq: pairedSeq, id: pairedId },
     notice: notice ? { ...notice } : null,
-    ui: { ...ui, kind: uiHost?.kind ?? null },
+    ui: { ...ui, kind: uiHost?.kind ?? null, source: uiSource ? { ...uiSource } : null },
     intent: intent ? { ...intent } : null,
     screenRequest: screenRequest ? { ...screenRequest } : null,
     dictation: dictationState ? { ...dictationState } : null,
@@ -5486,7 +5733,7 @@ function createShell({
     let link = pendingLink;
     if (!link) return null;
     let parsed = parseNotificationHash(link.text);
-    return lockStatus.locked || lockUnreadable ? parsed?.kind !== "stop" ? null : (pendingLink = null, api.stop(null, link.computer ?? parsed.computer ?? "")) : (pendingLink = null, (parsed?.kind === "approve" || parsed?.kind === "deny") && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS ? (say(NOTIFICATION_OLD, "warn"), emitRoute({ kind: "waiting", id: parsed.id }), await clearNotification(parsed, link.computer ?? parsed.computer ?? ""), { ok: !1, reason: "expired", kind: parsed.kind }) : api.handleHash(link.text, link.computer ?? ""));
+    return lockStatus.locked || lockUnreadable ? parsed?.kind !== "stop" ? null : (pendingLink = null, api.stop(null, link.computer ?? parsed.computer ?? "")) : (pendingLink = null, (parsed?.kind === "approve" || parsed?.kind === "deny") && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS ? (say(NOTIFICATION_OLD, "warn"), emitRoute({ kind: "waiting", id: parsed.id }), await clearNotification(parsed, link.computer ?? parsed.computer ?? ""), { ok: !1, reason: "expired", kind: parsed.kind }) : isAnswerLink(parsed) && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS ? (say(ANSWER_TEXT.old, "warn"), emitRoute({ kind: "today" }), await clearNotification(parsed, link.computer ?? parsed.computer ?? ""), { ok: !1, reason: "expired", kind: parsed.kind }) : api.handleHash(link.text, link.computer ?? ""));
   }
   async function retryApproveOff() {
     replay || await store.meta.get(APPROVE_OFF_META).catch(() => null) !== !0 || !(await postJson("/api/phones/push", { approveFromNotifications: !1 })).ok || (await keepApprove(!1), await store.meta.remove(APPROVE_OFF_META).catch(() => {
@@ -5631,7 +5878,7 @@ function createShell({
   function afterHello() {
     if (!(!uiHost || replay || mode !== "normal")) {
       if (pageKind === "ui") {
-        refreshUi();
+        refreshUi({ reason: "hello", mayMove: uiMayMove(hello, stopCtl?.state ?? "idle") });
         return;
       }
       if (!(lockStatus.locked || holdUi)) {
@@ -5656,14 +5903,26 @@ function createShell({
         ui = { ...ui, progress }, refresh();
       }
     });
-    return out.ok ? ui = { ...ui, state: "navigating", progress: { done: 1, total: 1 } } : ui = { state: "failed", cause: out.cause ?? "checksum", progress: null, hasCopy: await uiHost.hasCopy().catch(() => !1) }, refresh(), { ok: out.ok, reason: out.ok ? null : out.cause };
+    return out.ok ? ui = { ...ui, state: "navigating", progress: { done: 1, total: 1 } } : ui = {
+      state: "failed",
+      cause: out.cause ?? "checksum",
+      progress: null,
+      hasCopy: await uiHost.hasCopy().catch(() => !1),
+      versions: out.versions && typeof out.versions == "object" ? { app: out.versions.app ?? null, desktop: out.versions.desktop ?? null, update: out.versions.update ?? null } : null
+    }, refresh(), loadUiSource(), { ok: out.ok, reason: out.ok ? null : out.cause };
   }
-  async function refreshUi() {
+  function loadUiSource() {
+    typeof uiHost?.uiSource == "function" && Promise.resolve(uiHost.uiSource()).then((source) => {
+      uiSource = source && typeof source == "object" ? { ...source } : null, refresh();
+    }, () => {
+    });
+  }
+  async function refreshUi({ reason = "hello", mayMove = !1 } = {}) {
     if (!(!uiHost || refreshingUi)) {
       refreshingUi = !0;
       try {
         loadedUiHash === void 0 && (loadedUiHash = await uiHost.loadedHash());
-        let out = await uiHost.refresh({ hello, loadedHash: loadedUiHash, computerId: activeId });
+        let out = await uiHost.refresh({ hello, loadedHash: loadedUiHash, computerId: activeId, reason, mayMove: mayMove === !0 });
         out.ok && out.reload && onReload();
       } finally {
         refreshingUi = !1;
@@ -5716,7 +5975,7 @@ function createShell({
       } catch {
         computers = [];
       }
-      if (loaded = !0, applyPrivacy(), loadDictation(), loadAndroidPush(), mode === "demo")
+      if (loaded = !0, applyPrivacy(), loadDictation(), loadAndroidPush(), pageKind === "shell" && loadUiSource(), mode === "demo")
         return computers = [{ ...DEMO_COMPUTER }], activeId = DEMO_COMPUTER.id, channelState = { ...channelState, status: "connected", carrier: "lan", desktopName: "Demo computer", since: Date.now() }, refresh();
       if (claimPage) {
         let records = [];
@@ -6044,7 +6303,7 @@ function createShell({
         let after = lockAfter(prefs.lockAfter).ms;
         lockStatus.mode !== "off" && away !== null && away >= after && !lockStatus.locked && await api.lockNow();
       }
-      return channel?.reconnect({ reason: "resume", hiddenMs: away }), fixWaiting && recheckNotifications().catch(() => {
+      return channel?.reconnect({ reason: "resume", hiddenMs: away }), pageKind === "ui" && uiHost && hello && !replay && mode === "normal" && !lockStatus.locked && refreshUi({ reason: "resume", mayMove: !1 }), fixWaiting && recheckNotifications().catch(() => {
       }), refresh();
     },
     // Wave 4 (m3): the page is being left (pagehide: on the apps, a switch between the shell page and the UI page). While unlocked in biometric
@@ -6079,7 +6338,7 @@ function createShell({
     // answered there, stays until it is handled.
     async handleHash(hash, computerHint = "") {
       let out = await api.runHash(hash, computerHint), link = parseNotificationHash(String(hash ?? ""));
-      return androidPush && link && ["stop", "deny", "approve"].includes(link.kind) && out?.reason !== "locked" && out?.reason !== "opening" && out?.opening !== !0 && await clearNotification(link, computerHint || link.computer || ""), out;
+      return androidPush && link && ["stop", "deny", "approve", "yes", "no"].includes(link.kind) && out?.reason !== "locked" && out?.reason !== "opening" && out?.opening !== !0 && await clearNotification(link, computerHint || link.computer || ""), out;
     },
     // The link itself (handleHash takes the notification down after it).
     async runHash(hash, computerHint = "") {
@@ -6098,7 +6357,7 @@ function createShell({
       }
       let isPair = text.includes("pair=") || /^plenum:\/\/pair#/.test(text), parsed = parseNotificationHash(text), link = parsed ? { ...parsed } : null, hinted = String(computerHint ?? "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) || link?.computer || "";
       link && (delete link.computer, delete link.nt);
-      let named = !isPair && RECORD_ID.test(hinted) && ["stop", "deny", "approve"].includes(link?.kind) ? hinted : "";
+      let named = !isPair && RECORD_ID.test(hinted) && ["stop", "deny", "approve", "yes", "no"].includes(link?.kind) ? hinted : "";
       if (!isPair && !link) return { ok: !1, reason: "no link" };
       if (booted && await lockRead, lockStatus.locked || lockUnreadable)
         return !isPair && link?.kind === "stop" ? api.stop(null, named) : (pendingLink = { text, at: wall(), ...named ? { computer: named } : {} }, { ok: !1, reason: "locked" });
@@ -6145,7 +6404,7 @@ function createShell({
         let out = await postJson("/api/approve", { approvalId: link.id, allow: !0 }, { "x-plenum-notify-line": link.line });
         return out.ok ? (say("Approved.", "ok"), refresh(), { ok: !0, reason: null, kind: "approve" }) : out.status === 409 || out.status === 403 ? (say(CARD_CHANGED, "warn"), emitRoute({ kind: "waiting", id: link.id }), { ok: !1, reason: "changed", kind: "approve" }) : (say("Could not reach your computer. Open the approval to answer it.", "warn"), emitRoute({ kind: "waiting", id: link.id }), { ok: !1, reason: out.reason, kind: "approve" });
       }
-      return isRouteLink(link) ? (emitRoute(link), { ok: !0, reason: null, kind: link.kind }) : { ok: !1, reason: "no link" };
+      return isAnswerLink(link) ? answerFromNotification(link, { whenConnected, postJson, say, emitRoute, refresh }) : isRouteLink(link) ? (emitRoute(link), { ok: !0, reason: null, kind: link.kind }) : { ok: !1, reason: "no link" };
     },
     // The desktop UI. On the shell page: pulls what the computer has and hands the page to it (it does that by itself after HELLO; this is for
     // "Open Plenum" on /?shell and for Try again).
@@ -6592,6 +6851,7 @@ export {
   safeState,
   showEarlyTheme,
   startShell,
+  uiMayMove,
   updatedLine,
   wantsNativePlugins,
   wireAppPlugin,

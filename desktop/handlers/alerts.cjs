@@ -1,11 +1,12 @@
 'use strict';
-// The desktop alerts (wave 4, 16 Nov 2026). Two hooks feed them:
+// The desktop alerts (wave 4, 16 Nov 2026). Two hooks feed them (and serverExited clears what died with the server):
 //  - event: the run events of every project, from the server's events channel (desktop/main.cjs passes the first event of each run, a
 //    run's start, done, error, approval and approval-closed events, the 'approval' event that says a card was answered, and the hello of
 //    a new channel; the streamed words of a reply never reach this file), and the notices (read here only to join a routine's notice
 //    with its failed run, below). From them: the finished or failed alert for a run of ANY project, and the approval alert that names
 //    the project whose card waits.
-//  - state: the tray count (st.approvalsWaiting, every project) and keep-awake, which holds the PC awake while any run of any project
+//  - state: the tray count (st.approvalsWaiting, every project, with the project of the newest card followed here, so the tray's
+//    'Show waiting approval' opens it) and keep-awake, which holds the PC awake while any run of any project
 //    is live (st.projectThreads[id].busy, st.running, or a run that was seen and whose done was not).
 // The words are Plenum's own: the project's name, the kind of run, and a plain reason picked from the error's kind. A notification never
 // carries a prompt, a reply, a model's words, a command or a path. A click opens the place: the project's chat, or its waiting card.
@@ -21,10 +22,11 @@
 //    here: a run event names its project, not its business.
 //  - Routines (wave 5 integration): a routine runs as a plain chat run (lib/routines.mjs POST /api/chat), and the routine tells its own
 //    outcome through a 'routine:<id>' notice (desktop/handlers/notices.cjs), on purpose not for a failure that is tried again at once.
-//    A run event marked as a routine's (ev.routine === true, or kind 'routine') shows no finished or failed alert. Until the server marks
-//    them, the failure is joined as the phone does it (lib/remote/index.mjs ROUTINE_JOIN_MS): a routine notice of a project within
-//    ROUTINE_JOIN_MS of that project's failed-run alert takes the alert down, and a failed run within ROUTINE_JOIN_MS after such a notice
-//    shows none, so one failure is told once.
+//    A run event marked as a routine's (ev.routine === true, or kind 'routine') shows no finished or failed alert. The server marks every
+//    run of lib/routines.mjs (w7 notify-3, server.mjs routineMarkOf: a routine, a follow-up, a setup step and a Night shift job). A run it
+//    could not mark (the routines module was not loaded yet when the turn began) is still joined as the phone does it (lib/remote/index.mjs
+//    ROUTINE_JOIN_MS): a routine notice of a project within ROUTINE_JOIN_MS of that project's failed-run alert takes the alert down, and a
+//    failed run within ROUTINE_JOIN_MS after such a notice shows none, so one failure is told once.
 const MIN_RUN_MS = 20_000;
 const ROUTINE_JOIN_MS = 120_000;
 // A run whose done never came (the channel dropped at the wrong moment) is forgotten after this; a run is stopped after 3 hours anyway.
@@ -62,6 +64,8 @@ const failedShownAt = new Map();
 const routineNoticeAt = new Map();
 // The number of approval cards the last state counted, for the tray.
 let lastWaiting = 0;
+// The project the tray was last given with that count.
+let lastTrayProject = '';
 // The keep-awake blocker id. Only one blocker is held at a time.
 let keepAwakeId = null;
 
@@ -303,9 +307,35 @@ function onState(shell, st) {
     if (st.running === true && activeProject) busyAtHello.add(activeProject);
   }
   const waiting = Number(st.approvalsWaiting) || 0;
-  if (waiting !== lastWaiting) shell.tray.count(waiting);
+  // With the count goes the project of the newest card followed here, so the tray's 'Show waiting approval' opens it ('' when none is known).
+  const project = waiting > 0 ? newestCardProject() : '';
+  if (waiting !== lastWaiting || project !== lastTrayProject) shell.tray.count(waiting, project);
   lastWaiting = waiting;
+  lastTrayProject = project;
   syncKeepAwake(shell);
+}
+
+function newestCardProject() {
+  let project = '';
+  for (const c of cards.values()) if (c.project) project = c.project;
+  return project;
+}
+
+// The server process ended (desktop/main.cjs): its runs and cards ended with it. Until a server answers again (its hello and state set
+// everything anew), nothing keeps the PC awake and the tray counts no card, also when none ever answers and the box waits all night.
+function onServerExited(shell) {
+  runs.clear();
+  cards.clear();
+  stateBusy = false;
+  busyAtHello = new Set();
+  helloPending = false;
+  close(approvalNote);
+  approvalNote = null;
+  approvalProject = '';
+  if (lastWaiting !== 0 || lastTrayProject !== '') shell.tray.count(0, '');
+  lastWaiting = 0;
+  lastTrayProject = '';
+  setKeepAwake(shell, false);
 }
 
 module.exports = {
@@ -328,11 +358,13 @@ module.exports = {
     approvalNote = null;
     approvalProject = '';
     lastWaiting = 0;
+    lastTrayProject = '';
     keepAwakeId = null;
   },
   hooks: {
     state: onState,
     event: onEvent,
+    serverExited: onServerExited,
     // Releases the keep-awake blocker when the app quits, so a quit never leaves the PC awake.
     beforeQuit: shell => setKeepAwake(shell, false),
   },

@@ -9,7 +9,7 @@
 // server decides what a file is and what the model gets.
 // The files go with the next chat message in the images field of the POST /api/chat body (data is base64), because that is the
 // list app.js sends. The server checks each one again. They stay in this page until the message is sent and are kept nowhere.
-// app.js reads the files through window.MuseImages (see sendMessage there).
+// app.js reads the files through window.MuseImages (see sendMessage there), and waits for MuseImages.settled() while one is still read.
 (function () {
   const MuseUI = window.MuseUI;
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
@@ -43,6 +43,9 @@
   let caps = null;
   // Files are read one batch at a time, so two quick drops cannot both pass the count check.
   let chain = Promise.resolve();
+  // The files added and not read yet: { file, name, size, dropped }. Each shows as a chip at once, in a reading state, and app.js waits
+  // for settled() before it takes the list, so a message sent right after a paste or a drop carries the file (w7 panels-a-20).
+  let reading = [];
 
   const sizeText = n => (n >= MB ? `${(n / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   // The size of a refused file: the exact bytes when the rounded size would read the same as the limit it is over (C-41). The same
@@ -161,9 +164,27 @@
     return chip;
   }
 
+  // The chip of a file that is still being read. Its x takes it off: the read ends unused and the file does not go.
+  function readingChipFor(wait) {
+    const chip = MuseUI.span('chip reading', '');
+    chip.title = `${wait.name}, being read`;
+    chip.setAttribute('aria-busy', 'true');
+    const remove = MuseUI.button('chip-x', '');
+    remove.setAttribute('aria-label', `Remove ${wait.name}`);
+    remove.append(MuseUI.icon('x'));
+    remove.addEventListener('click', () => {
+      wait.dropped = true;
+      reading = reading.filter(w => w !== wait);
+      paint();
+      el.input.focus();
+    });
+    chip.append(MuseUI.icon('file'), MuseUI.span('img-name', wait.name), MuseUI.span('img-size', 'Reading…'), remove);
+    return chip;
+  }
+
   function paint() {
-    row.hidden = picked.length === 0;
-    row.replaceChildren(...picked.map(chipFor));
+    row.hidden = picked.length === 0 && reading.length === 0;
+    row.replaceChildren(...picked.map(chipFor), ...reading.map(readingChipFor));
     paintCaps();
   }
 
@@ -196,8 +217,9 @@
 
   const sum = (list, pick) => list.reduce((n, f) => n + pick(f), 0);
 
-  // Checks one file and adds it, or says why not. Returns false when the rest of the batch should stop.
-  async function addOne(file) {
+  // Checks one file and adds it, or says why not. Returns false when the rest of the batch should stop. wait is the file's reading
+  // chip: a file taken off while it was read is not added.
+  async function addOne(file, wait) {
     const label = file.name || 'That file';
     const bad = text => MuseUI.toast(text, 'bad');
     if (picked.length >= MAX_FILES) {
@@ -259,23 +281,48 @@
     const plain = !file.name || (kind === 'image' && /^image\.\w+$/i.test(file.name));
     const name = plain ? (kind === 'image' ? `pasted-image-${++pastes}.${EXTENSION[mime]}` : `pasted-file-${++pastes}`) : file.name;
     // The type tells the server which rules to start with; it judges every file by its bytes either way.
-    picked.push({ name, mime: kind === 'image' ? mime : kind === 'pdf' ? 'application/pdf' : 'application/octet-stream', data: await readBase64(file), size: file.size, kind });
+    const data = await readBase64(file);
+    if (wait?.dropped) return true;
+    picked.push({ name, mime: kind === 'image' ? mime : kind === 'pdf' ? 'application/pdf' : 'application/octet-stream', data, size: file.size, kind });
     return true;
   }
 
   function addFiles(files) {
     if (!files.length) return;
+    // Each file shows at once as a reading chip; it becomes a plain chip once read, or goes with a word when it cannot be attached.
+    const waits = files.map(file => ({ file, name: file.name || 'Pasted file', size: file.size, dropped: false }));
+    reading.push(...waits);
+    paint();
+    const done = wait => {
+      reading = reading.filter(w => w !== wait);
+    };
     chain = chain.then(async () => {
-      for (const file of files) {
+      for (const wait of waits) {
+        if (wait.dropped) continue;
         try {
-          if (!(await addOne(file))) break;
+          if (!(await addOne(wait.file, wait))) break;
         } catch {
           // A folder dropped on the box arrives as a file that cannot be read.
-          MuseUI.toast(`"${file.name || 'That file'}" could not be read. A folder cannot be attached.`, 'bad');
+          MuseUI.toast(`"${wait.file.name || 'That file'}" could not be read. A folder cannot be attached.`, 'bad');
+        } finally {
+          done(wait);
+          paint();
         }
       }
+    }).finally(() => {
+      // A batch that stopped early (too many files) takes the chips of the files it did not read away.
+      waits.forEach(done);
       paint();
     }).catch(err => MuseUI.toast(`The files could not be read: ${err.message}`, 'bad'));
+  }
+
+  // Resolves once every file added so far, and any added while it waits, has been read or refused. Never rejects.
+  async function settled() {
+    let at;
+    do {
+      at = chain;
+      await at.catch(() => {});
+    } while (at !== chain);
   }
 
   // ---------- the attach button ----------
@@ -360,8 +407,11 @@
     get REFUSAL() {
       return lastRefusal;
     },
-    // The files waiting to go, each { name, mime, data, size, kind }.
+    // The files waiting to go, each { name, mime, data, size, kind }. A file still being read is not in it yet: see reading and settled.
     list: () => picked.map(file => ({ ...file })),
+    // True while a file added to the composer is still being read. app.js then awaits settled() before it sends or queues.
+    reading: () => reading.length > 0,
+    settled,
     clear() {
       picked = [];
       paint();

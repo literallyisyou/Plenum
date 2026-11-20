@@ -350,16 +350,34 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
     const nonce = randomBytes(12);
     const ct = gcm(pinKey, nonce, VERIFIER_AAD).encrypt(VERIFIER_TEXT);
     const keys = await plainKeys(null);
-    for (const rec of await store.list()) {
-      const key = keys.get(rec.id);
-      if (!key) continue;
-      const next = { ...rec, myPriv: wrapKey(key, pinKey, rec.id) };
-      await store.put(next);
-    }
+    // The PIN record and the mode are written before any key is wrapped (wave 7), so the app can be closed at any point of this. With
+    // only the record written the lock is still off and every key is plain. From the mode on, the PIN opens the lock, and the next
+    // right PIN wraps what was still plain (settleRecords). Before, the keys were wrapped first: an app closed in between had its keys
+    // under a PIN that nothing recorded, and every computer had to be paired again.
     await store.meta.put('pin', { v: dk ? 2 : 1, salt: b64u.enc(salt), iterations, nonce: b64u.enc(nonce), ct: b64u.enc(ct) });
     await writeSettings({ mode: 'pin', failures: 0, lockedUntil: 0 });
     pinKeyHeld = pinKey;
+    await settleRecords(pinKey);
     return { ok: true, keys };
+  }
+
+  // Makes every stored key rest wrapped under `key`. A key that is still plain is wrapped (a setPin or a "lock off" that was cut
+  // short). With `older` (the PIN key from before the device key), a key wrapped under it is moved to `key`; one that does not open
+  // under `older` is under `key` already (a move that was cut short) and is left as it is. Each record is one write, and doing it
+  // again changes nothing, so the app can be closed in the middle.
+  async function settleRecords(key, older = null) {
+    for (const rec of await store.list()) {
+      let plain = null;
+      if (typeof rec.myPriv === 'string') plain = b64u.dec(rec.myPriv);
+      else if (rec.myPriv && older) {
+        try {
+          plain = unwrapKey(rec.myPriv, older, rec.id);
+        } catch {
+          plain = null;
+        }
+      }
+      if (plain) await store.put({ ...rec, myPriv: wrapKey(plain, key, rec.id) });
+    }
   }
 
   async function unlockPinInner(pin) {
@@ -397,21 +415,21 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
       return { ok: false, reason: 'wrong', failures, waitSec: wait };
     }
     // A right PIN on a v1 record (from before the device key) moves it to v2: every key is wrapped under the device-mixed key, then the
-    // verifier is written under it. Only in this browser, where the device key can exist.
+    // verifier is written under it. Only in this browser, where the device key can exist. The PIN record says v2 only when every key
+    // has been moved. An app closed on the way leaves some keys under each PIN key; the next right PIN is still checked against the v1
+    // record, finds the same device key, and moves the rest (wave 7: it used to fail on the keys already moved, for ever).
     let held = pinKey;
     if (pinRecord.v !== 2 && subtle && store.kind === 'web') {
       const made = await deviceKey(true);
       const v2 = await pinKeyV2(pin, salt, pinRecord.iterations, made);
-      const keysV1 = await plainKeys(pinKey);
-      for (const rec of await store.list()) {
-        const key = keysV1.get(rec.id);
-        if (!key) continue;
-        await store.put({ ...rec, myPriv: wrapKey(key, v2, rec.id) });
-      }
+      await settleRecords(v2, pinKey);
       const nonce = randomBytes(12);
       const ct = gcm(v2, nonce, VERIFIER_AAD).encrypt(VERIFIER_TEXT);
       await store.meta.put('pin', { v: 2, salt: pinRecord.salt, iterations: pinRecord.iterations, nonce: b64u.enc(nonce), ct: b64u.enc(ct) });
       held = v2;
+    } else {
+      // A key left plain by a setPin or a "lock off" that was cut short is wrapped now: under a PIN no key rests plain.
+      await settleRecords(held);
     }
     await writeSettings({ ...s, failures: 0, lockedUntil: 0 });
     locked = false;
@@ -457,12 +475,17 @@ export function createLock({ store, now = () => Date.now(), biometric = null, pa
         const key = unlocked.keys.get(rec.id);
         if (key) await store.put({ ...rec, myPriv: b64u.enc(key) });
       }
+    }
+    // The mode is written before the PIN record, the device key or the passkey record is removed (wave 7). An app closed in between
+    // then has the lock off and a record nobody reads. The other order left the mode on with nothing to check a PIN or a passkey
+    // against, and the app stayed locked for good.
+    await writeSettings({ mode: 'off', failures: 0, lockedUntil: 0 });
+    if (s.mode === 'pin') {
       await store.meta.remove('pin');
       await store.meta.remove(DEVICE_META);
     } else if (s.mode === 'passkey') {
       await store.meta.remove('passkey');
     }
-    await writeSettings({ mode: 'off', failures: 0, lockedUntil: 0 });
     locked = false;
     pinKeyHeld = null;
     memory?.clear();

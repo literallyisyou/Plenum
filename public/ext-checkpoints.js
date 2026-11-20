@@ -10,6 +10,17 @@
 // drawer closing (which cancels a card nobody can see) are the same for every flow.
 (function () {
   const MuseUI = window.MuseUI;
+  // A caught error in plain words, as one sentence: the server's own sentence, or a fixed one when Plenum did not answer or sent only a
+  // status (never the browser's "Failed to fetch" or "Request failed (500)").
+  const plain = err => {
+    const t = String((MuseUI?.plainError ? MuseUI.plainError(err) : err?.message) || 'That could not be done.').trim();
+    return /[.!?…]$/.test(t) ? t : `${t}.`;
+  };
+  // The error a refusal becomes: the server's sentence when it sent one, else only its status (plain() words that).
+  const refusal = (status, data) => {
+    const said = typeof data?.error === 'string' ? data.error.trim() : '';
+    return Object.assign(new Error(said || `The request was refused (${status}).`), { status, fromServer: Boolean(said) });
+  };
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
 
@@ -151,7 +162,7 @@
     try {
       data = await MuseUI.api(`/api/checkpoints?project=${encodeURIComponent(view.project.id)}&thread=${encodeURIComponent(view.thread)}`);
     } catch (err) {
-      if (seq === loadSeq && !quiet) setStatus(view, err.message, 'bad');
+      if (seq === loadSeq && !quiet) setStatus(view, plain(err), 'bad');
       return;
     }
     if (seq !== loadSeq) return;
@@ -265,7 +276,7 @@
       try {
         data = await MuseUI.api(`/api/${url}`);
       } catch (err) {
-        if (mine === seq) box.replaceChildren(make('p', 'ext-checkpoints-diff-note bad', err.message));
+        if (mine === seq) box.replaceChildren(make('p', 'ext-checkpoints-diff-note bad', plain(err)));
         return;
       }
       if (mine === seq) box.replaceChildren(...changeBlocks(data));
@@ -320,7 +331,11 @@
         const block = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
-        if (data) onEvent(JSON.parse(data));
+        if (!data) continue;
+        // A line that is not JSON is skipped: one bad line does not end the run with the engine's words.
+        let ev = null;
+        try { ev = JSON.parse(data); } catch { ev = null; }
+        if (ev) onEvent(ev);
       }
     }
   }
@@ -356,7 +371,7 @@
       const res = await MuseUI.request(`/api/${opts.route}`, { method: 'POST', body: opts.payload, signal: run.ctl.signal });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Request failed (${res.status})`);
+        throw refusal(res.status, data);
       }
       await readEvents(res, ev => {
         MuseUI.claimRun?.(ev.runId);
@@ -390,7 +405,7 @@
         const text = 'The change was cancelled. Nothing was changed.';
         setStatus(view, text, '');
         MuseUI.toast(text);
-      } else setStatus(view, err.message, 'bad');
+      } else setStatus(view, plain(err), 'bad');
     } finally {
       view.ask.replaceChildren();
       if (pending === run) pending = null;
@@ -510,7 +525,22 @@
       try {
         await MuseUI.api('/api/approve', body);
       } catch (err) {
-        MuseUI.toast(err.message, 'bad');
+        // The server no longer waits on this card (404): it is gone. Any other failure keeps the card, so the answer can be given again;
+        // the change stays locked only while the card really waits.
+        if (Number(err?.status) !== 404) {
+          // The flow ended meanwhile (its card left the page): it has said what happened, and there is no card to press again.
+          if (!card.isConnected) return;
+          answered = false;
+          run.answered = false;
+          yes.disabled = false;
+          no.disabled = false;
+          why.disabled = false;
+          setStatus(view, `Your answer did not arrive. ${plain(err)} Press ${allow ? yes.textContent : 'Deny'} again.`, 'bad');
+          paint();
+          if (!answered) startTick();
+          return;
+        }
+        MuseUI.toast(plain(err), 'bad');
       }
       card.remove();
     };
@@ -536,13 +566,15 @@
       lockCard();
       hint.textContent = `Timed out: ${(opts.nothing || 'Nothing was changed.').replace(/^Nothing/, 'nothing')}`;
     };
-    paint();
-    if (!answered) {
+    const startTick = () => {
+      clearInterval(tick);
       tick = setInterval(() => {
         if (card.isConnected) paint();
         else clearInterval(tick);
       }, 1000);
-    }
+    };
+    paint();
+    if (!answered) startTick();
     actions.append(yes, no, changesBtn, hint);
     card.append(changes, why, actions);
     view.ask.replaceChildren(card);

@@ -37,6 +37,10 @@ export const WRAP = 100;
 export const EULA_TXT = 'legal/EULA.txt';
 
 export const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+// The hash legal/terms.json records for a text: the sha256 of the text with CRLF turned into LF (signin-7). A clone whose git turns LF
+// into CRLF (core.autocrlf true, Git for Windows' default) then gives the same hash as the LF texts in the repository, and a hash written
+// from such a clone is still the LF one. For an LF file it is the sha256 of its bytes, as before.
+export const textSha256 = (bytes) => sha256(Buffer.from(Buffer.from(bytes).toString('utf8').replace(/\r\n/g, '\n'), 'utf8'));
 
 // ---------- plain text ----------
 
@@ -156,7 +160,7 @@ export function checkHashes(terms, root = ROOT) {
       errors.push(`legal/${d} is missing.`);
       continue;
     }
-    const now = sha256(fs.readFileSync(p));
+    const now = textSha256(fs.readFileSync(p));
     if (!terms.sha256 || terms.sha256[d] !== now) errors.push(hashMessage(d));
   }
   return errors;

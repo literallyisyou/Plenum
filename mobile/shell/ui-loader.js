@@ -20,14 +20,21 @@
 //     computerId (plan C9) names the computer the active UI came from (null when unknown). A current hash with another computerId
 //     rewrites the active record with that id and fetches nothing: one UI slot, owned by the computer it was pulled from.
 //     Every request the loader makes carries { scope: 'shell' }, so the channel knows it is the shell's, not the page's.
+//     w7: check({ ..., activate: false }) stages: the files and the complete record are kept, the WebView is not moved, and the result says
+//     staged: true (every Android UI page: the built-in screens and a copy from the computer; ui-host.js moves later with
+//     storage.ensureActive). The folder the WebView serves is never removed while a copy is staged (androidStorage dropSlotsExcept).
 //   Errors: UiError with a code: 'manifest' (damaged or missing), 'verify' (sha256 mismatch), 'size', 'fetch', 'refused', 'storage'.
+//   w7: an index that does not match is checked once more without the theme attributes Plenum on the computer writes into it (verifiedCopy).
 //
-// The pure functions (checkManifest, verifyBytes, diffFiles, shouldReload, cacheNameFor) are exported for the Node suites.
+// The pure functions (checkManifest, verifyBytes, verifiedCopy, unthemedIndex, diffFiles, shouldReload, cacheNameFor) are exported for the
+// Node suites.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { MANIFEST_PATH, contentTypeFor, fileNameFor, isUiPath, manifestHash, rewriteIndex } from '../../lib/remote/ui-manifest.mjs';
 
 export const CACHE_PREFIX = 'plenum-ui-';
+// w7r: the suffix of the second folder for a copy whose own folder the WebView serves (pull). cacheNameFor never ends in it (its last part is hex).
+export const SECOND_SLOT = '-b';
 export const ACTIVE_CACHE = 'plenum-ui-active';
 export const ACTIVE_PATH = '/__plenum/active.json';
 export const SHA_HEADER = 'x-plenum-sha256';
@@ -71,6 +78,40 @@ export function verifyBytes(bytes, entry) {
   if (bytes.byteLength !== entry.size) throw new UiError('size', `${entry.path} is ${bytes.byteLength} bytes, not ${entry.size}`);
   if (sha256Hex(bytes) !== entry.sha256) throw new UiError('verify', `${entry.path} does not match the manifest`);
   return true;
+}
+
+// w7 (17 Nov 2026): Plenum on the computer writes the person's theme (data-theme="dark" or "light") and, while the terms are not accepted,
+// data-legal="pending" into the first <html lang="en"> of the index it serves (server.mjs withTheme), but its manifest hashes the file on disk.
+// With a theme set, every pull failed on '/' (UiError 'size'). A desktop from this wave sends a phone the file as it is; for an older one the
+// index that does not match is tried once more without exactly those attributes, in the order withTheme writes them. Only bytes that then
+// match the manifest are kept, so nothing the manifest does not name can get in this way.
+const THEMED_HTML = /<html lang="en"((?: data-theme="(?:dark|light)")?(?: data-legal="pending")?)>/;
+
+// The index without the attributes withTheme added, or null when its first <html lang="en"> has none of them.
+export function unthemedIndex(bytes) {
+  const text = utf8Decode.decode(bytes);
+  const m = THEMED_HTML.exec(text);
+  if (!m || !m[1]) return null;
+  return utf8.encode(`${text.slice(0, m.index)}<html lang="en">${text.slice(m.index + m[0].length)}`);
+}
+
+// The bytes to keep for a manifest entry: the bytes themselves when they verify, else (the index only) the un-themed index when that verifies.
+// Throws the first check's UiError otherwise.
+export function verifiedCopy(bytes, entry) {
+  try {
+    verifyBytes(bytes, entry);
+    return bytes;
+  } catch (err) {
+    if (entry.path !== '/') throw err;
+    const plain = unthemedIndex(bytes);
+    if (!plain) throw err;
+    try {
+      verifyBytes(plain, entry);
+    } catch {
+      throw err;
+    }
+    return plain;
+  }
 }
 
 // Checks the manifest's shape and its hash (the same canonical list the desktop hashes). Returns a clean copy.
@@ -226,10 +267,44 @@ export async function bundledShellSha(readBundled) {
   }
 }
 
-// Storage over the app-data folder (Android). files: { write(rel, bytes), read(rel) -> Uint8Array | null, removeDir(rel) }.
+// w7: the note the UI host writes when the app opens its built-in screens for a computer that could not send its own (ui-host.js openBundled):
+// { computerId, at, cause, desktopVersion, appVersion }. It sits beside active.json; Phone settings reads it, the built-in page reads which
+// computer it was opened for, and every activation of a copy from a computer removes it (activate, below).
+export const BUNDLED_NOTE = 'bundled.json';
+
+// Storage over the app-data folder (Android). files: { write(rel, bytes), read(rel) -> Uint8Array | null, removeDir(rel), remove?(rel) }.
 // webView: { setServerBasePath({ path }), persistServerBasePath({ path }), getServerBasePath() } (Capacitor core WebView plugin).
 export function androidStorage({ files, webView, root = 'plenum-ui' }) {
   const base = name => `${root}/${name}`;
+  const notePath = `${root}/${BUNDLED_NOTE}`;
+  // A note that cannot be read is no note. One that cannot be removed is written as null (files without remove).
+  async function readNote() {
+    try {
+      const bytes = await files.read(notePath);
+      const value = bytes ? JSON.parse(utf8Decode.decode(bytes)) : null;
+      if (!value || typeof value !== 'object' || !Number.isFinite(value.at)) return null;
+      return {
+        computerId: computerOf(value.computerId),
+        at: value.at,
+        cause: typeof value.cause === 'string' ? value.cause.slice(0, 20) : null,
+        desktopVersion: typeof value.desktopVersion === 'string' ? value.desktopVersion.slice(0, 40) : null,
+        appVersion: typeof value.appVersion === 'string' ? value.appVersion.slice(0, 40) : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+  async function writeNote(note) {
+    await files.write(notePath, utf8.encode(JSON.stringify(note)));
+  }
+  async function clearNote() {
+    try {
+      if (typeof files.remove === 'function') await files.remove(notePath);
+      else await files.write(notePath, utf8.encode('null'));
+    } catch {
+      // Phone settings may then still name the built-in screens until the next fallback or activation.
+    }
+  }
   const slotOn = name => ({
     async get(path) {
       const bytes = await files.read(`${base(name)}/${fileNameFor(path)}`);
@@ -245,6 +320,7 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
   // may be gone before a later call would run.
   // beforeServe (w4-m1) runs once every file is written and before the base path moves (the record is written there: after the set the page
   // may be gone).
+  // w7: the built-in screens' note goes here too, before the base path moves: from now on the computer's own copy runs.
   async function activate(record, { readBundled, shellBase, beforeServe = null } = {}) {
     const dir = base(record.cacheName);
     const index = await files.read(`${dir}/index.html`);
@@ -252,6 +328,7 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
     for (const file of await bundledShellFiles(readBundled)) await files.write(`${dir}/${fileNameFor(file.path)}`, file.bytes);
     const html = rewriteIndex(utf8Decode.decode(index), { shellBase });
     await files.write(`${dir}/index.html`, utf8.encode(html));
+    await clearNote();
     await beforeServe?.();
     await webView?.persistServerBasePath({ path: dir });
     await webView?.setServerBasePath({ path: dir });
@@ -263,6 +340,16 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
   }
   async function writeActive(record) {
     await files.write(`${root}/active.json`, utf8.encode(JSON.stringify(record)));
+  }
+  // w7r (review): the folder the WebView serves, as 'plenum-ui/<name>' (trailing slashes cut). known is false when getServerBasePath failed;
+  // a WebView without it serves no folder of ours (path null).
+  async function servedFolder() {
+    if (typeof webView?.getServerBasePath !== 'function') return { known: true, path: null };
+    try {
+      return { known: true, path: String((await webView.getServerBasePath())?.path ?? '').replace(/\/+$/, '') };
+    } catch {
+      return { known: false, path: null };
+    }
   }
   // w4-m1: activates the record again with the bundled shell files, and keeps the bundle's shellSha256 in the record (written after the copy,
   // before the base path moves). A bundle that cannot be read leaves the record's value as it is.
@@ -278,11 +365,11 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
   return {
     readActive,
     writeActive,
+    readNote,
+    writeNote,
+    clearNote,
     async openSlot(name) {
       return slotOn(name);
-    },
-    async dropSlot(name) {
-      await files.removeDir(base(name));
     },
     activate,
     // "Use the copy in this app" (ui-host.js useCopy): the copy on the phone is served again, with this app's shell files.
@@ -302,11 +389,29 @@ export function androidStorage({ files, webView, root = 'plenum-ui' }) {
       await activateWithShell(record, opts);
       return true;
     },
+    // w7r (review): the pull of a half-filled slot drops it, and that is never the folder the WebView serves either (nor any folder when the
+    // WebView cannot say which it serves: the next clean-up removes a leftover).
+    async dropSlot(name) {
+      const served = await servedFolder();
+      if (!served.known || base(name) === served.path) return;
+      await files.removeDir(base(name));
+    },
+    // w7 (follow-up): never the folder the WebView serves. A copy staged on a page that runs an older copy (ui-host.js refreshStaged) leaves
+    // that page's folder in place until the page has moved; the next clean-up removes it. A WebView that cannot say which folder it serves
+    // keeps every folder this time (a folder too many costs space; a folder removed under the page breaks it).
     async dropSlotsExcept(name) {
+      const served = await servedFolder();
+      if (!served.known) return;
       const dirs = (await files.listDirs?.(root)) ?? [];
       for (const dir of dirs) {
-        if (dir !== name && dir.startsWith(CACHE_PREFIX)) await files.removeDir(base(dir));
+        if (dir !== name && dir.startsWith(CACHE_PREFIX) && base(dir) !== served.path) await files.removeDir(base(dir));
       }
+    },
+    // w7r (review): true when the WebView serves this slot's folder, false when it serves another (or there is no WebView to ask), null when
+    // it cannot say. The loader then pulls into a second folder (see pull).
+    async servesSlot(name) {
+      const served = await servedFolder();
+      return served.known ? base(name) === served.path : null;
     },
   };
 }
@@ -345,7 +450,8 @@ export function createUiLoader({
 
   // The active record already holds this hash: nothing to fetch. A page that runs another hash still reloads, once. A record that names
   // another computer is written again with this one's id (plan C9); the cache stays as it is.
-  async function alreadyCurrent(prev, loadedHash, computerId = null) {
+  // w7: activate false (the Android page that runs the app's built-in screens stages a copy): the WebView is not touched here.
+  async function alreadyCurrent(prev, loadedHash, computerId = null, activate = true) {
     const reload = shouldReload({ loadedHash, nextHash: prev.hash, reloadedFor: prev.reloadedFor ?? null });
     const owner = computerOf(computerId);
     const moved = computerOf(prev.computerId) !== owner;
@@ -357,21 +463,31 @@ export function createUiLoader({
     // On Android the WebView may have lost its base path (the persist or the set never landed): put it right here, before the early
     // return, so the next start serves this UI. A failure is logged and the check still answers 'current'.
     // w4-m1: the record just written (computerId, reloadedFor) goes in, so a shellSha256 that ensureActive writes back does not undo it.
-    try {
-      await storage.ensureActive?.(record, { readBundled, shellBase });
-    } catch (err) {
-      log(`ui: ${err.code ?? 'error'}`);
+    if (activate) {
+      try {
+        await storage.ensureActive?.(record, { readBundled, shellBase });
+      } catch (err) {
+        log(`ui: ${err.code ?? 'error'}`);
+      }
     }
-    return { status: 'current', hash: prev.hash, generation: prev.generation, changed: [], reload, record };
+    return { status: 'current', hash: prev.hash, generation: prev.generation, changed: [], reload, record, staged: !activate };
   }
 
   // Pulls what changed. loadedHash is the hash of the UI this page runs (null on the first load).
-  async function pull({ loadedHash = null, computerId = null } = {}) {
+  // w7: activate false stages the copy: every file is fetched, checked and kept and the complete record is written, but the base path does not
+  // move (storage.activate is not called). The caller moves later with storage.ensureActive(record), which needs that complete record.
+  async function pull({ loadedHash = null, computerId = null, activate = true } = {}) {
     if (platform === 'ios') throw new UiError('refused', 'iOS runs the bundled UI; desktop files are refused.');
     const next = await fetchManifest();
     const prev = await storage.readActive();
-    if (prev && prev.hash === next.hash && prev.complete) return alreadyCurrent(prev, loadedHash, computerId);
-    const cacheName = cacheNameFor(next);
+    if (prev && prev.hash === next.hash && prev.complete) return alreadyCurrent(prev, loadedHash, computerId, activate);
+    // w7r (review, 17 Nov 2026): a pull never writes into the folder the WebView serves. That folder has this name when the computer went back
+    // to the copy the page runs while a newer one was staged (Settings › Updates › roll back keeps the generation before: the same version,
+    // generation and files give the same name). Writing there put the computer's raw index over the phone's (no shell on the next load, and
+    // ensureActive leaves a served folder alone), and a pull that failed part way removed the page's own files. The same copy goes into a
+    // second folder instead, and the page moves to it as to any staged copy.
+    let cacheName = cacheNameFor(next);
+    if ((await storage.servesSlot?.(cacheName)) === true) cacheName = `${cacheName}${SECOND_SLOT}`;
     const slot = await storage.openSlot(cacheName);
     const previousSlot = prev && prev.cacheName !== cacheName ? await storage.openSlot(prev.cacheName) : null;
     const diff = diffFiles(prev?.files ?? null, next, () => previousSlot !== null);
@@ -381,8 +497,7 @@ export function createUiLoader({
         const have = await slot.get(entry.path);
         if (have && have.size === entry.size && sha256Hex(have.bytes) === entry.sha256) continue;
         const bytes = await fetchFile(entry.path, MAX_FILE_BYTES);
-        verifyBytes(bytes, entry);
-        await slot.put(entry.path, bytes, entry);
+        await slot.put(entry.path, verifiedCopy(bytes, entry), entry);
         changed.push(entry.path);
       }
       for (const path of diff.reused) {
@@ -392,8 +507,7 @@ export function createUiLoader({
           await slot.put(path, old.bytes, entry);
         } else {
           const bytes = await fetchFile(path, MAX_FILE_BYTES);
-          verifyBytes(bytes, entry);
-          await slot.put(path, bytes, entry);
+          await slot.put(path, verifiedCopy(bytes, entry), entry);
           changed.push(path);
         }
       }
@@ -438,19 +552,19 @@ export function createUiLoader({
       shellSha256,
     };
     await storage.writeActive(record);
-    await storage.activate?.(record, { readBundled, shellBase });
+    if (activate) await storage.activate?.(record, { readBundled, shellBase });
     await storage.dropSlotsExcept(cacheName);
-    return { status: 'updated', hash: next.hash, generation: next.generation, changed, reload, record };
+    return { status: 'updated', hash: next.hash, generation: next.generation, changed, reload, record, staged: !activate };
   }
 
   return {
     pull,
     // The HELLO's uiManifestHash decides whether anything needs fetching: equal hashes need no manifest request at all.
-    async check({ helloHash = null, loadedHash = null, computerId = null } = {}) {
+    async check({ helloHash = null, loadedHash = null, computerId = null, activate = true } = {}) {
       if (platform === 'ios') throw new UiError('refused', 'iOS runs the bundled UI; desktop files are refused.');
       const prev = await storage.readActive();
-      if (prev && prev.complete && helloHash && prev.hash === helloHash) return alreadyCurrent(prev, loadedHash, computerId);
-      return pull({ loadedHash, computerId });
+      if (prev && prev.complete && helloHash && prev.hash === helloHash) return alreadyCurrent(prev, loadedHash, computerId, activate);
+      return pull({ loadedHash, computerId, activate });
     },
     current: () => storage.readActive(),
   };

@@ -161,8 +161,9 @@
 
   // ---------- notices ----------
 
-  // MuseUI.notice draws the registered notice when the notices module is loaded. When it draws nothing this file draws the strip with
-  // the same words: OK closes it, Don't show again keeps it closed on this computer, More opens Settings.
+  // MuseUI.notice draws the registered notice when the notices module is loaded and lists it. Without the module, or for an id it does
+  // not list, this file draws the strip with the same words: OK closes it, Don't show again keeps it closed on this computer, More opens
+  // Settings.
   const hiddenKey = id => `plenum-notice-hidden:${id}`;
   function noticeHidden(id) {
     try {
@@ -178,12 +179,26 @@
       // Without storage the strip shows again next time, which is the safe side.
     }
   }
+  // Whether the notices module (ext-notices.js) lists this notice. MuseUI.notice() also answers false for a notice hidden by Don't show
+  // again, one already shown in this launch or one without a place, so false alone does not mean the module is missing (w7 panels-a-6):
+  // the pane draws its own strip only when the module is missing or does not list the id.
+  function sharedKnows(id) {
+    try {
+      const list = typeof MuseUI.notice === 'function' ? MuseUI.notices?.list?.() : null;
+      return Array.isArray(list) && list.some(n => n?.id === id);
+    } catch {
+      return false;
+    }
+  }
   // extra is an optional third button { label, run } (the browser-agent notice has one that turns the switch off).
   function noticeStrip(id, text, anchor, extra = null) {
-    try {
-      if (typeof MuseUI.notice === 'function' && MuseUI.notice(id, { after: anchor })) return null;
-    } catch (err) {
-      console.error(err); // the shared notice failed; the strip below says the same thing
+    if (sharedKnows(id)) {
+      try {
+        MuseUI.notice(id, { after: anchor });
+        return null;
+      } catch (err) {
+        console.error(err); // the shared notice failed; the strip below says the same thing
+      }
     }
     if (noticeHidden(id)) return null;
     const strip = mk('div', 'ext-brw-notice');
@@ -219,10 +234,13 @@
     const holder = mk('div', 'ext-brw-notice-slot');
     holder.dataset.notice = id;
     host.append(holder);
-    try {
-      if (typeof MuseUI.notice === 'function' && MuseUI.notice(id, { after: holder })) return;
-    } catch (err) {
-      console.error(err); // the shared notice failed; the strip below says the same thing
+    if (sharedKnows(id)) {
+      try {
+        MuseUI.notice(id, { after: holder });
+        return;
+      } catch (err) {
+        console.error(err); // the shared notice failed; the strip below says the same thing
+      }
     }
     const strip = mk('div', 'ext-brw-notice');
     strip.setAttribute('role', 'note');
@@ -1541,7 +1559,16 @@
     ui?.url.focus();
   }
 
-  // Ctrl+L goes to the address while this tab is on screen. Ctrl+T opens a browser tab (not a new thread) while the focus is in the pane.
+  // Closes the active browser tab the way its x in the tab strip does.
+  async function closeActiveTab() {
+    const t = activeTab();
+    if (!t) return;
+    if (await act('/api/browser/tabs', { action: 'close', tab: t.id })) await load();
+  }
+
+  // Ctrl+L goes to the address while this tab is on screen. Ctrl+T opens a browser tab (not a new thread) while the focus is in the pane,
+  // and Ctrl+W (Cmd+W on macOS) closes the active browser tab there: Plenum's menu has no close role (shell-1), so the key would do
+  // nothing otherwise. Inside a web page of the pane desktop/browser.cjs takes Ctrl+W itself.
   document.addEventListener('keydown', e => {
     if (e.defaultPrevented || e.isComposing || e.altKey || e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
     const key = String(e.key).toLowerCase();
@@ -1553,6 +1580,10 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       ui.plus.click();
+    } else if (key === 'w' && MuseUI.el.pane.contains(document.activeElement)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeActiveTab().catch(err => MuseUI.toast(err?.message || 'The tab could not be closed. Try again.', 'bad'));
     }
   }, true);
 

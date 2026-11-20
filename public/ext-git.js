@@ -76,8 +76,15 @@
     return s.branch || '(unknown)';
   }
 
+  // git refused the folder because another account owns it (tools-13): the server's sentence names the safe.directory command that
+  // fixes it. This one is for an answer that came without it.
+  function untrustedText(s) {
+    return typeof s.error === 'string' && s.error.trim() ? s.error : 'git does not trust this folder because another account owns it. Mark it as safe with git config --global --add safe.directory, then try again.';
+  }
+
   // The text on the chip.
   function chipText(s) {
+    if (!s.repo && s.untrusted) return 'git: folder not trusted';
     if (!s.repo) return s.noGit ? 'git not installed' : s.error ? 'git: no answer' : 'No git';
     if (s.clean) return `git: clean on ${branchOf(s)}${syncText(s)}`;
     const unmerged = s.unmerged ? ` · ${s.unmerged} unmerged` : '';
@@ -93,6 +100,7 @@
   function hoverText(s) {
     if (!s.repo) {
       if (s.noGit) return 'git is not installed on this computer, so Plenum cannot show the working tree. Click to see why.';
+      if (s.untrusted) return untrustedText(s);
       return s.error ? 'git did not answer for this folder. Plenum tries again in a moment.' : 'This project folder is not a git repository.';
     }
     const lines = [s.clean ? `The working tree is clean on ${branchOf(s)}.` : `Working tree on ${branchOf(s)}.`];
@@ -194,6 +202,7 @@
     if (!s.repo) {
       const why = s.noGit ? 'git is not installed on this computer, so Plenum cannot show the working tree.'
         : s.unreachable ? 'Plenum could not reach its server to read the working tree. Try again.'
+        : s.untrusted ? untrustedText(s)
         : s.error ? 'git did not answer. Try again in a moment.'
         : 'This project folder is not a git repository.';
       root.append(make('p', 'ext-git-note', why));

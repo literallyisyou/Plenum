@@ -41,6 +41,12 @@ android {
         versionCode (project.hasProperty('plenumVersionCode') ? Integer.parseInt(project.property('plenumVersionCode').toString()) : plenumLocalVersionCode())
         versionName (project.hasProperty('plenumVersionName') ? project.property('plenumVersionName').toString() : plenumLocalVersionName())
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // The phone build (-PplenumPhone, which scripts/build-android.mjs --phone passes) keeps only the libraries' English
+        // resources: the app's own words are in its web UI, and the other languages' tables were a seventh of that APK. Other builds
+        // keep every language.
+        if (project.hasProperty('plenumPhone')) {
+            resourceConfigurations += ['en']
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -58,6 +64,22 @@ android {
         }
     }
     buildTypes {
+        // The phone build (17 Nov 2026): the debug build made the way a shipped app is, for 64-bit ARM phones only (every Android
+        // phone of the last years). It is not debuggable, so R8 runs in its release mode, removing the library code the app never calls
+        // and resources nobody uses. The app's, Capacitor's and the plugins' classes keep their names (proguard-phone.pro), so nothing
+        // they load by name breaks; library classes may be renamed. It is signed with the local debug key, as the debug build is,
+        // so either one installs over the other. About a quarter of the debug APK's size, small enough for a Google Drive
+        // upload from here (10 MB). scripts/build-android.mjs --phone builds it; assembleDebug and the release build are unchanged.
+        phone {
+            initWith debug
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'proguard-phone.pro'
+            ndk { abiFilters 'arm64-v8a' }
+            matchingFallbacks = ['debug']
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
@@ -65,6 +87,14 @@ android {
                 signingConfig signingConfigs.release
             }
         }
+    }
+}
+
+// The phone build stores its native libraries compressed (the phone unpacks them when it installs the app), which takes about
+// 2.5 MB off the APK; the other builds keep them uncompressed, as before.
+androidComponents {
+    onVariants(selector().withBuildType('phone')) { variant ->
+        variant.packaging.jniLibs.useLegacyPackaging.set(true)
     }
 }
 

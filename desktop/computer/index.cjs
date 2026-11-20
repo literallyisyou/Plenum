@@ -79,7 +79,7 @@ function withProtocol(backend) {
       case 'foreground':
         return { foreground: await backend.foreground() };
       case 'capture':
-        return backend.capture({ scope: message.scope, target: message.target ?? message.windowId ?? message.displayId ?? null, maxEdge: message.maxEdge });
+        return backend.capture({ scope: message.scope, target: message.target ?? message.windowId ?? message.displayId ?? null, maxEdge: message.maxEdge, expectedWindow: message.expectedWindow });
       case 'input': {
         let action = message.action;
         if (!isObject(action)) {
@@ -95,7 +95,7 @@ function withProtocol(backend) {
       case 'userInput':
         return backend.userInput();
       case 'focus':
-        return backend.focus(message.windowId ?? message.target);
+        return backend.focus(message.windowId ?? message.target, message.expectedWindow, message.fallback === true);
       case 'isSecureField':
         return { secure: await backend.isSecureField() };
       case 'focusedLabel':
@@ -262,6 +262,7 @@ function createComputerBackend(options = {}) {
         wayland: !!native.wayland,
         tools: native.tools ?? { xdotool: null },
         overlay: s.overlay.status(),
+        windowGroups: platform === 'win32',
       };
     },
 
@@ -277,7 +278,7 @@ function createComputerBackend(options = {}) {
         return shown.map(w => ({
           id: w.id, title: w.title, exe: w.exe, pid: w.pid,
           displayId: geometry.displayHolding(w.bounds, displays)?.id ?? null,
-          bounds: w.bounds, own: !!w.own, minimized: !!w.minimized,
+          bounds: w.bounds, own: !!w.own, minimized: !!w.minimized, elevated: w.elevated,
         }));
       } catch {
         await safeRelease();
@@ -321,6 +322,9 @@ function createComputerBackend(options = {}) {
           if (!ok.supported) return unavailable(ok.reason);
           const front = await s.native.foreground();
           if (front && front.elevated) return { ok: false, reason: 'elevated', message: ELEVATED_MESSAGE };
+          const selected = raw.expectedWindow;
+          const wrongWindow = { ok: false, reason: 'no-focus', message: 'The selected window must be in front and receive the input.' };
+          if (selected && (!geometry.sameWindow(front, selected) || front.elevated !== false || front.own)) return wrongWindow;
           const points = pointsOf(action);
           // No x and y: the action lands where the pointer is. A pointer that cannot be read is not guessed at.
           if (!points.length && POINTER_KINDS.has(action.kind)) {
@@ -334,11 +338,18 @@ function createComputerBackend(options = {}) {
             for (const p of points) {
               const top = windowAt(usable, p);
               if (top && top.elevated) return { ok: false, reason: 'elevated', message: ELEVATED_POINT_MESSAGE };
+              if (selected && !geometry.sameWindow(top, selected)) return wrongWindow;
             }
           }
           const bar = s.overlay.barPhysicalRect();
           const hitsBar = !!bar && points.some(p => geometry.pointInRect(p, bar));
-          const send = a => s.native.input(a);
+          const send = async a => {
+            if (selected) {
+              const latest = await s.native.foreground();
+              if (!geometry.sameWindow(latest, selected) || latest.elevated !== false || latest.own) return wrongWindow;
+            }
+            return s.native.input(a);
+          };
           const sendAction = action.kind === 'type' && action.text.length > TYPE_PIECE ? () => typeInPieces(s, action.text, front, send) : () => send(action);
           const result = hitsBar ? await s.overlay.hideBarDuring(sendAction) : await sendAction();
           if (!result.ok && result.reason === 'blocked') await safeRelease();
@@ -363,20 +374,20 @@ function createComputerBackend(options = {}) {
 
     async userInput() {
       const s = build();
-      if (s.error) return { mouse: false, keys: false };
+      if (s.error) return { available: false, mouse: false, keys: false };
       try {
         return await s.native.userInput();
       } catch {
-        return { mouse: false, keys: false };
+        return { available: false, mouse: false, keys: false };
       }
     },
 
-    async focus(windowId) {
+    async focus(windowId, expectedWindow, fallback) {
       const s = build();
       if (s.error) return { ok: false, reason: 'no-focus', message: s.error };
       if (windowId === undefined || windowId === null || windowId === '') return { ok: false, reason: 'no-focus', message: 'Name the window to bring to the front.' };
       try {
-        return await s.native.focus(String(windowId));
+        return await s.native.focus(String(windowId), expectedWindow, fallback);
       } catch {
         await safeRelease();
         return { ok: false, reason: 'no-focus', message: 'The window could not be brought to the front.' };

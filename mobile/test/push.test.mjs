@@ -329,7 +329,9 @@ test('firstLine on: the phone sees the first line; the default never does', asyn
   }
 });
 
-test('unifiedpush sends without VAPID; apns-forwarder is refused and never sent', async () => {
+// Wave 7 (phone-3): a unifiedpush push is signed like a browser's. The phone app registers with its push app under this computer's
+// VAPID key, and a push app that asked for the key refuses an unsigned push. This test used to pin "without VAPID".
+test('unifiedpush sends with VAPID; apns-forwarder is refused and never sent', async () => {
   const service = await startFakePushService();
   try {
     const phone = makePhone('u');
@@ -339,7 +341,7 @@ test('unifiedpush sends without VAPID; apns-forwarder is refused and never sent'
     devices[1].pushSubscription = { kind: 'apns-forwarder', endpoint: service.endpointFor('apns'), keys: { p256dh: 'AAAA', auth: 'AAAA' } };
     const results = await pusher.sendEvent({ kind: 'finished', projectName: 'my-app', projectId: 'p1' });
     assert.equal(results[0].outcome, 'sent');
-    assert.equal(service.received[0].headers.authorization, undefined);
+    assert.equal(String(service.received[0].headers.authorization).startsWith('vapid t='), true);
     assert.equal(results[1].outcome, 'refused');
     assert.equal(service.received.length, 1);
     assert.equal(state.removed.length, 0);

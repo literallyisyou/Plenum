@@ -107,6 +107,8 @@ let pollTimer = null;
 let polling = false;
 // The number of approval cards the tray shows. The alerts handler sets it through shell.tray.count.
 let trayCount = 0;
+// The project of the newest waiting card, from the same call ('' when the alerts do not know it).
+let trayProject = '';
 // The notice shown the first time the window is hidden to a Linux tray that may not be there (B-112). Kept, as the alerts are.
 let trayNote = null;
 let trayNoticeShown = false;
@@ -235,7 +237,9 @@ function loadHandlerModule(file) {
 // Asks the handlers whether one of them deals with a failed start (the server exited with an error, or never answered). Every
 // handler's startFailed hook runs, in file order, with { code, message }; a hook that throws is logged and skipped. The result is
 // true when a hook returned true: that handler has shown its own box and quits the app itself, so the caller shows no box and does
-// not quit. Once a start failure has been taken over, later calls answer true without asking again.
+// not quit. Once a start failure has been taken over, later calls answer true without asking again (until that server answers late after
+// all, see lateAnswer). For a start that ran out of time, info.code is null and info.waitForAnswer(ms, signal) waits on for that server
+// (shell-9): a hook may take the failure over, wait, and show its box only when the answer is not 'answered'.
 function runStartFailed(info) {
   if (startFailureHandled) return true;
   let taken = false;
@@ -302,8 +306,10 @@ const desktopShell = {
   quietNow: () => quietHours.quietNow(),
   stateFile: () => stateFile(),
   tray: {
-    count: n => {
+    // project: the project of the newest waiting card, when the alerts know it ('' when not), for 'Show waiting approval'.
+    count: (n, project) => {
       trayCount = n;
+      trayProject = typeof project === 'string' ? project : '';
       refreshTray();
     },
     // A handler's item: { label, click } to show it, null to take it away. The menu is rebuilt when it changes (see setTrayItem).
@@ -354,6 +360,12 @@ function serverEnv(registryVars) {
   for (const name of Object.keys(env)) {
     if (name.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete env[name];
   }
+  // The server listens on PORT from its environment (server.mjs). A PORT the person's environment carries (some developer tools set one)
+  // would move it off the port this shell waits on, and every start would end in "did not start in time", so the shell's own port is set.
+  for (const name of Object.keys(env)) {
+    if (name.toUpperCase() === 'PORT') delete env[name];
+  }
+  env.PORT = String(PORT);
   // The second look for a CLI that was installed while Plenum runs (lib/platform/winpath.mjs) is on only for the server this app
   // starts. Never in smoke mode: a test must only ever see the PATH it was given. A value that is already set (0 turns it off) stays.
   if (process.platform === 'win32' && !SMOKE && !Object.keys(env).some(name => name.toUpperCase() === 'PLENUM_PATH_REFRESH')) env.PLENUM_PATH_REFRESH = '1';
@@ -398,9 +410,18 @@ function startServer(registryVars) {
   child.on('exit', code => {
     child.exited = true;
     // One line for every end of a server: what kind it was, the code, and the last thing it printed on stderr (the cause, when it has one).
-    const kind = quitting ? 'during a quit' : code === RESTART_EXIT_CODE ? 'asked for a restart' : child !== server ? 'an older server' : child.answered ? 'after it had answered' : 'before it answered';
-    const why = String(child.stderrTail ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' | ').replace(/\s+/g, ' ').slice(0, 300);
-    writeLog(`the server process ended ${kind} (exit code ${code})${why ? `; it last printed: ${why}` : ''}`);
+    // A server this shell ended for a quit after asking for its clean stop: its exit code is taskkill's and its last stderr lines are old,
+    // so the line says only whether it confirmed the stop (askServerToStop). A server that ended by itself keeps the code and the cause.
+    if (quitting && child.endedByShell && child.cleanStop) {
+      const stop = child.cleanStop;
+      writeLog(stop.answered
+        ? `the server process ended for the quit after its clean stop (it answered in ${stop.ms} ms)`
+        : `the server process was ended for the quit: it did not confirm its clean stop within ${Math.round(stop.ms / 1000)} s; the last changes may not be saved`);
+    } else {
+      const kind = quitting ? 'during a quit' : code === RESTART_EXIT_CODE ? 'asked for a restart' : child !== server ? 'an older server' : child.answered ? 'after it had answered' : 'before it answered';
+      const why = String(child.stderrTail ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' | ').replace(/\s+/g, ' ').slice(0, 300);
+      writeLog(`the server process ended ${kind} (exit code ${code})${why ? `; it last printed: ${why}` : ''}`);
+    }
     if (child !== server) return;
     server = null;
     // A launcher of the hub that the server told us about (hubLaunchers) belongs to this server: it is not spared at the next stop.
@@ -470,11 +491,22 @@ async function keepsStopping(code) {
 // A start that did not work: the server ended before it answered, or the wait for it ran out. One box with Try again, Open log and Quit
 // instead of an error box and a quit. A handler may take it over first (runStartFailed). Each server is dealt with once, however many
 // things notice that it failed. Try again ends a server that is still there, then starts and waits again.
+// shell-9: a server that only ran out of its start limit (info.waitForAnswer, from bringUp) is still asked while the box is open. When it
+// answers, lateAnswer has marked it answered and loaded the page; the box is closed (its signal) and nothing of the choice is done.
 async function startFailed(child, info) {
   if (child.failureHandled) return;
   child.failureHandled = true;
   if (runStartFailed(info)) return;
-  const choice = await offerRecovery('Plenum could not start.', info.message);
+  const box = new AbortController();
+  const watch = new AbortController();
+  if (typeof info.waitForAnswer === 'function') {
+    info.waitForAnswer(Infinity, watch.signal).then(outcome => {
+      if (outcome === 'answered') box.abort();
+    }, () => {});
+  }
+  const choice = await offerRecovery('Plenum could not start.', info.message, box.signal);
+  watch.abort();
+  if (child.answered) return;
   if (choice === 'busy') return;
   if (choice === 'quit') {
     quitApp(true);
@@ -487,12 +519,14 @@ async function startFailed(child, info) {
 
 // The recovery question: Try again, Open log and Quit. Open log shows the log file in the file manager and asks again. Resolves 'retry',
 // 'quit' or 'busy' (another question of this kind is already open). In smoke mode nothing is shown and the answer is 'quit'.
-async function offerRecovery(message, detail) {
+// signal (optional): aborted by the app when the question has settled by itself (shell-9); the box closes and the answer is 'answered'.
+async function offerRecovery(message, detail, signal = null) {
   if (recoveryOpen) return 'busy';
   recoveryOpen = true;
   try {
     for (;;) {
-      const picked = await choose({ message, detail: `${detail}\n\nLog: ${logFile}`, buttons: ['Try again', 'Open log', 'Quit'], defaultId: 0, cancelId: 2 });
+      const picked = await choose({ message, detail: `${detail}\n\nLog: ${logFile}`, buttons: ['Try again', 'Open log', 'Quit'], defaultId: 0, cancelId: 2, ...(signal ? { signal } : {}) });
+      if (signal?.aborted) return 'answered';
       if (picked === 1) {
         try {
           electronShell.showItemInFolder?.(logFile);
@@ -546,19 +580,27 @@ async function onServerMessage(child, message) {
 
 // A clean stop first (B-29): the server stops its runs, stores their replies and saves the state, then answers shutdown-done (server.mjs).
 // Resolves when it answered, or after SHUTDOWN_WAIT_MS when it did not; stopServer below then ends the process either way.
-const SHUTDOWN_WAIT_MS = 4000;
+// The wait covers the server's worst case: 3 s for the runs to stop, about 3 s of retries for a save whose rename is blocked, and 2 s
+// for the store's last write (server.mjs, lib/store.mjs). A server that answers ends the wait at once, so a normal quit is not slower.
+const SHUTDOWN_WAIT_MS = 8500;
 let shutdownDone = null;
 // Whether the server answered the last shutdown message (stopServer reads it).
 let serverAnswered = false;
+// The clean stop asked of a server: { child, promise }. A Windows session end and a quit after it share one request (shell-5).
+let stopRequest = null;
 function askServerToStop() {
   const child = server;
   if (!child) return Promise.resolve();
-  return new Promise(resolve => {
+  if (stopRequest?.child === child) return stopRequest.promise;
+  const asked = Date.now();
+  const promise = new Promise(resolve => {
     const timer = setTimeout(() => finish(false), SHUTDOWN_WAIT_MS);
     function finish(answered) {
       clearTimeout(timer);
       shutdownDone = null;
       serverAnswered = answered === true;
+      // For the line the exit handler writes: whether it confirmed, and how long it took.
+      child.cleanStop = { answered: answered === true, ms: Date.now() - asked };
       resolve();
     }
     shutdownDone = () => finish(true);
@@ -568,6 +610,8 @@ function askServerToStop() {
       finish(false);
     }
   });
+  stopRequest = { child, promise };
+  return promise;
 }
 
 // The pids of the server's direct children, from ps. On macOS and Linux an agent run is started detached (lib/proc.mjs), so it leads its
@@ -621,6 +665,8 @@ function stopServer() {
   const child = server;
   server = null;
   setPhonesConnected([]);
+  // Its end is this shell's doing, so the exit handler does not report taskkill's exit code as the server's (shell-2).
+  child.endedByShell = true;
   // B-109: on macOS and Linux the agents' groups get SIGTERM first, so a server that cannot read its shutdown message does not leave them
   // running. A group that is already gone (ESRCH) is not an error, and a child that never led a group is simply skipped.
   // Only when the server did not answer shutdown: a server that answered has already stopped its runs through killTree, and a detached
@@ -676,8 +722,9 @@ function portInUse() {
 // round. There is one try at a time. abort, when given, is asked before every try: true stops the wait (the server has ended).
 // heard, when given, is a promise that resolves when the server says it listens (its 'listening' message, wave 4): the wait ends at once
 // then, without the next poll, and no poll starts after it. The poll stays as the way in for a server that does not send it.
+// retryMs is the pause between tries (the late wait of shell-9 asks less often).
 const STATUS_TRY_MS = 10_000;
-function waitForServer(timeoutMs = 30_000, abort = null, heard = null) {
+function waitForServer(timeoutMs = 30_000, abort = null, heard = null, retryMs = 300) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     let checkPath = '/api/health';
@@ -698,7 +745,7 @@ function waitForServer(timeoutMs = 30_000, abort = null, heard = null) {
       if (done) return;
       if (stopped()) fail('The local server stopped before it answered.');
       else if (Date.now() > deadline) fail('The local server did not start in time.');
-      else setTimeout(tryOnce, 300);
+      else setTimeout(tryOnce, retryMs);
     };
     const tryOnce = () => {
       if (done) return;
@@ -758,18 +805,50 @@ async function bringUp({ loadPage }) {
     await waitForServer(30_000, () => child.exited || child !== server || quitting, heard);
   } catch (err) {
     if (child.exited || child !== server || quitting) return;
-    void startFailed(child, { code: null, message: err.message });
+    // The time ran out, but the server may still be starting (a busy computer, antivirus reading the new files after an update): whoever
+    // deals with the failed start can wait on for it (shell-9).
+    void startFailed(child, { code: null, message: err.message, waitForAnswer: (ms, signal) => lateAnswer(child, heard, { began, loadPage, ms, signal }) });
     return;
   }
+  markAnswered(child, { began, loadPage });
+}
+
+// A server answered its start check: in time (bringUp), or late (lateAnswer). The page is loaded when the start asked for it, and the events
+// channel opens.
+function markAnswered(child, { began, loadPage, late = false }) {
   child.answered = true;
   everAnswered = true;
   restartTried = false;
   answers += 1;
+  const after = late ? ', after its start limit had run out' : '';
   writeLog(answers === 1
-    ? `start: the server answered ${Date.now() - began} ms after it was started (${Date.now() - SHELL_STARTED} ms after the shell started)`
-    : `the server answered again ${Date.now() - began} ms after it was started`);
+    ? `start: the server answered ${Date.now() - began} ms after it was started (${Date.now() - SHELL_STARTED} ms after the shell started)${after}`
+    : `the server answered again ${Date.now() - began} ms after it was started${after}`);
   subscribeEvents();
   if (loadPage) loadApp();
+}
+
+// shell-9: the wait for a server that ran out of its start limit goes on, given as info.waitForAnswer(ms, signal) to whoever deals with the
+// failed start: the recovery box keeps it up while it is open (startFailed), and the updater gives the first start after an update a
+// second, longer wait (desktop/handlers/app-update.cjs). It hears the server's 'listening' message and asks its health route, as the start
+// check does, every LATE_TRY_MS. Resolves (never rejects) with 'answered' (the server is marked answered and the page loads, as for an
+// answer in time; its failed start is forgotten, so a later end of it is restarted as usual), 'gone' (it ended, or another server took
+// its place), 'quitting' (the app quits), or 'no-answer' (ms ran out, or signal aborted).
+const LATE_TRY_MS = 500;
+async function lateAnswer(child, heard, { began, loadPage, ms = Infinity, signal = null }) {
+  const gone = () => child.exited === true || child !== server;
+  const outcome = () => (quitting ? 'quitting' : gone() ? 'gone' : 'no-answer');
+  try {
+    await waitForServer(ms, () => gone() || quitting || signal?.aborted === true, heard, LATE_TRY_MS);
+  } catch {
+    return outcome();
+  }
+  if (quitting || gone() || signal?.aborted === true) return outcome();
+  if (child.answered) return 'answered';
+  child.failureHandled = false;
+  startFailureHandled = false;
+  markAnswered(child, { began, loadPage, late: true });
+  return 'answered';
 }
 
 async function restartAndReload() {
@@ -854,6 +933,10 @@ function createWindow() {
   win.on('session-end', () => {
     quitting = true;
     sessionEnding = true;
+    // Electron sends no before-quit on Windows for a shutdown, restart or sign-out, so the server's clean stop (its runs' replies and
+    // the state saved) is asked here; a quit that follows shares the same request. Not on query-session-end: that one can be cancelled,
+    // and a server told to stop refuses every new run.
+    void askServerToStop();
   });
   win.on('closed', () => {
     clearTimeout(unresponsiveTimer);
@@ -1115,27 +1198,51 @@ function fetchState() {
 const quietHours = createQuietReader({ fetchJson: apiPath => fetchJson(apiPath) });
 
 // GET of one of the server's own JSON paths (with the app's token). Resolves null when it does not answer in time, is not 200 or not JSON.
+// It always settles: a server that ends in the middle of an answer fires only 'aborted' and 'close' on the response (no 'end', and the
+// socket's timeout is gone with the socket), and without them the poll's flag and the quiet-hours reader would wait for good (shell-7).
+const FETCH_GUARD_MS = 15_000;
 function fetchJson(apiPath) {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port: PORT, path: apiPath, headers: apiHeaders() }, res => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', chunk => {
-        body += chunk;
+    let done = false;
+    let req = null;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      clearTimeout(guard);
+      resolve(value);
+    };
+    const guard = setTimeout(() => {
+      req?.destroy();
+      finish(null);
+    }, FETCH_GUARD_MS);
+    guard.unref?.();
+    try {
+      req = http.get({ host: '127.0.0.1', port: PORT, path: apiPath, headers: apiHeaders() }, res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            finish(res.statusCode === 200 ? JSON.parse(body) : null);
+          } catch {
+            finish(null);
+          }
+        });
+        res.on('aborted', () => finish(null));
+        res.on('error', () => finish(null));
+        // After 'end' this changes nothing (finish runs once); without 'end' the answer was cut off.
+        res.on('close', () => finish(null));
       });
-      res.on('end', () => {
-        try {
-          resolve(res.statusCode === 200 ? JSON.parse(body) : null);
-        } catch {
-          resolve(null);
-        }
+      req.setTimeout(POLL_TIMEOUT_MS, () => {
+        req.destroy();
+        finish(null);
       });
-    });
-    req.setTimeout(POLL_TIMEOUT_MS, () => {
-      req.destroy();
-      resolve(null);
-    });
-    req.on('error', () => resolve(null));
+      req.on('error', () => finish(null));
+    } catch {
+      finish(null);
+    }
   });
 }
 
@@ -1324,7 +1431,8 @@ function buildTrayMenu(waiting) {
   const extra = [...trayItems.keys()].sort((a, b) => rank(a) - rank(b)).map(name => ({ label: trayItems.get(name).label, click: trayItems.get(name).click }));
   return Menu.buildFromTemplate([
     { label: 'Show Plenum', click: () => showWindow() },
-    { label: waiting ? `Show waiting approval (${waiting})` : 'Show waiting approval', enabled: waiting > 0, click: () => showWindow() },
+    // Opens the waiting card (public/ext-open-route.js): of the project the alerts named, else of the project on screen (shell-10).
+    { label: waiting ? `Show waiting approval (${waiting})` : 'Show waiting approval', enabled: waiting > 0, click: () => showWindow({ kind: 'waiting', ...(trayProject ? { id: trayProject } : {}) }) },
     ...extra,
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
@@ -1497,6 +1605,14 @@ async function smokeExit(code, why) {
   log.end(() => finish());
 }
 
+// The application menu (shell-1). No bar is drawn (the window is frameless); only its shortcuts count. Kept: copy, paste, undo and the
+// rest of Edit, and the zoom keys. Never close, minimise or full screen. Reload and the developer tools only in a development copy.
+// On macOS the app menu stays, so Cmd+Q and Hide work as on every Mac app.
+function appMenuTemplate(packaged) {
+  const view = [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, ...(packaged ? [] : [{ type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools' }])];
+  return [...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []), { role: 'editMenu' }, { label: 'View', submenu: view }];
+}
+
 async function main() {
   // The same id as build.appId in package.json, which the installer writes into its shortcuts.
   // With matching ids, a pinned taskbar icon and the running window are one icon, not two.
@@ -1520,6 +1636,14 @@ async function main() {
   handlerModules = [];
   handlers = loadHandlers({ dir: path.join(__dirname, 'handlers'), log: writeLog, load: loadHandlerModule });
   mainStarted = true;
+  // Plenum's own menu, set before the window. Without one Electron installs its default menu, whose shortcuts work in this frameless
+  // window too: Ctrl+W closed Plenum (and with it every run), Ctrl+R reloaded the page, F11 took the window to full screen with no way
+  // back in sight, Ctrl+M minimised it. A menu that cannot be set must not stop the start.
+  try {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged === true)));
+  } catch {
+    writeLog('the application menu could not be set');
+  }
   createWindow();
   // B-111: a program that already listens on the port would answer the status check as if it were this app's server, and the
   // app would load it. So the port is checked first, and a busy one stops the start with a plain message.

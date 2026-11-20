@@ -387,7 +387,6 @@
     // The menu lists the models Plenum knows. The text field is what is saved, so it also takes a model that is not in the menu.
     const pick = make('select', 'pl-select');
     pick.setAttribute('aria-label', `Model for step ${n}`);
-    fillModels(pick);
     const ref = make('input', 'pl-input');
     ref.type = 'text';
     ref.maxLength = REF_MAX;
@@ -398,9 +397,12 @@
     ref.value = s.ref;
     const syncPick = () => {
       const typed = ref.value.trim().toLowerCase();
-      pick.value = MuseUI.catalog.some(c => refOf(c) === typed) ? typed : '';
+      pick.value = [...pick.options].some(o => o.value === typed) ? typed : '';
     };
-    syncPick();
+    MuseUI.trackModelMenu(pick, () => {
+      fillModels(pick);
+      syncPick();
+    });
     pick.addEventListener('change', () => {
       if (!pick.value) return;
       s.ref = pick.value;
@@ -439,12 +441,13 @@
 
   // The menu of models, grouped by provider as the model menu in the top bar is.
   function fillModels(select) {
-    select.append(new Option('Pick a model…', ''));
+    select.replaceChildren(new Option('Pick a model…', ''));
     const names = new Map(GROUPS);
-    const providers = [...new Set([...GROUPS.map(g => g[0]), ...MuseUI.catalog.map(c => c.provider)])];
+    const available = MuseUI.modelChoices();
+    const providers = [...new Set([...GROUPS.map(g => g[0]), ...available.map(c => c.provider)])];
     for (const provider of providers) {
       // A model the account no longer has is left out (the catalog marks it offered: false).
-      const models = MuseUI.catalog.filter(c => c.provider === provider && c.offered !== false);
+      const models = available.filter(c => c.provider === provider);
       if (!models.length) continue;
       const group = document.createElement('optgroup');
       group.label = names.get(provider) ?? provider;
@@ -821,7 +824,9 @@
           s.status = 'skipped';
         }
       }
-      paintRun();
+      // The list draws its running card and its Run buttons from the run, so it is drawn again too when it is on screen.
+      if (mode === 'list') show();
+      else paintRun();
     }
   }
 

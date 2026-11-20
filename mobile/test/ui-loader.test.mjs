@@ -2,7 +2,7 @@
 // Everything here runs in Node on fake caches, fake files and a fake channel. A desktop is simulated by a temp public/ folder that
 // lib/remote/ui-manifest.mjs reads, so the manifest the phone checks is the one the desktop computes.
 // Run through the sealed runner, never from the project folder:
-//   node C:/Users/willi/PlenumWork/mcshots/build/mobile/run.mjs --id mob-09-shims-ui-manifest-and-loader ui-loader.test.mjs
+//   node build/mobile/run.mjs --id mob-09-shims-ui-manifest-and-loader ui-loader.test.mjs
 import { after, before, describe, test } from 'node:test';
 import { startSealedServer } from './helpers/sealed-server.mjs';
 import assert from 'node:assert/strict';
@@ -37,6 +37,7 @@ const INDEX = `<!doctype html>
 </head>
 <body>
   <main id="app"></main>
+  <script src="/assistant-content.js" defer></script>
   <script src="/markdown.js" defer></script>
   <script src="/music.js" defer></script>
   <script src="/app.js" defer></script>
@@ -52,6 +53,7 @@ function makeRoot(extra = {}) {
   const files = {
     'index.html': INDEX,
     'app.js': 'window.appLoaded = true;\n',
+    'assistant-content.js': 'window.PlenumAssistantContent = {};\n',
     'markdown.js': 'window.md = 1;\n',
     'music.js': 'window.music = 1;\n',
     'style.css': 'body { color: #000; }\n',
@@ -173,7 +175,7 @@ describe('ui-manifest: manifest()', () => {
     const root = makeRoot();
     const m = await manifest({ root, desktopVersion: '1.4.2', generation: null, overlay, fs, crypto });
     const paths = m.files.map(f => f.path);
-    assert.deepEqual(paths, ['/', '/app.js', '/ext-drive.css', '/ext-drive.js', '/ext-phone.js', '/ext.js', '/icon.png', '/mark.svg', '/markdown.js', '/music.js', '/style.css']);
+    assert.deepEqual(paths, ['/', '/app.js', '/assistant-content.js', '/ext-drive.css', '/ext-drive.js', '/ext-phone.js', '/ext.js', '/icon.png', '/mark.svg', '/markdown.js', '/music.js', '/style.css']);
     const app = m.files.find(f => f.path === '/app.js');
     assert.equal(app.sha256, crypto.createHash('sha256').update('window.appLoaded = true;\n').digest('hex'));
     assert.equal(app.size, Buffer.byteLength('window.appLoaded = true;\n'));
@@ -224,7 +226,8 @@ describe('ui-manifest: manifest()', () => {
   });
 
   test('every static path the phone loads is a UI path, and the list is the one the page needs', () => {
-    assert.deepEqual([...UI_STATIC_PATHS].sort(), ['/', '/app.js', '/ext.js', '/icon.png', '/mark.svg', '/markdown.js', '/music.js', '/style.css']);
+    assert.deepEqual([...UI_STATIC_PATHS].sort(), ['/', '/app.js', '/assistant-content.js', '/ext.js', '/icon.png', '/mark.svg', '/markdown.js', '/music.js', '/style.css']);
+    assert.equal(isUiPath('/assistant-content.js'), true);
     assert.equal(contentTypeFor('style.css'), 'text/css; charset=utf-8');
     assert.equal(contentTypeFor('x.bin'), 'application/octet-stream');
     assert.equal(isUiPath('/ext.js'), true);
@@ -263,7 +266,7 @@ describe('ui-manifest: rewriteIndex()', () => {
   test('the shim lines sit directly above the first script, each on its own line with that line\'s indentation', () => {
     const out = rewriteIndex(INDEX);
     assert.ok(
-      out.includes('  <script src="/shell/boot.js"></script>\n  <script type="module" src="/shell/shell.js"></script>\n  <script src="/markdown.js" defer></script>\n'),
+      out.includes('  <script src="/shell/boot.js"></script>\n  <script type="module" src="/shell/shell.js"></script>\n  <script src="/assistant-content.js" defer></script>\n'),
       out,
     );
   });
@@ -858,6 +861,28 @@ describe('sw.js: the UI, the artifact iframe, push and notifications', () => {
     const client = { focus: async () => focused.push('focus'), postMessage: msg => focused.push(msg) };
     await openFromNotification({ action: 'stop', notification: { data: {}, close() {} } }, { ...workerEnv(fakeCaches()), clients: { matchAll: async () => [client], openWindow: async () => {} } });
     assert.deepEqual(focused, ['focus', { op: 'plenum-hash', hash: '#stop' }]);
+  });
+
+  test('a cold notification tap uses the direct bridge shell without changing the worker scope', async () => {
+    const handlers = new Map();
+    const opened = [];
+    const prefix = `/p/${'ab'.repeat(16)}/`;
+    const self = {
+      location: new URL(`https://phone.example${prefix}sw.js`),
+      Response, MessageChannel, setTimeout, clearTimeout,
+      addEventListener(name, fn) { handlers.set(name, fn); },
+    };
+    const clients = { matchAll: async () => [], openWindow: async url => opened.push(url) };
+    installWorker(self, { caches: fakeCaches(), clients, registration: {} });
+    let pending;
+    const computer = 'cd'.repeat(32);
+    handlers.get('notificationclick')({
+      action: 'approve',
+      notification: { data: { routes: { approve: '/#approve=a9' }, line: 'Run: npm test', computer } },
+      waitUntil(promise) { pending = promise; },
+    });
+    await pending;
+    assert.deepEqual(opened, [`${prefix}#approve=a9&line=${encodeURIComponent('Run: npm test')}&computer=${computer}`]);
   });
 
   test('installWorker wires the events and never answers a request it does not own', async () => {

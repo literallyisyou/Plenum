@@ -377,7 +377,8 @@
       infoAt = now;
     }
     const ready = infoCache.readiness ?? {};
-    const models = (MU.catalog ?? []).filter(c => c.provider !== 'echo' && ready[c.provider]?.ready === true);
+    // A model its provider no longer offers (offered: false) is left out, as in the composer's model menu.
+    const models = (MU.catalog ?? []).filter(c => c.provider !== 'echo' && c.offered !== false && ready[c.provider]?.ready === true);
     return models
       .map((c, i) => ({ c, i }))
       .sort((a, b) => {
@@ -480,11 +481,20 @@
     draft.disabled = true;
     try {
       const data = await MU.api('/api/handoff/draft', { project, from, to, error });
+      // The chat's model is set first, and only a model that was set gets the note: a refusal goes to the catch, and nothing says
+      // "drafted" for a chat whose model did not change.
+      if (typeof MU.setThreadModel === 'function') {
+        await MU.setThreadModel(to);
+        // As a change in the model menu does: the ring and the near-limit check follow the new model.
+        syncRing();
+        checkNear();
+      } else {
+        el.model.value = to;
+        el.model.dispatchEvent(new Event('change'));
+      }
       // Only the composer and the model picker change. Nothing is sent: the person edits the note and presses Enter.
       el.input.value = data.text;
       el.input.dispatchEvent(new Event('input', { bubbles: true }));
-      el.model.value = to;
-      el.model.dispatchEvent(new Event('change'));
       el.input.focus();
       MU.toast('Handoff drafted. Edit it, then press Enter.');
       // The quiet line: the next model starts from the chat so far, not from this session.
@@ -555,9 +565,9 @@
 
   // ---------- wiring ----------
 
-  // The ring goes right after the model picker's label, inside the composer bar.
-  const pickLabel = el.model.closest('label');
-  if (pickLabel) pickLabel.after(ringWrap);
+  // Keep plan usage accessible while the model picker is tucked inside Chat options.
+  const anchor = el.chatOptions ?? el.model.closest('label');
+  if (anchor) anchor.after(ringWrap);
 
   ring.addEventListener('click', () => {
     if (popOpen) closePop();

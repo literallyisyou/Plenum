@@ -14,7 +14,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import WebSocketClient, { WebSocketServer } from 'ws';
 import { createMemoryStorage, freePort, makeBridge, sleep, until } from './helpers/sealed-server.mjs';
@@ -24,7 +24,7 @@ import { createRegistry } from '../../lib/remote/registry.mjs';
 import { TYPE as FRAME_TYPE, encodeFrame } from '../../lib/remote/frames.mjs';
 import { decodeStopAck, encodeStopOnly } from '../../lib/remote/stop-only.mjs';
 import { candidatesOf, createLanCarrier, FIREWALL_TEXT, hostOf } from '../../lib/remote/carriers/lan.mjs';
-import { createTailscaleCarrier, INSTALL_TEXT, locateTailscale } from '../../lib/remote/carriers/tailscale.mjs';
+import { createTailscaleCarrier, INSTALL_TEXT, locateTailscale, runCli } from '../../lib/remote/carriers/tailscale.mjs';
 import { backoffFor, createRelayCarrier, FIRST_RETRY_MS, MAX_RETRY_MS, parseRelayUrl, probeUpgrade, sha256Hex } from '../../lib/remote/carriers/relay.mjs';
 
 const FAKE_DIR = fileURLToPath(new URL('./helpers/fake-tailscale/', import.meta.url));
@@ -198,9 +198,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
 
   before(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'ts-fake-'));
-    savedEnv = { TS_FAKE_LOG: process.env.TS_FAKE_LOG, TS_FAKE_NODE: process.env.TS_FAKE_NODE, TS_FAKE_STATUS: process.env.TS_FAKE_STATUS, TS_FAKE_FAIL: process.env.TS_FAKE_FAIL };
-    if (process.platform !== 'win32') chmodSync(path.join(FAKE_DIR, 'tailscale'), 0o755);
-    process.env.TS_FAKE_NODE = process.execPath;
+    savedEnv = { TS_FAKE_LOG: process.env.TS_FAKE_LOG, TS_FAKE_STATUS: process.env.TS_FAKE_STATUS, TS_FAKE_FAIL: process.env.TS_FAKE_FAIL };
   });
   after(() => {
     for (const [key, value] of Object.entries(savedEnv)) {
@@ -223,6 +221,10 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
   const calls = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line).argv) : []);
   const changes = () => calls().filter(a => a[0] === 'serve' && a[1] !== 'status');
   const locateFake = () => ({ env: { PATH: FAKE_DIR }, names: [SHIM], fixedPaths: [] });
+  const fakeCarrier = () => createTailscaleCarrier({
+    locate: locateFake(),
+    run: (bin, args, options) => runCli(process.execPath, [path.join(path.dirname(bin), 'fake.mjs'), ...args], options),
+  });
   const fakeCtx = ({ enabled, port = 4321, name = '' }) => {
     const state = { enabled, port, name };
     return {
@@ -241,7 +243,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
 
   test('turning the switch on runs status, then exactly one serve; a second round changes nothing; the switch off resets once', async () => {
     fresh();
-    const ts = createTailscaleCarrier({ locate: locateFake() });
+    const ts = fakeCarrier();
     const bridge = await makeBridge({ carrier: false, phones: { lan: { enabled: false, anyAddress: false }, tailscale: { enabled: false, name: '' } }, remoteOptions: { loadCarrier: async kind => (kind === 'tailscale' ? { default: ts } : null) } });
     try {
       assert.deepEqual(calls(), [], 'nothing runs before the switch is on');
@@ -288,7 +290,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
 
   test('a computer that is not signed in is not served; a serve that fails leaves no name and no hint', async () => {
     fresh('needslogin');
-    const ts = createTailscaleCarrier({ locate: locateFake() });
+    const ts = fakeCarrier();
     const ctx = fakeCtx({ enabled: true, port: 4321 });
     const view = await ts.start(ctx);
     assert.equal(view.ready, false);
@@ -297,7 +299,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     assert.deepEqual(await ts.hints(), [{ kind: 'tailscale', on: false, label: 'Tailscale' }]);
 
     fresh(undefined, 'serve');
-    const failing = createTailscaleCarrier({ locate: locateFake() });
+    const failing = fakeCarrier();
     const failed = await failing.start(fakeCtx({ enabled: true, port: 4321 }));
     assert.equal(failed.error, 'serve');
     assert.equal(failed.ready, false);
@@ -307,7 +309,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
 
   test('a stop without a context resets nothing; a stop with a remembered name resets once; a stop with no marker resets nothing', async () => {
     fresh();
-    const ts = createTailscaleCarrier({ locate: locateFake() });
+    const ts = fakeCarrier();
     const ctx = fakeCtx({ enabled: true, port: 4321 });
     await ts.start(ctx);
     assert.equal(ctx.state.name, 'will-pc.tail1234.ts.net', 'the name is remembered for a later launch');
@@ -320,7 +322,7 @@ describe('Tailscale serve, with the fake CLI on PATH', () => {
     assert.equal(later.state.name, '');
 
     fresh();
-    const other = createTailscaleCarrier({ locate: locateFake() });
+    const other = fakeCarrier();
     await other.stop(fakeCtx({ enabled: false, port: 4321, name: '' }));
     assert.deepEqual(calls(), [], 'a computer whose serve Plenum never set is left alone');
   });

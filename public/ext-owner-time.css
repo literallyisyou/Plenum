@@ -1,0 +1,46 @@
+/* The owner-time meter on the Businesses pane (public/ext-owner-time.js). Tokens of style.css only; no colour of its own. */
+.ot-box {
+  display: grid; gap: var(--sp-2); min-width: 0; margin: 0 0 var(--sp-4); padding: var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+}
+.ot-box[hidden] { display: none; }
+.ot-box[data-state="hold"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.ot-box[data-state="over"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.ot-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+.ot-title { margin: 0; font: 600 var(--fs-read)/var(--lh-tight) var(--ui); color: var(--text); }
+.ot-est { color: var(--muted); font-size: var(--fs-small); }
+.ot-total { margin: 0; color: var(--text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ot-meter { appearance: none; -webkit-appearance: none; width: 100%; height: 4px; border: 0; border-radius: var(--r-full); background: var(--surface-3); overflow: hidden; }
+.ot-meter::-webkit-progress-bar { background: var(--surface-3); border-radius: var(--r-full); }
+.ot-meter::-webkit-progress-value { background: var(--accent); border-radius: var(--r-full); }
+.ot-box[data-state="hold"] .ot-meter::-webkit-progress-value { background: var(--warn); }
+.ot-box[data-state="over"] .ot-meter::-webkit-progress-value { background: var(--bad); }
+.ot-line { margin: 0; color: var(--warn); overflow-wrap: anywhere; }
+.ot-line[hidden] { display: none; }
+.ot-box[data-state="over"] .ot-line { color: var(--bad); }
+.ot-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); color: var(--text-2); }
+.ot-table th, .ot-table td { padding: var(--sp-1) 0; border-top: 1px solid var(--line); font-weight: 400; text-align: left; overflow-wrap: anywhere; }
+.ot-table thead th { border-top: 0; color: var(--muted); }
+.ot-table .ot-n { width: 96px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ot-table .ot-all th, .ot-table .ot-all td { font-weight: 600; color: var(--text); }
+.ot-what { min-width: 0; }
+.ot-what-head { color: var(--muted); font-size: var(--fs-small); cursor: pointer; }
+.ot-what-head:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+.ot-note { margin: var(--sp-2) 0 0; color: var(--muted); font-size: var(--fs-small); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.ot-list { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); color: var(--text-2); font-size: var(--fs-small); line-height: var(--lh-body); }
+.ot-cap { display: grid; gap: var(--sp-1); margin-top: var(--sp-3); min-width: 0; }
+.ot-cap-label { color: var(--text-2); font-size: var(--fs-small); }
+.ot-cap-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.ot-cap-input {
+  width: 112px; min-height: var(--ctl); padding: 6px 10px; box-sizing: border-box; background-color: var(--bg);
+  border: 1px solid var(--line-2); border-radius: var(--r-md); color: var(--text); font: var(--fs-body)/var(--lh-ui) var(--ui);
+  font-variant-numeric: tabular-nums; transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.ot-cap-input:hover { border-color: var(--line-3); }
+.ot-cap-input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.ot-cap-input:disabled { opacity: 0.5; }
+.ot-say { margin: 0; color: var(--muted); font-size: var(--fs-small); }
+.ot-say:empty { display: none; }
+.ot-bad { color: var(--bad); }
+/* On a phone the field is a 44 px target like every control of the Businesses pane (public/ext-phone.css, wave 4). */
+html[data-surface="phone"] .ot-cap-input { min-height: 44px; }

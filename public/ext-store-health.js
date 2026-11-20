@@ -339,8 +339,14 @@
         if (!keepStatus) say(typeof data.problem === 'string' ? data.problem : '', typeof data.problem === 'string');
       } catch (err) {
         list.replaceChildren();
-        setUnder();
-        if (!keepStatus) say(`The list of copies could not be read (${err && err.message ? err.message : 'no answer'}). Open Settings again to retry.`, true);
+        // The next step is right there: read the list again.
+        const again = MuseUI.button('ghost small', 'Try again');
+        again.addEventListener('click', () => {
+          only('Reading the copies...');
+          fill(false);
+        });
+        setUnder(again);
+        if (!keepStatus) say(`The list of copies could not be read (${err && err.message ? err.message : 'no answer'}). Press Try again.`, true);
       }
     }
 

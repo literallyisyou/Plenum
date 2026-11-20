@@ -221,6 +221,8 @@ export function ctxFor(s, nav = {}, env = {}) {
     haveVersion: conn.failure?.have ?? hello?.desktopVersion ?? null,
     appVersion: env.plenumAppVersion ?? null,
     cause: s?.ui?.cause ?? nav.uiCause ?? 'checksum',
+    // w7: { app, desktop, update } when the built-in screens are for another release than the computer's (cause 'version').
+    versions: s?.ui?.versions ?? null,
     hasCopy: Boolean(s?.ui?.hasCopy ?? nav.hasCopy),
     forwarder: FORWARDER_BUILD,
     consentGiven: Boolean(nav.consentGiven),

@@ -1,99 +1,112 @@
-// Chat history panel: search this project's chat, or every project's chat, and export this chat as Markdown. Owned by
-// this panel. Builds on window.MuseUI (see app.js). The search runs on the server (/api/history/search, or
-// /api/history/search-all while "All projects" is on), and the panel shows only the matches it returns. The export is
-// a download from /api/history/export, so the chat is not read into the page for it.
+// Discover and open saved chats by title or message. Markdown export follows the chat on screen.
 (function () {
-  const MuseUI = window.MuseUI;
-  // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
-  if (!MuseUI) return;
+  const MU = window.MuseUI;
+  if (!MU) return;
 
-  const TITLE = 'Chat history';
-  const BUTTON_ID = 'historyBtn';
-  const SEARCH_DELAY_MS = 250;
+  const TITLE = 'Search chats';
+  const DELAY = 250;
   const MAX_QUERY = 200;
-  // The server returns this many at most, so a full list means there may be older matches it did not send.
-  const MAX_RESULTS = 50;
-  const FLASH_CLASS = 'ext-history-hit';
-  const FLASH_MS = 1600;
-  const IDLE = 'Type a word or phrase. Matches in this project’s chat show here, newest first.';
-  const IDLE_ALL = 'Type a word or phrase. Matches in every project\'s chat show here, newest first.';
-  // Switching to another project from a result waits this long at most, checking every SWITCH_POLL_MS.
-  const SWITCH_WAIT_MS = 3000;
-  const SWITCH_POLL_MS = 100;
+  const SURFACE = document.documentElement.dataset.surface;
+  const activeProject = () => MU.state.activeProject;
+  const activeThread = () => MU.threads.scope();
+  const patternFor = q => new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
+  let disposePanel;
 
-  function currentProject() {
-    const S = MuseUI.state;
-    return (S.projects ?? []).find(p => p.id === S.activeProject) ?? null;
+  function entryPoint(className, scope) {
+    const b = MU.button(className, '');
+    b.append(MU.icon('search'));
+    if (scope === 'all') b.append(MU.span('ext-history-link-label', TITLE));
+    b.title = scope === 'all' ? 'Search chats across projects (Ctrl+Shift+F)' : 'Search chats in this project (Ctrl+Shift+F)';
+    b.setAttribute('aria-label', TITLE);
+    b.setAttribute('aria-haspopup', 'dialog');
+    b.addEventListener('click', () => openSearch(scope, b));
+    return b;
   }
 
-  // The project the chat shows now. A search or an export asks for it when it runs, so it follows a switch made from a
-  // result.
-  const activeId = () => MuseUI.state.activeProject;
-  // The thread on screen (Main when none is set, the project's id, as activeScope in app.js).
-  const activeThreadId = () => MuseUI.state.activeThread || activeId();
+  function openSearch(scope, from) {
+    if (MU.dialogOpen?.()) return;
+    const initialScope = activeProject() ? scope : 'all';
+    MU.openDrawer(TITLE, body => renderPanel(body, initialScope, from));
+  }
 
-  // The turn class the chat gives a message, or null when the message draws no single turn: a build note, a council,
-  // or a reply made only of tool steps. This mirrors messageNodes in app.js. If the two ever disagree, the counts in
-  // chatTurnFor stop matching, and the result shows its snippet instead of jumping to the wrong turn.
+  // Preserve the renderer's placeholder turns so older hits can be scrolled into view.
   function turnKind(m) {
+    if (m.draft === true) return null;
     if (m.compact) return 'summary';
     if (m.role === 'user') return m.kind === 'build' ? null : 'user';
     if (m.kind === 'advisor') return 'advisor';
     if (m.kind === 'council' || m.kind === 'build') return null;
-    const hasText = String(m.content ?? '').trim() !== '';
-    // A failed or stopped reply with no text draws an error line or a quiet note, not an assistant turn (app.js, B-49).
-    if (!hasText && (m.error || m.aborted)) return null;
-    return hasText || !(m.tools ?? []).length ? 'assistant' : null;
+    if ((m.content ?? '').trim()) return 'assistant';
+    return (m.tools ?? []).length || m.computerRun || m.error || m.aborted || m.interrupted ? null : 'assistant';
   }
 
-  // The chat element for a search result, or null. The chat has no index on its turns, so the turn is found by its
-  // place among the turns of the same kind. The count of those turns must agree with the transcript first.
-  function chatTurnFor(hit, q) {
-    const messages = MuseUI.state.messages ?? [];
+  function matchingTurn(hit, pattern) {
+    const messages = MU.state.messages ?? [];
     const msg = messages[hit.index];
-    if (!msg || !String(msg.content ?? '').toLowerCase().includes(q.toLowerCase())) return null;
+    if (!msg || msg.role !== hit.role || (hit.ts && msg.ts !== hit.ts)) return null;
+    const text = msg.role === 'assistant' ? globalThis.PlenumAssistantContent?.clean(msg.content).text ?? msg.content : msg.content;
+    if (!pattern.test(text ?? '')) return null;
     const kind = turnKind(msg);
     if (!kind) return null;
     const sameKind = messages.filter(m => turnKind(m) === kind);
-    const turns = [...MuseUI.el.chat.querySelectorAll(`.turn.${kind}`)];
+    const turns = MU.stream().querySelectorAll(`.turn.${kind}`);
     if (turns.length !== sameKind.length) return null;
     return turns[sameKind.indexOf(msg)] ?? null;
   }
 
-  // The sidebar link sits just above Commands. It opens the drawer, which is built fresh on each open.
-  function sideLink() {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'side-link';
-    b.id = BUTTON_ID;
-    b.append(MuseUI.icon('search'), TITLE);
-    b.addEventListener('click', () => MuseUI.openDrawer(TITLE, renderPanel));
-    return b;
-  }
-
-  // The snippet with the query marked. The match is found in this text itself, with the same case-insensitive plain-text
-  // pattern the server uses (lib/routes/history.mjs), so the index is into this text and not into a lowercased copy, whose
-  // length can differ. The text is set node by node, so nothing in it is read as markup.
-  function snippetNode(text, q) {
-    const node = MuseUI.span('ext-history-snippet', '');
-    const hit = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(text) : null;
-    if (!hit) {
+  function highlight(text, pattern) {
+    const node = MU.span('ext-history-snippet', '');
+    const match = pattern.exec(text);
+    if (!match) {
       node.textContent = text;
       return node;
     }
     const mark = document.createElement('mark');
-    mark.textContent = hit[0];
-    node.append(text.slice(0, hit.index), mark, text.slice(hit.index + hit[0].length));
+    mark.textContent = match[0];
+    node.append(text.slice(0, match.index), mark, text.slice(match.index + match[0].length));
     return node;
   }
 
-  // The drawer's content: a search box with the export button, a line of counts, a status line and the results.
-  function renderPanel(body) {
-    const project = currentProject();
-    if (!project) {
-      body.append(MuseUI.para('Choose a project first. Its chat can then be searched and exported here.'));
-      return;
+  async function activateHit(hit) {
+    const { project, thread } = hit;
+    if (thread.closed) {
+      const state = await MU.api('/api/threads/reopen', { project: project.id, thread: thread.id });
+      MU.threads.adopt(state);
     }
+    if (activeProject() !== project.id) await MU.update({ activeProject: project.id });
+    if (activeThread() !== thread.id) await MU.threads.switchTo(thread.id);
+    if (activeProject() !== project.id || activeThread() !== thread.id) throw new Error('Plenum could not open that chat.');
+  }
+
+  function jumpToChat(hit, pattern) {
+    // The phone's Projects screen hides the transcript until Chat is selected.
+    if (SURFACE === 'phone' && document.documentElement.dataset.phTab !== 'chat') {
+      document.querySelector('#ph-bar [data-tab="chat"]')?.click();
+    }
+    requestAnimationFrame(() => {
+      if (activeProject() !== hit.project.id || activeThread() !== hit.thread.id) return;
+      const turn = hit.kind === 'message' ? matchingTurn(hit, pattern) : null;
+      const focus = turn ?? MU.el.chat;
+      turn?.scrollIntoView({ block: 'center' });
+      if (turn) {
+        turn.classList.add('ext-history-hit');
+        setTimeout(() => turn.classList.remove('ext-history-hit'), 1600);
+      }
+      if (!focus.hasAttribute('tabindex')) {
+        focus.tabIndex = -1;
+        focus.addEventListener('blur', () => focus.removeAttribute('tabindex'), { once: true });
+      }
+      focus.focus({ preventScroll: true });
+    });
+  }
+
+  function renderPanel(body, initialScope, from) {
+    disposePanel?.();
+    const panel = document.createElement('section');
+    panel.className = 'ext-history-panel';
+    const form = document.createElement('form');
+    form.className = 'ext-history-bar';
+    form.setAttribute('role', 'search');
 
     const input = document.createElement('input');
     input.type = 'search';
@@ -101,194 +114,219 @@
     input.maxLength = MAX_QUERY;
     input.autocomplete = 'off';
     input.spellcheck = false;
-    input.placeholder = 'Search this chat';
-    input.setAttribute('aria-label', 'Search this chat');
+    input.placeholder = 'Search chat titles and messages';
+    input.setAttribute('aria-label', input.placeholder);
 
-    // Off, the search covers this chat. On, it covers every project's chat and each result names its project.
-    const scope = document.createElement('input');
-    scope.type = 'checkbox';
-    const scopeText = document.createElement('span');
-    scopeText.textContent = 'All projects';
-    const scopeLabel = document.createElement('label');
-    scopeLabel.className = 'ext-history-scope';
-    scopeLabel.append(scope, scopeText);
+    const scopes = document.createElement('fieldset');
+    scopes.className = 'ext-history-scopes';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Search scope';
+    scopes.append(legend);
+    const local = addScope('project', 'This project');
+    const all = addScope('all', 'All projects');
+    all.checked = initialScope === 'all';
+    local.checked = !all.checked;
 
-    const exportBtn = MuseUI.button('ghost small', 'Export as Markdown');
-    exportBtn.title = 'Download this chat as a Markdown file';
-    const bar = document.createElement('div');
-    bar.className = 'ext-history-bar';
-    bar.append(input, scopeLabel, exportBtn);
+    function addScope(value, title) {
+      const option = document.createElement('input');
+      option.type = 'radio';
+      option.name = 'chat-search-scope';
+      option.value = value;
+      const label = document.createElement('label');
+      label.append(option, MU.span('', title));
+      scopes.append(label);
+      return option;
+    }
 
-    const note = MuseUI.para(IDLE);
-    note.className = 'ext-history-note';
-    // Says why a result cannot be shown in the chat, and shows its text.
-    const status = document.createElement('div');
-    status.className = 'ext-history-status';
+    const exportBtn = MU.button('ghost small ext-history-export', 'Export current chat');
+    exportBtn.title = 'Download the current chat as a Markdown file';
+    const tools = document.createElement('div');
+    tools.className = 'ext-history-tools';
+    tools.append(scopes, exportBtn);
+    form.append(input, tools);
+
+    const status = MU.para('');
+    status.className = 'ext-history-note';
     status.setAttribute('role', 'status');
-    const list = document.createElement('div');
+    const error = MU.para('');
+    error.className = 'ext-history-error';
+    error.setAttribute('role', 'alert');
+    const list = document.createElement('ul');
     list.className = 'ext-history-list';
-    body.append(bar, note, status, list);
+    list.setAttribute('aria-label', 'Matching chats and messages');
+    panel.append(form, status, error, list);
+    body.append(panel);
 
-    let timer = 0;
-    // Each search takes a number. An answer that comes back after a newer search has started is dropped.
-    let latest = 0;
+    let timer;
+    let pending;
+    let opening = false;
+    let current = activeProject();
+    let closed = false;
+    const drawer = MU.el.drawer;
 
-    async function search() {
+    function cancelSearch() {
       clearTimeout(timer);
+      pending?.abort();
+      pending = null;
+      list.removeAttribute('aria-busy');
+    }
+
+    function closePanel() {
+      cancelSearch();
+      closed = true;
+      observer.disconnect();
+      unsubscribe?.();
+      if (disposePanel === closePanel) disposePanel = undefined;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (!drawer.hidden && panel.isConnected) return;
+      closePanel();
+      if (drawer.hidden && (panel.contains(document.activeElement) || document.activeElement === document.body)) from?.focus({ preventScroll: true });
+    });
+    observer.observe(drawer, { attributes: true, attributeFilter: ['hidden'] });
+    observer.observe(body, { childList: true });
+    const unsubscribe = MU.threads.onRender?.(() => {
+      if (current === activeProject()) return;
+      current = activeProject();
+      syncAvailability();
+      if (local.checked && !opening) scheduleSearch(true);
+    });
+    disposePanel = closePanel;
+
+    function syncAvailability() {
+      local.disabled = !current;
+      if (local.disabled) all.checked = true;
+      exportBtn.disabled = !current || opening;
+    }
+
+    function scheduleSearch(immediate = false) {
+      if (opening || closed) return;
+      cancelSearch();
+      error.textContent = '';
+      list.replaceChildren();
       const q = input.value.trim();
-      const mine = ++latest;
-      status.replaceChildren();
       if (!q) {
-        list.replaceChildren();
-        note.textContent = scope.checked ? IDLE_ALL : IDLE;
+        status.textContent = 'Enter a title, word, or phrase.';
         return;
       }
-      note.textContent = 'Searching…';
-      const url = scope.checked
-        ? `/api/history/search-all?q=${encodeURIComponent(q)}`
-        : `/api/history/search?project=${encodeURIComponent(activeId() ?? '')}&q=${encodeURIComponent(q)}`;
+      status.textContent = 'Searching…';
+      list.setAttribute('aria-busy', 'true');
+      if (immediate) search(q, all.checked, current);
+      else timer = setTimeout(() => search(q, all.checked, current), DELAY);
+    }
+
+    async function search(q, everywhere, project) {
+      const controller = new AbortController();
+      pending = controller;
+      const params = new URLSearchParams({ q });
+      if (!everywhere) params.set('project', project ?? '');
+      const route = everywhere ? '/api/history/search-all' : '/api/history/search';
       try {
-        const data = await MuseUI.api(url);
-        if (mine !== latest) return;
-        showResults(q, Array.isArray(data?.results) ? data.results : [], scope.checked);
+        const data = await MU.api(`${route}?${params}`, undefined, { signal: controller.signal });
+        if (pending !== controller || closed) return;
+        const hits = Array.isArray(data?.results) ? data.results : [];
+        const pattern = patternFor(q);
+        const rows = hits.map(hit => resultRow(hit, pattern));
+        list.replaceChildren(...rows);
+        if (!rows.length) status.textContent = everywhere ? 'No matches in any project.' : 'No matches in this project.';
+        else if (data.more) status.textContent = `Showing ${rows.length} matches. Refine your search to see more specific results.`;
+        else status.textContent = `${rows.length} ${rows.length === 1 ? 'match' : 'matches'}.`;
       } catch (err) {
-        if (mine !== latest) return;
-        list.replaceChildren();
-        note.textContent = '';
-        status.textContent = err.message;
-      }
-    }
-
-    function showResults(q, results, everywhere) {
-      list.replaceChildren(...results.map(hit => resultRow(hit, q)));
-      if (!results.length) note.textContent = everywhere ? `No message in any project contains “${q}”.` : `No message in this chat contains “${q}”.`;
-      else if (results.length >= MAX_RESULTS) note.textContent = `Showing the ${MAX_RESULTS} most recent matches.`;
-      else note.textContent = `${results.length} ${results.length === 1 ? 'match' : 'matches'}.`;
-    }
-
-    // One match: its project when it is from another project, who wrote it, then the text around the match. A click
-    // opens it in the chat.
-    function resultRow(hit, q) {
-      const row = MuseUI.button('ext-history-result', '');
-      // Only this chat's messages are in the page, so a reply from another project is labelled without its model.
-      // A hit in another thread of the project is not the message on screen either, even when the words match (C-38).
-      const here = (!hit.project || hit.project.id === activeId()) && (!hit.thread || hit.thread.id === activeThreadId());
-      const msg = here ? (MuseUI.state.messages ?? [])[hit.index] : null;
-      const who = hit.role === 'user' ? 'You' : ((msg?.model ? MuseUI.modelName(msg.model) : '') || 'Assistant');
-      if (hit.project?.name) row.append(MuseUI.span('ext-history-project', hit.project.name));
-      row.append(MuseUI.span('ext-history-who', who), snippetNode(hit.snippet, q));
-      row.addEventListener('click', () => openHit(hit, q));
-      return row;
-    }
-
-    // A hit from another project switches to that project first, through the page's own sidebar row, and then opens
-    // as usual. The wait ends when that project is active and its chat has been drawn again.
-    let switching = false;
-    async function openElsewhere(hit, q) {
-      if (switching) return;
-      const id = hit.project.id;
-      const index = (MuseUI.state.projects ?? []).findIndex(p => p.id === id);
-      const row = index < 0 ? null : [...MuseUI.el.projects.querySelectorAll('.proj-item')][index];
-      if (!row) {
-        status.textContent = 'That project is no longer in the list.';
-        return;
-      }
-      switching = true;
-      try {
-        const drawn = MuseUI.stream();
-        row.click();
-        const until = Date.now() + SWITCH_WAIT_MS;
-        while (!(MuseUI.state.activeProject === id && MuseUI.stream() !== drawn) && Date.now() < until) {
-          await new Promise(done => setTimeout(done, SWITCH_POLL_MS));
-        }
+        if (pending !== controller || closed) return;
+        status.textContent = '';
+        error.textContent = MU.plainError(err, 'Plenum could not search chats. Press Enter to try again.');
       } finally {
-        switching = false;
-      }
-      if (MuseUI.state.activeProject !== id) {
-        status.textContent = 'Plenum could not switch to that project.';
-        return;
-      }
-      openHit(hit, q);
-    }
-
-    // A hit in another thread of the project switches to that thread, then opens as usual. A closed thread cannot be opened, so its text
-    // is shown with a note to reopen it (C-38). The wait ends when that thread is on screen and its chat has been drawn again.
-    async function openOtherThread(hit, q) {
-      if (switching) return;
-      const id = hit.thread.id;
-      if (hit.thread.closed) {
-        status.replaceChildren(MuseUI.para(`The thread “${hit.thread.name}” is closed, so its chat is not open. Reopen it to see the message in the chat. Its text is shown here.`));
-        status.append(Object.assign(document.createElement('div'), { className: 'ext-history-full', textContent: hit.snippet }));
-        return;
-      }
-      switching = true;
-      try {
-        const drawn = MuseUI.stream();
-        await MuseUI.threads.switchTo(id);
-        const until = Date.now() + SWITCH_WAIT_MS;
-        while (!(activeThreadId() === id && MuseUI.stream() !== drawn) && Date.now() < until) {
-          await new Promise(done => setTimeout(done, SWITCH_POLL_MS));
+        if (pending === controller) {
+          pending = null;
+          list.removeAttribute('aria-busy');
         }
-      } catch {
-        status.textContent = 'Plenum could not switch to that thread.';
-        return;
+      }
+    }
+
+    function resultRow(hit, pattern) {
+      const item = document.createElement('li');
+      const row = MU.button('ext-history-result', '');
+      const titleHit = hit.kind === 'title';
+      const name = hit.thread.main ? `${hit.project.name} · Main` : hit.thread.name;
+      const label = MU.span('ext-history-title', '');
+      label.append(titleHit ? highlight(name, pattern) : name);
+      if (hit.thread.closed) label.append(MU.span('ext-history-closed', 'Closed'));
+      const context = [hit.thread.main ? '' : hit.project.name, titleHit ? 'Chat title' : hit.role === 'user' ? 'You' : 'Assistant'];
+      row.append(label, MU.span('ext-history-context', context.filter(Boolean).join(' · ')));
+      if (!titleHit) row.append(highlight(hit.snippet, pattern));
+      if (hit.thread.closed) row.append(MU.span('ext-history-action', 'Reopen chat'));
+      row.addEventListener('click', () => openHit(hit, pattern, row));
+      item.append(row);
+      return item;
+    }
+
+    async function openHit(hit, pattern, row) {
+      if (opening) return;
+      opening = true;
+      input.disabled = scopes.disabled = true;
+      syncAvailability();
+      row.setAttribute('aria-busy', 'true');
+      error.textContent = '';
+      status.textContent = hit.thread.closed ? 'Reopening chat…' : 'Opening chat…';
+      try {
+        await activateHit(hit);
+        if (closed) return;
+        closePanel();
+        MU.closeDrawer();
+        jumpToChat(hit, pattern);
+      } catch (err) {
+        if (closed) return;
+        status.textContent = '';
+        error.textContent = MU.plainError(err, 'Plenum could not open that chat.');
       } finally {
-        switching = false;
+        opening = false;
+        input.disabled = scopes.disabled = false;
+        syncAvailability();
+        row.removeAttribute('aria-busy');
       }
-      if (activeThreadId() !== id) {
-        status.textContent = 'Plenum could not switch to that thread.';
-        return;
-      }
-      openHit(hit, q);
     }
 
-    // The drawer closes and the message scrolls into view, with a brief outline. When the chat does not draw that
-    // message, its text is shown in the status line instead.
-    function openHit(hit, q) {
-      if (hit.project && hit.project.id !== activeId()) {
-        openElsewhere(hit, q);
-        return;
-      }
-      if (hit.thread && hit.thread.id !== activeThreadId()) {
-        openOtherThread(hit, q);
-        return;
-      }
-      const turn = chatTurnFor(hit, q);
-      if (turn) {
-        MuseUI.closeDrawer();
-        turn.scrollIntoView({ block: 'center' });
-        turn.classList.add(FLASH_CLASS);
-        setTimeout(() => turn.classList.remove(FLASH_CLASS), FLASH_MS);
-        return;
-      }
-      const full = document.createElement('div');
-      full.className = 'ext-history-full';
-      full.textContent = hit.snippet;
-      status.replaceChildren(MuseUI.para('The chat does not show that message right now, so its text is shown here.'), full);
-    }
-
-    // The export is a download link, clicked from the page. The server names the file.
     exportBtn.addEventListener('click', () => {
       const a = document.createElement('a');
-      a.href = `/api/history/export?project=${encodeURIComponent(activeId() ?? '')}`;
+      a.href = `/api/history/export?${new URLSearchParams({ project: activeProject(), thread: activeThread() })}`;
       a.download = '';
       document.body.append(a);
       a.click();
       a.remove();
     });
 
-    input.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(search, SEARCH_DELAY_MS);
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      scheduleSearch(true);
     });
+    input.addEventListener('input', () => scheduleSearch());
     input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') search();
+      if (e.key !== 'ArrowDown' || !list.firstElementChild) return;
+      e.preventDefault();
+      list.querySelector('button')?.focus();
     });
-    // Turning the scope on or off searches again with the same words, when there are any.
-    scope.addEventListener('change', () => search());
+    scopes.addEventListener('change', () => scheduleSearch(true));
+    syncAvailability();
+    scheduleSearch();
     input.focus();
   }
 
-  // Attach. The link goes in before Commands, the last link in the sidebar footer.
-  if (!document.getElementById(BUTTON_ID)) MuseUI.el.helpBtn.before(sideLink());
+  const sidebar = document.getElementById('projects');
+  if (sidebar && !document.getElementById('historyBtn')) {
+    const side = entryPoint('side-link ext-history-side', 'all');
+    side.id = 'historyBtn';
+    sidebar.before(side);
+  }
+  const titlebar = document.getElementById('titlebar');
+  if (titlebar) {
+    const chat = entryPoint('icon-btn ext-history-top', 'project');
+    titlebar.insertBefore(chat, titlebar.querySelector('.titlebar-space'));
+    document.addEventListener('keydown', event => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || !event.shiftKey || !(event.ctrlKey || event.metaKey) || event.code !== 'KeyF') return;
+      if (MU.dialogOpen?.() || !MU.el.drawer.hidden) return;
+      event.preventDefault();
+      openSearch('project', chat);
+    });
+  }
 })();

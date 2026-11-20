@@ -31,6 +31,7 @@
     truncated: 'Only the first 300 files are listed.',
     snapshotSource: 'Changes since the snapshot before the last turn',
     viewed: 'Viewed',
+    selectAll: 'Select all',
     showAll: 'Show all',
     binary: 'Binary file, no diff.',
     tooLarge: 'The file is too large to show.',
@@ -67,6 +68,7 @@
     thread: '',
     scope: null,
     data: null,
+    changesReady: false,
     selected: null,
     full: new Map(),
     comments: [],
@@ -126,20 +128,17 @@
 
   const viewedKey = (project, file) => `${project}|${file.path}|${file.diffHash}`;
 
-  function isViewed(project, file) {
-    const viewed = readStore().viewed;
-    return isObj(viewed) && viewed[viewedKey(project, file)] === true;
-  }
-
   // A tick is kept by the file's diff hash, so it clears by itself when the file changes again.
-  function setViewed(project, file, on) {
+  function setViewed(keys, on) {
     const store = readStore();
     const viewed = isObj(store.viewed) ? store.viewed : {};
-    const key = viewedKey(project, file);
-    if (on) viewed[key] = true;
-    else delete viewed[key];
-    const keys = Object.keys(viewed);
-    for (const old of keys.slice(0, Math.max(0, keys.length - MAX_VIEWED))) delete viewed[old];
+    for (const key of keys) {
+      delete viewed[key];
+      // Move touched marks to the end so the cap evicts older marks first.
+      if (on) viewed[key] = true;
+    }
+    const saved = Object.keys(viewed);
+    for (const old of saved.slice(0, Math.max(0, saved.length - MAX_VIEWED))) delete viewed[old];
     store.viewed = viewed;
     writeStore(store);
   }
@@ -243,9 +242,28 @@
 
   // ---------- the file list ----------
 
-  function fileRow(group, file, project) {
+  function syncSelectAll() {
+    if (!view.refs) return;
+    const { selectAll, markRows } = view.refs;
+    const marked = markRows.filter(({ box }) => box.checked).length;
+    selectAll.disabled = !view.changesReady || view.scope !== activeScopeKey() || !markRows.length;
+    selectAll.checked = markRows.length > 0 && marked === markRows.length;
+    selectAll.indeterminate = marked > 0 && marked < markRows.length;
+  }
+
+  function updateViewed(rows, checked) {
+    setViewed(new Set(rows.map(({ key }) => key)), checked);
+    for (const { box, row } of rows) {
+      box.checked = checked;
+      row.classList.toggle('is-viewed', checked);
+    }
+    syncSelectAll();
+  }
+
+  function fileRow(group, file, saved) {
     const selected = view.selected !== null && view.selected.group === group && view.selected.path === file.path;
-    const viewed = isViewed(project, file);
+    const key = viewedKey(view.project, file);
+    const viewed = saved?.[key] === true;
     const row = make('div', 'ext-review-row');
     row.classList.toggle('is-selected', selected);
     row.classList.toggle('is-viewed', viewed);
@@ -270,28 +288,34 @@
     box.checked = viewed;
     box.setAttribute('aria-label', `Viewed ${file.path}`);
     box.addEventListener('change', () => {
-      setViewed(project, file, box.checked);
-      row.classList.toggle('is-viewed', box.checked);
+      if (!view.refs?.list.contains(row) || view.scope !== activeScopeKey()) {
+        box.checked = row.classList.contains('is-viewed');
+        return;
+      }
+      updateViewed(view.refs.markRows.filter(mark => mark.key === key), box.checked);
     });
+    view.refs.markRows.push({ key, box, row });
     label.append(box, make('span', '', TEXT.viewed));
     row.append(pick, label);
     return row;
   }
 
   function renderList() {
-    const list = view.refs.list;
+    const { list, markRows } = view.refs;
     list.replaceChildren();
+    markRows.length = 0;
     const data = view.data;
-    if (!data) return;
+    const saved = readStore().viewed;
     for (const name of GROUP_ORDER) {
-      const files = Array.isArray(data.groups?.[name]) ? data.groups[name] : [];
+      const files = Array.isArray(data?.groups?.[name]) ? data.groups[name] : [];
       if (!files.length) continue;
       const section = make('section', 'ext-review-group');
       section.append(make('h3', 'ext-review-group-title', GROUP_TITLE[name]));
-      for (const file of files) section.append(fileRow(name, file, view.project));
+      for (const file of files) section.append(fileRow(name, file, saved));
       list.append(section);
     }
-    if (!list.children.length && data.source !== 'none') list.append(make('p', 'ext-review-empty', TEXT.empty));
+    if (!list.children.length && data && data.source !== 'none') list.append(make('p', 'ext-review-empty', TEXT.empty));
+    syncSelectAll();
   }
 
   function select(group, path) {
@@ -374,7 +398,19 @@
     ta.placeholder = TEXT.notePlaceholder;
     ta.setAttribute('aria-label', `Comment on line ${target.line} of ${file.path}`);
     ta.spellcheck = false;
-    ta.value = index >= 0 ? view.comments[index].note : '';
+    // The text being typed lives in view.editing, so a redraw of the diff (the window gets the focus again, a run starts or ends)
+    // gives it back instead of the saved note or an empty box.
+    const draft = view.editing;
+    ta.value = typeof draft?.text === 'string' ? draft.text : index >= 0 ? view.comments[index].note : '';
+    const keep = () => {
+      if (view.editing !== draft) return;
+      draft.text = ta.value;
+      draft.start = ta.selectionStart;
+      draft.end = ta.selectionEnd;
+    };
+    ta.addEventListener('input', keep);
+    ta.addEventListener('keyup', keep);
+    ta.addEventListener('mouseup', keep);
     const msg = make('p', 'ext-review-editor-msg');
     msg.setAttribute('role', 'status');
     const save = MuseUI.button('primary small', TEXT.save);
@@ -491,6 +527,14 @@
   function renderDiff() {
     const box = view.refs.diff;
     const keepTop = box.scrollTop;
+    // A note box that has the focus gets it back after the redraw, with the caret where it was. Focus elsewhere is left alone.
+    const active = document.activeElement;
+    const typing = Boolean(view.editing && active && box.contains?.(active) && active.classList?.contains('ext-review-note-input'));
+    if (typing) {
+      view.editing.text = active.value;
+      view.editing.start = active.selectionStart;
+      view.editing.end = active.selectionEnd;
+    }
     box.replaceChildren();
     const hit = selectedFile();
     if (!hit) {
@@ -515,6 +559,15 @@
       }
     }
     box.scrollTop = keepTop;
+    if (typing) {
+      const ta = box.querySelector('.ext-review-note-input');
+      if (ta) {
+        ta.focus();
+        const end = ta.value.length;
+        const start = Math.min(Number.isInteger(view.editing.start) ? view.editing.start : end, end);
+        ta.setSelectionRange?.(start, Math.min(Number.isInteger(view.editing.end) ? view.editing.end : start, end));
+      }
+    }
   }
 
   // ---------- the footer: the comments and Send ----------
@@ -524,7 +577,8 @@
     const n = view.comments.length;
     const words = n === 1 ? '1 comment' : `${n} comments`;
     r.count.textContent = words;
-    const model = MuseUI.modelName(MuseUI.state.model) || 'the model';
+    // The comments go through the composer to the model of the chat on screen (thread, then project, then the app's model).
+    const model = MuseUI.modelName(MuseUI.modelInUse?.() || MuseUI.state.model) || 'the model';
     const wait = busy();
     r.send.textContent = `Send ${words} to ${model}`;
     r.send.disabled = n === 0 || wait;
@@ -582,6 +636,8 @@
     const project = activeId();
     const thread = activeThread();
     const key = scopeKey(project, thread);
+    const seq = ++view.seq;
+    view.changesReady = false;
     if (!project) {
       view.project = null;
       view.thread = '';
@@ -603,8 +659,9 @@
       view.editing = null;
       view.full.clear();
       view.data = null;
+      paint();
     }
-    const seq = ++view.seq;
+    syncSelectAll();
     if (view.refs) setStatus(TEXT.loading, '');
     let data;
     try {
@@ -615,6 +672,7 @@
     }
     if (seq !== view.seq || activeScopeKey() !== key) return;
     view.data = data;
+    view.changesReady = Boolean(data && data.source !== 'none');
     ensureSelection();
     paint();
   }
@@ -711,6 +769,24 @@
     const split = make('div', 'ext-review-body');
     const files = make('nav', 'ext-review-files');
     files.setAttribute('aria-label', 'Changed files');
+    const bulk = make('div', 'ext-review-bulk');
+    const label = make('label', 'ext-review-viewed ext-review-select-all');
+    label.title = 'Mark all listed files as Viewed or clear their Viewed marks';
+    const selectAll = make('input');
+    selectAll.type = 'checkbox';
+    selectAll.disabled = true;
+    selectAll.setAttribute('aria-description', label.title);
+    selectAll.addEventListener('change', () => {
+      if (view.refs?.selectAll !== selectAll || selectAll.disabled || view.scope !== activeScopeKey()) {
+        syncSelectAll();
+        return;
+      }
+      updateViewed(view.refs.markRows, selectAll.checked);
+    });
+    label.append(selectAll, make('span', '', TEXT.selectAll));
+    bulk.append(label);
+    const list = make('div', 'ext-review-list');
+    files.append(bulk, list);
     const diff = make('div', 'ext-review-diff');
     split.append(files, diff);
     const foot = make('div', 'ext-review-foot');
@@ -720,7 +796,7 @@
     foot.append(count, send);
     root.append(head, split, foot);
     body.replaceChildren(root);
-    view.refs = { source, refresh, plan, status, list: files, diff, count, send };
+    view.refs = { source, refresh, plan, status, selectAll, list, markRows: [], diff, count, send };
   }
 
   // ---------- the top bar button, the shortcut, and the button under the newest reply ----------
@@ -810,12 +886,16 @@
   MuseUI.events.on('hello', kick);
   // A state change can switch plan mode on or off; the notice follows it without a new read of the changes.
   MuseUI.events.on('state', () => {
-    if (activeId() && view.scope !== activeScopeKey()) reload();
-    else if (view.refs) view.refs.plan.hidden = !planOn();
+    if (view.scope !== activeScopeKey()) reload();
+    else if (view.refs) {
+      view.refs.plan.hidden = !planOn();
+      // A model change names the new model on Send.
+      renderFoot();
+    }
   });
   window.addEventListener('focus', kick);
   // A switch to another thread of the same project is a redraw of the shell, with or without an event of its own: the pane follows it.
   MuseUI.threads?.onRender?.(() => {
-    if (activeId() && view.scope !== activeScopeKey()) reload();
+    if (view.scope !== activeScopeKey()) reload();
   });
 })();

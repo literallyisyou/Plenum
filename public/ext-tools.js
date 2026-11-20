@@ -238,9 +238,13 @@
     input.maxLength = textMax(opt);
     input.autocomplete = 'off';
     input.spellcheck = false;
+    // The value last sent with Enter or a change. Enter keeps the focus in the box, so a save that fails must still put the saved value
+    // back: the box is left alone only while it holds something typed after that.
+    let committed = null;
     input.addEventListener('change', () => {
       const v = input.value.trim();
       input.value = v;
+      committed = v;
       commit(s.cli, opt, v);
     });
     const help = make('p', 'ext-tools-help', opt.help || '');
@@ -250,7 +254,7 @@
       node,
       sync() {
         // Do not overwrite a value the person is typing right now.
-        if (document.activeElement !== input) input.value = valueOf(opt, s.explicit);
+        if (document.activeElement !== input || input.value === committed) input.value = valueOf(opt, s.explicit);
         foot.sync();
       },
     };

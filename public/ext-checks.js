@@ -7,6 +7,17 @@
 // (lib/checks.mjs) decides what runs; this file only shows it and asks.
 (function () {
   const MuseUI = window.MuseUI;
+  // A caught error in plain words, as one sentence: the server's own sentence, or a fixed one when Plenum did not answer or sent only a
+  // status (never the browser's "Failed to fetch" or "Request failed (500)").
+  const plain = err => {
+    const t = String((MuseUI?.plainError ? MuseUI.plainError(err) : err?.message) || 'That could not be done.').trim();
+    return /[.!?…]$/.test(t) ? t : `${t}.`;
+  };
+  // The error a refusal becomes: the server's sentence when it sent one, else only its status (plain() words that).
+  const refusal = (status, data) => {
+    const said = typeof data?.error === 'string' ? data.error.trim() : '';
+    return Object.assign(new Error(said || `The request was refused (${status}).`), { status, fromServer: Boolean(said) });
+  };
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI || !MuseUI.settings || typeof MuseUI.settings.register !== 'function') return;
 
@@ -94,10 +105,10 @@
     }
   }
 
-  // The text of the server's refusal of a request (its JSON error), or the status.
+  // The server's refusal of a request as an error: its JSON error, or the status (worded by plain()).
   async function refusalOf(res) {
     const data = await res.json().catch(() => ({}));
-    return data.error || `Request failed (${res.status})`;
+    return refusal(res.status, data);
   }
 
   // ---------- the drawer section ----------
@@ -122,7 +133,7 @@
       })
       .catch(err => {
         if (seq !== loadSeq || !body.isConnected) return;
-        body.replaceChildren(MuseUI.para(err.message));
+        body.replaceChildren(MuseUI.para(plain(err)));
       });
   }
 
@@ -175,7 +186,12 @@
         which.input.checked = !on;
         return;
       }
-      write({ command: known.get(pid).command, auto: runSw.input.checked, autoFix: fixSw.input.checked, fixRounds: roundsInput.value, timeoutSec: timeInput.value }, say, which.note, on ? warn : undefined);
+      // A save that fails puts the switch back where the saved value is, so the page never says off while the check still runs.
+      write({ command: known.get(pid).command, auto: runSw.input.checked, autoFix: fixSw.input.checked, fixRounds: roundsInput.value, timeoutSec: timeInput.value }, say, which.note, on ? warn : undefined, () => {
+        const kept = known.get(pid) ?? {};
+        which.input.checked = which.input === runSw.input ? kept.auto === true : kept.autoFix === true;
+        if (which.input === fixSw.input) fixNote.hidden = !fixSw.input.checked;
+      });
     }
     runSw.input.addEventListener('change', () => sendSwitches(runSw.input.checked, { input: runSw.input, note: runSw.note }));
     fixSw.input.addEventListener('change', () => {
@@ -212,7 +228,7 @@
   }
 
   // One save. The server answers the saved values or its refusal. `done` runs after a save that worked.
-  async function write(payload, say, rowNote, done) {
+  async function write(payload, say, rowNote, done, failed) {
     const pid = activeProject();
     if (!pid) return;
     say('Saving…');
@@ -224,8 +240,9 @@
       if (done) done();
       if (!replyRunning()) MuseUI.refresh();
     } catch (err) {
-      say(err.message, true);
-      if (rowNote) rowNote.textContent = err.message;
+      say(plain(err), true);
+      if (rowNote) rowNote.textContent = plain(err);
+      if (failed) failed();
     }
   }
 
@@ -362,7 +379,8 @@ ${check.output}` : check.output;
   }
 
   async function runNow(button, pid) {
-    if (running) return;
+    // A Run checks button drawn again while a check runs says why it does nothing.
+    if (running) return MuseUI.toast('A check is running. Wait for it to end.');
     if (replyRunning()) return MuseUI.toast('Wait for the run to end.', 'bad');
     running = true;
     button.disabled = true;
@@ -372,13 +390,13 @@ ${check.output}` : check.output;
     let failure = '';
     try {
       const res = await MuseUI.request('/api/checks/run', { method: 'POST', body: { project: pid } });
-      if (!res.ok) throw new Error(await refusalOf(res));
+      if (!res.ok) throw await refusalOf(res);
       await readEvents(res, ev => {
         if (ev.type === 'notice' && typeof ev.text === 'string') last = ev.text;
         if (ev.type === 'error') failure = String(ev.message ?? 'The check did not run.');
       });
     } catch (err) {
-      failure = err.message;
+      failure = plain(err);
     } finally {
       running = false;
       button.disabled = false;

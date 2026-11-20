@@ -103,9 +103,29 @@
     }
   }
 
+  // The test that is running, or null: its ref, its AbortController, what it has shown so far and the row it shows on. A redraw of the
+  // Settings page (a Refresh, a saved key, a finished sign-in) or a close and open builds new rows; the new row for that ref takes the
+  // run over, so the running test, which costs through the model's key, can still be followed and stopped and its result is shown.
+  let running = null;
+  // The section drawn last. A section drawn while a test runs shows its buttons off; when the test ends, this one is painted again too,
+  // even if its rows came after the end or it no longer lists the model under test.
+  let shown = null;
+
+  function showRun(run) {
+    const row = run.row;
+    if (!row) return;
+    row.ctrl = run.ctrl;
+    row.live.hidden = !run.ctrl;
+    row.progress.textContent = run.progress;
+    row.liveList.replaceChildren(...run.steps.map(stepItem));
+    row.result.textContent = run.result.text;
+    row.result.className = run.result.cls;
+  }
+
   // The section. Its rows are kept in a map by ref, and one test runs at a time for the whole section.
   function renderSection(body) {
-    const state = { testing: false, rows: new Map(), list: el('div', 'tt-list'), addStatus: el('p', 'tt-status', '') };
+    const state = { rows: new Map(), list: el('div', 'tt-list'), addStatus: el('p', 'tt-status', '') };
+    shown = state;
     const section = el('div', 'tt-section');
     section.append(MuseUI.para(INTRO));
     section.append(state.list);
@@ -250,13 +270,19 @@
     state.rows.set(data.ref, row);
     state.list.append(root);
     paint(row);
+    if (running && running.ref === data.ref) {
+      running.row = row;
+      showRun(running);
+    }
   }
 
   // Shows the row from its data: status, price line, the switch, the notice and the buttons. The switch shows the grant the model really
   // gets (data.allowed, from the server). A model with no record of its own that is On because the provider's check passed has no test
   // status here, and no Unverified note: the check is what allows it.
   function paint(row) {
-    const { data, state } = row;
+    const { data } = row;
+    // One test runs at a time for the whole section, so the buttons follow the run itself, not a flag of the section they were drawn in.
+    const testing = running !== null;
     const record = data.record ?? null;
     const viaCheck = data.allowed === true && data.grantFrom === 'provider' && record === null;
     const status = viaCheck ? { text: `Allowed by the ${data.providerLabel} tool-call check`, tone: 'ok' } : statusOf(record);
@@ -264,12 +290,12 @@
     row.pill.className = status.tone ? `tt-pill ${status.tone}` : 'tt-pill';
     row.estimate.textContent = data.estimate?.text ?? '';
     row.switchInput.checked = data.allowed === true;
-    row.switchInput.disabled = state.testing;
+    row.switchInput.disabled = testing;
     const verified = record !== null && record.result === 'pass';
     const unverified = data.allowed === true && !verified && data.grantFrom !== 'provider';
     if (!unverified) row.dismissed = false;
     row.notice.hidden = !unverified || row.dismissed;
-    row.test.disabled = state.testing || !data.keySaved;
+    row.test.disabled = testing || !data.keySaved;
     row.test.title = data.keySaved ? '' : `Save a key for ${data.providerLabel} first`;
     if (!row.detailList.hidden) fillDetails(row);
   }
@@ -307,67 +333,62 @@
   }
 
   // The run: the steps appear as the server judges them. Stop closes the request, and the server then stops the test and keeps nothing.
-  async function runTest(row) {
-    const { state } = row;
-    state.testing = true;
-    for (const r of state.rows.values()) paint(r);
-    row.ctrl = new AbortController();
-    row.live.hidden = false;
-    row.liveList.replaceChildren();
-    row.progress.textContent = 'Starting the test…';
-    row.result.textContent = '';
-    row.result.className = 'tt-status tt-result';
+  async function runTest(start) {
+    const run = { ref: start.ref, ctrl: new AbortController(), progress: 'Starting the test…', steps: [], result: { text: '', cls: 'tt-status tt-result' }, row: start };
+    running = run;
+    // The sections the run has shown in: the one it started in, the one its row is on now and the one drawn last.
+    const states = () => new Set([start.state, run.row.state, shown].filter(Boolean));
+    const repaintAll = () => { for (const s of states()) for (const r of s.rows.values()) paint(r); };
+    const setResult = (text, cls) => { run.result = { text, cls }; showRun(run); };
+    repaintAll();
+    showRun(run);
     let calls = 0;
     try {
-      const res = await MuseUI.request('/api/tool-test', { method: 'POST', body: { ref: row.ref }, signal: row.ctrl.signal });
+      const res = await MuseUI.request('/api/tool-test', { method: 'POST', body: { ref: run.ref }, signal: run.ctrl.signal });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'The test could not start. Try again.');
       }
       await readEvents(res.body, ev => {
+        const row = run.row;
         if (ev.type === 'call') {
           calls += 1;
-          row.progress.textContent = `Working: ${calls} tool ${calls === 1 ? 'call' : 'calls'} so far`;
+          run.progress = `Working: ${calls} tool ${calls === 1 ? 'call' : 'calls'} so far`;
+          showRun(run);
         } else if (ev.type === 'step') {
+          run.steps.push(ev);
           row.liveList.append(stepItem(ev));
         } else if (ev.type === 'result') {
           row.data.record = ev.record;
           row.data.allowed = ev.record?.allowed === true;
           if (ev.record?.result === 'pass') {
-            row.result.textContent = `Passed. Allow tools is on for ${row.data.label}.`;
-            row.result.className = 'tt-status tt-result ok';
+            setResult(`Passed. Allow tools is on for ${row.data.label}.`, 'tt-status tt-result ok');
             MuseUI.toast(`${row.data.label} passed the tool test. Allow tools is on.`);
           } else {
             const failed = (ev.record?.steps ?? []).find(s => s.n === ev.record?.failedStep);
-            row.result.textContent = `Failed at step ${ev.record?.failedStep ?? '?'}${failed ? `: ${failed.name}` : ''}. Allow tools is off.`;
-            row.result.className = 'tt-status tt-result bad';
+            setResult(`Failed at step ${ev.record?.failedStep ?? '?'}${failed ? `: ${failed.name}` : ''}. Allow tools is off.`, 'tt-status tt-result bad');
           }
         } else if (ev.type === 'error') {
-          row.result.textContent = ev.message || 'The tool test could not run.';
-          row.result.className = 'tt-status tt-result bad';
+          setResult(ev.message || 'The tool test could not run.', 'tt-status tt-result bad');
         }
       });
     } catch (err) {
-      if (err?.name === 'AbortError') {
-        row.result.textContent = 'Stopped. Nothing was saved.';
-        row.result.className = 'tt-status tt-result';
-      } else {
-        row.result.textContent = plain(err, 'The test did not finish. Try again.');
-        row.result.className = 'tt-status tt-result bad';
-      }
+      if (err?.name === 'AbortError') setResult('Stopped. Nothing was saved.', 'tt-status tt-result');
+      else setResult(plain(err, 'The test did not finish. Try again.'), 'tt-status tt-result bad');
     } finally {
-      row.ctrl = null;
-      row.live.hidden = true;
-      state.testing = false;
+      run.ctrl = null;
+      if (running === run) running = null;
+      showRun(run);
+      const row = run.row;
       // The row is read again from the server, so the status and the switch are what the server holds.
       try {
-        const fresh = await call(`/api/tool-test?ref=${encodeURIComponent(row.ref)}`);
+        const fresh = await call(`/api/tool-test?ref=${encodeURIComponent(run.ref)}`);
         row.data = fresh;
       } catch {
         // The row keeps the answer the test gave.
       }
       if (row.data.record) fillDetails(row);
-      for (const r of state.rows.values()) paint(r);
+      repaintAll();
     }
   }
 

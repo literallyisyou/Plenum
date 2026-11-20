@@ -56,7 +56,8 @@ dialog.ntf-sheet:focus { outline: none; }
 .ntf-when { flex: none; min-width: 5.5em; font-size: var(--fs-small); color: var(--muted); font-variant-numeric: tabular-nums; }
 .ntf-sentence { flex: 1 1 auto; min-width: 0; font-size: var(--fs-small); line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
 .ntf-empty { list-style: none; padding: var(--sp-3); font-size: var(--fs-small); color: var(--muted); }
-.ntf-go { flex: none; max-width: 100%; }
+.ntf-go, .ntf-dismiss { flex: none; max-width: 100%; }
+.ntf-dismiss { color: var(--text-2); }
 
 /* ---------- While you were away: one calm strip above the chat ---------- */
 

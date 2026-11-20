@@ -96,6 +96,9 @@ function headLink(head) {
   if (head === 'settings=limit') return { kind: 'settings', section: 'limit' };
   let m = /^(deny|approve|waiting|handover|today)=([A-Za-z0-9_.-]{1,80})$/.exec(head);
   if (m && ID.test(m[2])) return { kind: m[1], id: m[2] };
+  // Wave 8: the Yes or No of a simple yes/no item, '<n>.<token>' as the computer made it (lib/phone-answer.mjs idFor; answer.js sends it).
+  m = /^(yes|no)=([1-9]\d{0,14}\.[0-9a-f]{32})$/.exec(head);
+  if (m) return { kind: m[1], id: m[2] };
   m = /^chat=([A-Za-z0-9_.-]{1,80})$/.exec(head);
   if (m) return { kind: 'chat', project: m[1] };
   return null;
@@ -219,7 +222,7 @@ export function notificationFor(payload) {
       id: a.action,
       title: a.title,
       requiresAuthentication: true,
-      destructive: a.action !== 'approve',
+      destructive: a.action !== 'approve' && a.action !== 'yes',
       foreground: false,
     })),
     extra: { tap: payload.tap, routes, line: payload.firstLine ?? '', computer: payload.ids?.computer ?? '', tag: payload.tag },

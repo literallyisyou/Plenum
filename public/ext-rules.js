@@ -39,6 +39,7 @@
     patternsNote: 'The built-in rules and this project\'s own patterns are checked before every command, in every approval mode.',
     editPatterns: 'Edit patterns in Project settings',
     blocked: 'Blocked commands',
+    kept: 'Your unsaved text is kept. Save or Revert it.',
   };
 
   // The tab the person chose stays while the page is open.
@@ -47,6 +48,40 @@
   let loadSeq = 0;
   // The panel on screen, or null. A new draw ends the poll of the one it replaces.
   let current = null;
+  // Unsaved text, by project and file, while the page is open and after it is drawn again or closed (a Refresh, a saved key, a
+  // finished sign-in, Escape, a project switch). Each entry keeps the text and the loaded state it was typed over, so a file that
+  // changed on disk in between is shown as changed and its save is refused until a Reload. Save, Revert and Reload drop it.
+  const drafts = new Map();
+  const draftKey = (view, d) => (d.global ? GLOBAL : `${view.projectId}\u0000${d.name}`);
+
+  function keepDraft(view, d) {
+    if (isDirty(d)) drafts.set(draftKey(view, d), { text: d.textarea.value, base: d.loaded });
+    else drafts.delete(draftKey(view, d));
+  }
+
+  // Puts a kept draft back into a panel just drawn. Returns true when one was put back.
+  function restoreDraft(view, d, entry) {
+    const draft = drafts.get(draftKey(view, d));
+    if (!draft) return false;
+    if (draft.text === d.loaded.text) {
+      drafts.delete(draftKey(view, d));
+      return false;
+    }
+    if (draft.base.hash !== d.loaded.hash) {
+      d.loaded = draft.base;
+      d.stale = true;
+      d.onDisk = entry;
+    }
+    d.textarea.value = draft.text;
+    d.message = { text: TEXT.kept, bad: false };
+    if (!d.global && !d.loaded.exists) view.created.add(d.name);
+    return true;
+  }
+
+  const projectName = id => {
+    const p = (MuseUI.state.projects ?? []).find(x => x && x.id === id);
+    return String(p?.name || p?.path || id || '');
+  };
 
   function make(tag, cls, text) {
     const node = document.createElement(tag);
@@ -252,6 +287,7 @@
       if (d.textarea.value === text) d.textarea.value = d.loaded.text;
       d.stale = false;
       d.onDisk = null;
+      keepDraft(view, d);
       d.message = { text: `Saved at ${time()}`, bad: false };
       MuseUI.toast(d.global ? 'Saved the global rules. It applies from the next message.' : `Saved ${d.name}. It applies from the next message.`);
     } catch (err) {
@@ -276,6 +312,7 @@
     }
     applyMeta(view, data);
     setLoaded(d, entryOf(data, d.name));
+    drafts.delete(draftKey(view, d));
     d.message = { text: `Reloaded from disk at ${time()}`, bad: false };
     refreshAll(view);
   }
@@ -286,7 +323,9 @@
       clearInterval(view.timer);
       return;
     }
-    if (MuseUI.el?.drawer?.hidden) return;
+    // The section lives on the Settings page, which leaves the drawer hidden, so the drawer says nothing here; a closed page has already
+    // ended the poll above (its root is gone). A window in the background is not asked.
+    if (document.hidden) return;
     let data;
     try {
       data = await fetchState(view.projectId);
@@ -368,6 +407,7 @@
     d.textarea.maxLength = global ? view.limits.globalChars : view.limits.saveChars;
     d.textarea.addEventListener('input', () => {
       if (d.message && !d.message.bad) d.message = null;
+      keepDraft(view, d);
       refreshAll(view);
     });
     d.textarea.addEventListener('keydown', event => {
@@ -396,6 +436,7 @@
     d.revertBtn = button('ghost small', 'Revert', () => {
       d.textarea.value = d.loaded.text;
       d.message = null;
+      drafts.delete(draftKey(view, d));
       refreshAll(view);
     });
     actions.append(d.saveBtn, d.revertBtn);
@@ -434,12 +475,30 @@
     applyMeta(view, data);
     current = view;
     root.replaceChildren();
-    root.append(make('p', 'ext-rules-intro', TEXT.intro));
+    // The section names its project, so a switch made while Settings is open cannot leave it showing another project's files.
+    root.append(make('p', 'ext-rules-intro', `Rules for ${data.project.name || projectName(view.projectId)}. ${TEXT.intro}`));
+    // A draft of a project that was removed from Plenum cannot be opened, saved or reverted any more, so it is dropped.
+    const listed = MuseUI.state.projects;
+    if (Array.isArray(listed)) {
+      const ids = new Set(listed.map(p => p?.id));
+      for (const k of [...drafts.keys()]) if (k !== GLOBAL && !ids.has(k.split('\u0000')[0])) drafts.delete(k);
+    }
+    // Unsaved text kept for another project stays there; a line says where, so it is not forgotten.
+    const elsewhere = [...new Set([...drafts.keys()]
+      .filter(k => k !== GLOBAL && !k.startsWith(`${view.projectId}\u0000`))
+      .map(k => k.split('\u0000')[0]))];
+    if (elsewhere.length) {
+      root.append(make('p', 'ext-rules-note', `Unsaved rules text is kept for ${elsewhere.map(projectName).join(', ')}. Open that project to save or revert it.`));
+    }
 
     const tabs = make('div', 'ext-rules-tabs');
     tabs.setAttribute('role', 'tablist');
     tabs.setAttribute('aria-label', 'Rules files');
-    for (const name of ALL_DOCS) view.docs[name] = makeDoc(view, name, entryOf(data, name));
+    for (const name of ALL_DOCS) {
+      const entry = entryOf(data, name);
+      view.docs[name] = makeDoc(view, name, entry);
+      restoreDraft(view, view.docs[name], entry);
+    }
     tabs.addEventListener('keydown', event => {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       const shown = ALL_DOCS.filter(name => !view.docs[name].tab.hidden);
@@ -483,6 +542,13 @@
     fetchState(projectId)
       .then(data => {
         if (seq !== loadSeq || !root.isConnected) return;
+        // The project changed while this was being read: draw the one on screen instead.
+        const now = MuseUI.state.activeProject;
+        if (now && now !== projectId) {
+          root.remove();
+          render(body);
+          return;
+        }
         build(root, data);
       })
       .catch(err => {
@@ -502,6 +568,22 @@
     title: 'Rules',
     order: 15,
     render: body => render(body),
+  });
+
+  // The sidebar stays usable while Settings is open, so the project can change under the section. It is drawn again for the project on
+  // screen; unsaved text of the old project stays in drafts and comes back when that project is shown again.
+  MuseUI.events?.on?.('state', () => {
+    const view = current;
+    if (!view || !view.root.isConnected) return;
+    const now = MuseUI.state.activeProject;
+    if (!now || now === view.projectId) return;
+    const body = view.root.parentNode;
+    if (!body) return;
+    for (const name of ALL_DOCS) keepDraft(view, view.docs[name]);
+    current = null;
+    clearInterval(view.timer);
+    view.root.remove();
+    render(body);
   });
 
   // The /rules command opens Settings at this section (UI-ARCH section 11).

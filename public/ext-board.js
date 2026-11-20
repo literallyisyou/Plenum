@@ -19,6 +19,7 @@
   const SIDE_MAX = 5;
   const RECENT_MAX = 30;
   const TICK_MS = 5000;
+  const RETRY_MS = 3000;
   const SWITCH_WAIT_MS = 10000;
   const MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
   const MOD = MAC ? 'Cmd' : 'Ctrl';
@@ -93,7 +94,11 @@
         recent.unshift(ev.run);
         trimRecent();
         // A run that ends while its chat is on screen has been seen.
-        if (ev.run.scope === onScreen()) seen[ev.run.scope] = Math.max(seen[ev.run.scope] ?? 0, ev.run.endedAt ?? 0);
+        // The mark is stored at once, so it is not lost on a reload (markSeen after this finds it seen and writes nothing).
+        if (ev.run.scope === onScreen()) {
+          seen[ev.run.scope] = Math.max(seen[ev.run.scope] ?? 0, ev.run.endedAt ?? 0);
+          writeSeen();
+        }
         return;
       case 'approval-add':
         if (ev.card && typeof ev.card.approvalId === 'string') approvals.set(ev.card.approvalId, ev.card);
@@ -131,15 +136,25 @@
       for (const ev of meanwhile) if ((ev.seq ?? 0) > seq) apply(ev);
       notify();
     } catch {
-      // The board keeps what it has. The next reconnect or change reads it again.
+      // The board keeps what it has. The next reconnect reads it again, and so does the next change while no snapshot has been read yet.
     } finally {
       if (mine === gen) buffer = null;
     }
   }
 
+  // While no snapshot has been read (the first read failed), a change reads it again, at most once every few seconds, so the runs and
+  // the cards from before the page opened are listed without waiting for a reconnect.
+  let lastRetry = 0;
+  function retryFirstRead() {
+    if (loaded || buffer || Date.now() - lastRetry < RETRY_MS) return;
+    lastRetry = Date.now();
+    sync();
+  }
+
   function onActivity(ev) {
     apply(ev);
     if (buffer) buffer.push(ev);
+    else retryFirstRead();
     if (ev.op === 'run-end' && ev.run && ev.run.scope === onScreen()) markSeen(ev.run.scope);
     notify();
   }
@@ -183,6 +198,7 @@
   let sideList = null;
   let sideMore = null;
   let sideSig = '';
+  let sideNodes = [];
 
   const el = (tag, cls = '', text) => {
     const node = document.createElement(tag);
@@ -286,17 +302,34 @@
     const b = el('button', row.kind === 'wait' ? 'ext-board-row is-wait' : 'ext-board-row');
     b.type = 'button';
     const top = el('span', 'ext-board-row-top');
-    top.append(el('span', row.tone ? `pill ext-board-pill ${row.tone}` : 'pill ext-board-pill', row.status));
+    const pill = el('span', row.tone ? `pill ext-board-pill ${row.tone}` : 'pill ext-board-pill', row.status);
+    top.append(pill);
     if (row.unseen) top.append(el('span', 'ext-board-dot'));
     b.append(top, el('span', 'ext-board-row-name', `${row.projectName || 'Project'} · ${row.threadName || 'Main'}`));
     // A run that a phone acted in says so: via <device> (DECISIONS 68). The name comes from the phone list, never the id.
-    const meta = [row.model, row.step, row.clock].filter(Boolean).join(' · ');
-    if (meta) b.append(el('span', 'ext-board-row-meta', meta));
-    const via = row.via ? `via ${MuseUI.phoneName?.(row.via) || 'a phone'}` : '';
+    const meta = metaOf(row);
+    const metaNode = meta ? el('span', 'ext-board-row-meta', meta) : null;
+    if (metaNode) b.append(metaNode);
+    const via = viaOf(row);
     if (via) b.append(el('span', 'ext-board-row-meta', via));
     b.setAttribute('aria-label', `${row.status}: ${row.projectName || 'Project'} · ${row.threadName || 'Main'}${via ? `, ${via}` : ''}`);
     b.addEventListener('click', () => openScope({ scope: row.scope, projectId: row.projectId }));
+    // The parts that change while a run goes, so fillRow can update them in place.
+    b.boardParts = { pill, meta: metaNode };
     return b;
+  }
+
+  const metaOf = row => [row.model, row.step, row.clock].filter(Boolean).join(' · ');
+  const viaOf = row => (row.via ? `via ${MuseUI.phoneName?.(row.via) || 'a phone'}` : '');
+
+  // Updates a drawn row's moving text (its minutes, step and clock) without making a new button, so focus and a click in progress stay.
+  function fillRow(b, row) {
+    const parts = b?.boardParts;
+    if (!parts) return;
+    if (parts.pill) parts.pill.textContent = row.status;
+    if (parts.meta) parts.meta.textContent = metaOf(row);
+    const via = viaOf(row);
+    b.setAttribute('aria-label', `${row.status}: ${row.projectName || 'Project'} · ${row.threadName || 'Main'}${via ? `, ${via}` : ''}`);
   }
 
   function buildSide() {
@@ -331,7 +364,10 @@
     const rows = sideRows();
     const waiting = approvals.size;
     const running = runs.size;
-    const sig = JSON.stringify([rows.map(r => [r.key, r.status, r.projectName, r.threadName, r.model, r.step, r.clock, r.via, r.via ? MuseUI.phoneName?.(r.via) ?? '' : '']), waiting]);
+    const shown = rows.slice(0, SIDE_MAX);
+    // The signature leaves out what moves while a run goes (a running row's minutes, its step and its clock): those are updated in place.
+    // Whether a row has a meta line at all is in it, since that changes the row's parts.
+    const sig = JSON.stringify([shown.map(r => [r.key, r.kind, r.tone, r.kind === 'run' ? '' : r.status, r.unseen, r.projectName, r.threadName, Boolean(metaOf(r)), r.via, viaOf(r)]), waiting]);
     side.hidden = rows.length === 0;
     // The badge shows the cards waiting (amber) when there are any, else the runs in progress.
     sideBadge.hidden = waiting === 0 && running === 0;
@@ -341,10 +377,14 @@
     sideWord.textContent = waiting > 0 ? ' waiting' : ' running';
     sideHead.setAttribute('aria-label', waiting > 0 ? `Running now: ${waiting} waiting for you. Open the Agents pane` : `Running now: ${running} running. Open the Agents pane`);
     sideMore.hidden = rows.length === 0;
-    // The list is redrawn only when its text changed, so a row that has focus keeps it.
-    if (sig === sideSig) return;
+    // The list is rebuilt only when rows come, go or change state, so a row that has focus keeps it and a click is not lost to a tick.
+    if (sig === sideSig) {
+      shown.forEach((r, i) => fillRow(sideNodes[i], r));
+      return;
+    }
     sideSig = sig;
-    sideList.replaceChildren(...rows.slice(0, SIDE_MAX).map(rowEl));
+    sideNodes = shown.map(rowEl);
+    sideList.replaceChildren(...sideNodes);
   }
 
   // Every change: the sidebar is drawn and the board (ext-agents.js) is told. The board reads the store through MuseUI.board.
@@ -398,6 +438,7 @@
   Promise.resolve(MuseUI.ready).then(() => sync());
   // The clocks and the minutes of the rows move while a run goes; the sidebar is redrawn every few seconds.
   setInterval(() => {
+    if (!loaded) retryFirstRead();
     if (document.visibilityState !== 'hidden') renderSide();
   }, TICK_MS);
   document.addEventListener?.('visibilitychange', () => {

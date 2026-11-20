@@ -38,6 +38,15 @@
   const LOST = 'The message you have not sent will be lost.';
   const RUN_WAIT = 'A run is in progress. You can restart when it ends.';
   const APPROVAL_WAIT = 'An approval card is waiting. Answer it, then restart.';
+  // panels-a-16: Restarting Plenum… does not stay for ever. The desktop app posts its status again when the install has not begun 60 s
+  // after the press (INSTALL_STUCK_MS in desktop/handlers/app-update.cjs), or at once on an updater error; it posts nothing while an
+  // install really goes (the app quits). So a status after the press, a 'hello' (the channel came back, so Plenum did not quit), or
+  // RESTART_LATE_MS with no word ends the wait, and the button is on again.
+  const RESTART_LATE_MS = 70_000;
+  const RESTART_MISSED = 'Plenum did not restart. Press Restart to update to try again.';
+  // A status read that has not answered after LOAD_MS ends with a message and Try again, so one read that hangs cannot block the next.
+  const LOAD_MS = 15_000;
+  const LOAD_SLOW = 'Plenum did not answer in time.';
 
   // ---------- small helpers (text only, no markup from the server) ----------
 
@@ -78,7 +87,9 @@
   let checkError = '';
   let restartBusy = false;
   let restarting = false;     // the server accepted Restart to update
+  let restartTimer = null;    // ends a restart that did not happen (RESTART_LATE_MS)
   let restartError = '';
+  let loadAgain = false;      // a read was asked for while one was going: it runs when that one ends
   let confirmLost = false;    // the first click found an unsent message in the composer
   let noticeDrawn = false;
   let firstToastShown = false;
@@ -362,13 +373,23 @@
   // ---------- data ----------
 
   // Reads the status, the settings and the release page. The first read shows the spinner; a failed read shows the message and Try again.
+  // A read that has not answered after LOAD_MS counts as failed (its late answer is dropped). A read asked for while one goes (a hello)
+  // runs when that one ends.
   async function load() {
-    if (loading) return;
+    if (loading) {
+      loadAgain = true;
+      return;
+    }
     loading = true;
+    loadAgain = false;
     loadError = '';
     redraw();
+    let timer = null;
     try {
-      const got = await MuseUI.api('/api/app-updates');
+      const got = await Promise.race([
+        MuseUI.api('/api/app-updates'),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(LOAD_SLOW)), LOAD_MS); }),
+      ]);
       data = got;
       settings = isObj(got.settings) ? { ...got.settings } : { check: true, channel: 'stable', noticed: false };
       status = isObj(got.status) ? got.status : { status: 'idle' };
@@ -376,10 +397,26 @@
     } catch (err) {
       loadError = err?.message || 'Unknown error';
     } finally {
+      clearTimeout(timer);
       loading = false;
     }
     redraw();
     signals();
+    if (loadAgain) {
+      loadAgain = false;
+      load();
+    }
+  }
+
+  // Ends the wait after Restart to update (see RESTART_LATE_MS). missed: say under the button that the restart did not happen. Returns
+  // whether it was waiting.
+  function stopRestarting(missed) {
+    if (!restarting) return false;
+    restarting = false;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+    if (missed) restartError = RESTART_MISSED;
+    return true;
   }
 
   // Puts the switch and the channel back to the saved values (after a load, and after a save has been answered).
@@ -468,9 +505,21 @@
     redraw();
     try {
       await MuseUI.api('/api/app-updates/install', {});
-      restarting = true;
       confirmLost = false;
-      MuseUI.toast('Restarting Plenum to update…', 'ok');
+      // The button is there only while the status is 'downloaded'. A status other than that one, here, came while the press was being
+      // answered: the desktop app let the install go already (an updater error is posted at once, and the event can overtake this
+      // answer). The card shows that status and does not wait.
+      if (status?.status === 'downloaded') {
+        restarting = true;
+        clearTimeout(restartTimer);
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          if (!stopRestarting(true)) return;
+          redraw();
+          signals();
+        }, RESTART_LATE_MS);
+        MuseUI.toast('Restarting Plenum to update…', 'ok');
+      }
     } catch (err) {
       restartError = err?.message || 'Plenum could not restart.';
       confirmLost = false;
@@ -554,10 +603,16 @@
       if (!isObj(ev)) return;
       const { type, ...rest } = ev;
       void type;
+      // A status after Restart to update: the desktop app let the install go (it posts none while one goes). The status shows again;
+      // a 'downloaded' one also says the restart did not happen.
+      if (isObj(rest) && typeof rest.status === 'string') stopRestarting(rest.status === 'downloaded');
       applyStatus(rest);
     });
-    // A reconnect after a restart reads the status again.
-    MuseUI.events.on('hello', () => { load(); });
+    // A reconnect after a restart reads the status again. A page that is still here after Restart to update was not restarted.
+    MuseUI.events.on('hello', () => {
+      stopRestarting(true);
+      load();
+    });
     // Run and approval state: the Restart button re-checks, and a toast that waited for the run to end may show now.
     MuseUI.events.on('state', () => {
       redraw();

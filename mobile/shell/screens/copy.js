@@ -57,9 +57,17 @@ export function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+// w7 follow-up (17 Nov 2026): the runs going on the computer, from a HELLO's pending. The computer counts them in pending.running
+// (lib/remote/index.mjs pendingNow); the phone read pending.runs, so "N runs going" never showed. runs is still read for the demo replay and
+// older fixtures. 0 for anything that is not a count.
+export function runsGoing(pending) {
+  const n = Number(pending?.running ?? pending?.runs);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 export function pendingLine(computer, pending) {
   const approvals = Number(pending?.approvals) || 0;
-  const runs = Number(pending?.runs) || 0;
+  const runs = runsGoing(pending);
   const parts = [];
   if (approvals) parts.push(plural(approvals, 'approval waiting', 'approvals waiting'));
   if (runs) parts.push(plural(runs, 'run going', 'runs going'));
@@ -77,7 +85,14 @@ export function updateDesktopBody(computer, minimum, have) {
   return `This app needs Plenum ${minimum} or later on ${computer}, which has ${have}. On the computer, open Settings › Updates and install the update.`;
 }
 
-export function uiFailedBody(computer, cause) {
+// w7: cause 'version' (ui-host.js bundledFit): the computer could not send its screens and the ones built into this app are for another
+// Plenum release. versions is { app, desktop, update }; update names the side that is older.
+export function uiFailedBody(computer, cause, versions = null) {
+  if (cause === 'version' && versions?.app && versions?.desktop) {
+    const why = `${computer} could not send Plenum's screens. The screens built into this app are for Plenum ${versions.app}, and ${computer} runs Plenum ${versions.desktop}.`;
+    if (versions.update === 'app') return `${why} Update this app, then open it again.`;
+    return `${why} On the computer, open Settings › Updates and install the update.`;
+  }
   if (cause === 'not-sent') return `${computer} did not send Plenum's screens. Try again.`;
   if (cause === 'stopped') return `Plenum on ${computer} stopped while the screens were loading.`;
   return 'Part of Plenum did not arrive intact from ' + computer + ', so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.';

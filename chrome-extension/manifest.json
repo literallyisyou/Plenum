@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Plenum for Chrome",
+  "version": "1.2.1",
+  "description": "Share tab context with Plenum and prepare portfolio drafts in a local side panel.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwkZ+gzDSN4R3SnyzvprbB6hbrfGph4mZ7VGYliz3nAcFXJSTEoWFCFxqHeVritG4kF8k2zZcSSE35S+Xo/WgXL5jWod25lyyfr/KN8krw7mFg6BZXCEa7+I0C2eHPb+45VFEebvdVTJoETRSK45Ad4BELgLCjwAHqtNP7m0ol7g+GT5JPlAcCRscgqglwHeETYO2VXu55ycUu24FByZKo/GxKnuVNI4XIO2J3SOZjNeQ1WE3jFo1qgeSDGp3X/eMq+x3EGmZrm5BFySttymgZB9J/HEDf1/2v5YftYvtyUTHjniN0d4wY+rVeuULlMJSavYvRdD4/18jmBudGQyoWQIDAQAB",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "side_panel": { "default_path": "portfolio.html" },
+  "action": { "default_title": "Plenum", "default_popup": "popup.html" }
+}

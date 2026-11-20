@@ -455,7 +455,7 @@ html[data-surface="phone"] .composer-bar {
   gap: 6px;
   min-width: 0;
 }
-html[data-surface="phone"] .composer-bar > :is(.computer-seg, .mode-seg, label.pick) { display: none; }
+html[data-surface="phone"] .composer-bar > :is(.computer-seg, .chat-options, label.pick) { display: none; }
 html[data-surface="phone"] .composer-bar > .ph-plus {
   order: 0;
   flex: none;

@@ -18,7 +18,7 @@ export const SANDBOX_POLICY = Object.freeze({
   storage: 'off',
   navigation: 'blocked',
   popups: 'blocked',
-  screenshots: 'blocked',
+  screenshots: 'allowed',
 });
 
 export class IsolatedPreviewError extends Error {

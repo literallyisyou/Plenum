@@ -36,15 +36,11 @@
   const SHELL = window.plenumShell && typeof window.plenumShell === 'object' ? window.plenumShell : null;
   const DESKTOP = SHELL?.desktop === true;
   const REMOTE = Boolean(SHELL) && !DESKTOP;
-  const TEXT_DOWN = DESKTOP
-    ? "Plenum's server stopped and is being restarted. This page reconnects by itself, and what you typed is kept."
-    : REMOTE
-      ? 'Not connected to your computer. Plenum keeps trying, and what you typed is kept.'
-      : 'Cannot reach the Plenum server. Retrying every 5 seconds.';
-  const TEXT_LONG = "Plenum's server has not come back yet. If a box asks what to do, choose Try again. What you typed is kept.";
+  const TEXT_DOWN = 'Cannot reach the Plenum server. Plenum will keep trying. Your draft is kept.';
+  const TEXT_LONG = 'Plenum is still out of reach. Your draft is kept.';
   const TEXT_TOKEN = "Plenum's server is running again but does not accept this page. Reload the page to continue.";
   // The server answers, but the live link to it does not come back.
-  const TEXT_LINK = 'Plenum is running, but the live link to it dropped. It reconnects by itself, and what you typed is kept.';
+  const TEXT_LINK = 'Plenum is reachable. Live updates are temporarily unavailable.';
   // The original fetch. The checks use it, so they never pass through the wrapper below.
   const real = window.fetch.bind(window);
 
@@ -64,6 +60,7 @@
   let seenAt = 0;       // when the banner was put on screen in this outage (0: it has not been seen)
   let shellAway = false; // on a phone or paired browser: the shell says its link to the computer is not up, and its strip says so
   let shellBackAt = 0;  // on a phone or paired browser: when the shell's link came back
+  let connectionRevision = 0;
 
   const banner = document.createElement('div');
   banner.className = 'ext-conn-banner';
@@ -73,7 +70,10 @@
   note.className = 'ext-conn-text';
   note.textContent = TEXT_DOWN;
   const retryNow = MuseUI.button('ghost small ext-conn-btn', 'Retry now');
-  retryNow.addEventListener('click', () => probe());
+  retryNow.addEventListener('click', () => {
+    MuseUI.events?.retry();
+    void probe();
+  });
   // Only for a server that refuses this page's token: the page has to be loaded again to get the new one. The person presses it.
   const reload = MuseUI.button('ghost small ext-conn-btn', 'Reload');
   reload.hidden = true;
@@ -82,25 +82,23 @@
   // Above the transcript, in the same column as the messages.
   MuseUI.el.chat.before(banner);
 
-  // True for a call to this server's own API. Calls to any other address are never watched.
+  // The event stream proves it is up by delivering hello. Only ordinary API calls establish HTTP reachability here.
   function isLocalApi(input) {
     try {
       const raw = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input?.url ?? ''));
       const url = new URL(raw, location.href);
-      return url.origin === location.origin && url.pathname.startsWith('/api/');
+      return url.origin === location.origin && url.pathname.startsWith('/api/') && url.pathname !== '/api/events';
     } catch {
       return false;
     }
   }
 
-  // A reply of any status means the server is up. A network failure on a local call means it is down. The error is passed on
-  // unchanged, so the caller handles it as it did before this panel.
+  // Successful HTTP calls prove reachability, separate from the event stream. The caller still handles its own errors.
   window.fetch = async (input, init) => {
     const local = isLocalApi(input);
     try {
       const res = await real(input, init);
-      // The token refusal of a server that started again with a new token is not a sign that this page's server is up (C-21).
-      if (local && !(res.status === 401 && res.headers?.get?.('x-plenum-auth') === 'token')) answered();
+      if (local && res.ok) answered();
       return res;
     } catch (err) {
       if (local && isNetworkError(err)) missed();
@@ -166,20 +164,27 @@
   // The server may be gone: a call could not reach it, or the events channel was lost. It is asked at once, and the banner shows only
   // if that check fails too (probe). A banner already on screen stays as it is.
   function missed() {
-    if (down) return;
+    if (down || shellAway || MuseUI.events?.connected) return;
     suspect = true;
     void probe();
   }
 
   // The server answered. The banner goes, unless it shows because the channel does not come back: that one waits for the channel.
   function answered() {
-    if (!down || why === 'link') return;
+    connectionRevision += 1;
+    if (!down) return;
+    if (lost) {
+      refused = false;
+      why = 'link';
+      wording();
+      return;
+    }
     hideBanner();
   }
 
   // The banner goes. Its return is announced only when it was on screen for more than TOLD_MS, and the state is read again (the
   // composer is not touched). A drop that never showed the banner leaves the reading to the channel's hello.
-  function hideBanner() {
+  function hideBanner({ refresh = true } = {}) {
     if (!down) return;
     const seen = seenAt ? Date.now() - seenAt : 0;
     down = false;
@@ -189,15 +194,16 @@
     banner.hidden = true;
     countBack();
     if (seen > TOLD_MS) MuseUI.toast(REMOTE ? 'Connected to your computer again.' : 'Connected to the Plenum server again.');
-    MuseUI.refresh();
+    if (refresh) MuseUI.refresh();
   }
 
   // The events channel said hello again: whatever the banner said, it goes.
   function markUp() {
+    connectionRevision += 1;
     const was = lost;
     lost = false;
     clearTimeout(calm);
-    if (down) hideBanner();
+    if (down) hideBanner({ refresh: false });
     // Back before anyone was told: only counted, for the shell's smoke run.
     else if (was) countBack();
   }
@@ -244,8 +250,9 @@
   // One check: every 5 seconds, and at once for Retry now. An ok answer from the health route ends the banner. A network failure
   // starts it (or keeps it up). An answer that refuses the token says so in the banner.
   async function probe() {
-    if (probing) return;
+    if (probing || shellAway) return;
     probing = true;
+    const started = connectionRevision;
     lastProbe = Date.now();
     // Once something looks wrong (the channel is lost, a call failed, the banner shows) the health route is asked: it answers only once
     // the server is running.
@@ -259,10 +266,12 @@
         res = await check(DOWN_CHECK_OLD);
       }
       res.body?.cancel().catch(() => {});
+      if (connectionRevision !== started || shellAway) return;
       if (res.ok) answered();
       else if (res.status === 401 && res.headers?.get?.('x-plenum-auth') === 'token') markRefused();
       else if (down) wording();
     } catch (err) {
+      if (connectionRevision !== started || shellAway) return;
       // The check itself could not reach the server, or had no answer in time: the server is down.
       if (isNetworkError(err) || err?.name === 'TimeoutError' || err?.name === 'AbortError') {
         showBanner('server');

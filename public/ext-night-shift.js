@@ -522,6 +522,10 @@
 
   function paint() {
     if (!root || !parts) return;
+    // A paint rebuilds the rows and their buttons. The button that had the keyboard focus is found again by its data-fk and gets the
+    // focus back, so a keyboard user is not sent to the top of the page after an action or the minute's poll.
+    const had = document.activeElement;
+    const fk = had && had !== document.body && root.contains(had) ? str(had.dataset?.fk) : '';
     paintStatus();
     paintAwake();
     paintNotes();
@@ -536,6 +540,10 @@
     } else if (nob) nob.remove();
     syncAdd();
     paintSettings();
+    if (fk && !root.contains(document.activeElement)) {
+      const again = [...root.querySelectorAll('button')].find(b => b.dataset?.fk === fk);
+      again?.focus({ preventScroll: true });
+    }
   }
 
   function paintStatus() {

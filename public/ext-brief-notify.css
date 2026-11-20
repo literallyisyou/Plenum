@@ -1,0 +1,30 @@
+/* ext-brief-notify: Settings > General > Morning and evening brief (wave 8). Tokens only; the switches are the app's own .switch-row.
+   The card is laid out for its own width (no viewport query): every row wraps, nothing is wider than the card. */
+
+.bn-root, .bn-main { display: grid; gap: var(--sp-4); min-width: 0; }
+.bn-root .bn-note { margin: 0; font-size: var(--fs-small); line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.bn-root .bn-line { margin: 0; font-size: var(--fs-body); line-height: 1.45; color: var(--text-2); }
+.bn-root .bn-fact { margin: 0; font-size: var(--fs-small); line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.bn-root .bn-why { color: var(--bad); }
+.bn-root .switch-row { min-width: 0; }
+.bn-root .switch-row > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.bn-root .switch-row small { display: block; color: var(--muted); font-size: var(--fs-small); }
+.bn-root .switch-row small:empty { display: none; }
+
+.bn-slots { display: grid; gap: var(--sp-3); min-width: 0; }
+.bn-slot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); min-width: 0; }
+.bn-slot .switch-row { flex: 1 1 180px; }
+.bn-time { min-width: 0; min-height: 28px; }
+
+.bn-say { font-size: var(--fs-small); line-height: 1.4; color: var(--ok); overflow-wrap: anywhere; }
+.bn-say:empty { display: none; }
+.bn-say.bn-bad { color: var(--bad); }
+
+.bn-biz { display: grid; gap: var(--sp-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.bn-h { padding: 0; font-size: var(--fs-small); font-weight: 650; letter-spacing: 0.02em; color: var(--text-2); }
+.bn-picks { display: grid; gap: var(--sp-2); min-width: 0; padding-inline-start: var(--sp-4); }
+.bn-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; min-height: 24px; font-size: var(--fs-body); color: var(--text); overflow-wrap: anywhere; }
+.bn-check input { flex: none; }
+.bn-small { color: var(--muted); font-size: var(--fs-small); }
+
+.bn-now { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; }

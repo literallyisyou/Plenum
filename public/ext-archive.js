@@ -37,11 +37,14 @@
 
   // The line shows while the live chat is still the one that /clear, /compact or an Edit left: no messages, or only the summary
   // after a compact, or exactly the messages that stayed after an Edit. A newer message hides it. The server refuses the
-  // restore after that as well.
+  // restore after that as well. After an automatic compaction the chat goes on after the summary at once (w7 server-3), so the
+  // line shows while that summary (archive.summaryTs) is still the first message, as the server's compactFits checks.
   function paint() {
     const a = MuseUI.state.archive;
-    const live = (MuseUI.state.messages ?? []).length;
-    const show = Boolean(a) && (a.reason === 'rewind' ? live === a.stayed : live <= (a.reason === 'compact' ? 1 : 0));
+    const msgs = MuseUI.state.messages ?? [];
+    const live = msgs.length;
+    const afterAuto = a?.reason === 'compact' && Number.isFinite(a.summaryTs) && msgs[0]?.compact === true && msgs[0].ts === a.summaryTs;
+    const show = Boolean(a) && (a.reason === 'rewind' ? live === a.stayed : afterAuto || live <= (a.reason === 'compact' ? 1 : 0));
     line.hidden = !show;
     if (!show) return;
     const label = LABELS[a.reason] ?? 'Messages removed';

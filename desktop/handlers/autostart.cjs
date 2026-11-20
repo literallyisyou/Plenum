@@ -32,7 +32,10 @@ function read(shell) {
   if (!supported(shell)) return { supported: false, on: false };
   let on = false;
   try {
-    on = shell.app.getLoginItemSettings({ args: ARGS }).openAtLogin === true;
+    // An entry switched off under Task Manager > Startup apps (or Settings > Startup) keeps its Run value, so openAtLogin stays true;
+    // Electron reports the switch as executableWillLaunchAtLogin. An Electron that does not report it leaves openAtLogin alone.
+    const s = shell.app.getLoginItemSettings({ args: ARGS });
+    on = s?.openAtLogin === true && s.executableWillLaunchAtLogin !== false;
   } catch {
     on = false;
   }

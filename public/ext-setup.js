@@ -274,6 +274,8 @@
     rows.append(...ui.clis.map(r => r.card));
     const again = MuseUI.button('ghost small', 'Check again');
     again.addEventListener('click', () => loadStatus(true));
+    // Kept so a read it started can turn it off until the answer is in (a fresh read asks the CLIs and takes a few seconds).
+    ui.again = again;
     const actions = make('div', 'actions');
     actions.append(again);
     pane.append(heading, lead, rows, actions);
@@ -658,7 +660,13 @@
     const seq = ++loadSeq;
     loading = true;
     const fresh = [...waiting, ...gaveUp].some(isSide);
-    if (fresh) showLine('Checking your sign-ins…', false);
+    // A press of Check again says at once that it is looking, and the button stays off until the answer is in, so it is not pressed
+    // again and again while the CLIs are asked. The quiet reads every few seconds change nothing on screen.
+    if (fresh || again) showLine('Checking your sign-ins…', false);
+    if (again && ui?.again) ui.again.disabled = true;
+    const done = () => {
+      if (again && ui?.again) ui.again.disabled = false;
+    };
     let failure = '';
     const take = (request, accept) => request.then(value => {
       if (seq !== loadSeq) return;
@@ -672,6 +680,7 @@
       take(MuseUI.api(again ? '/api/accounts?fresh=1' : '/api/accounts'), main => (main?.claude ? (merge({ main }), true) : false)),
       take(cliStatus(fresh), cli => (merge({ cli, cliPending: false }), true)),
     ]);
+    done();
     if (seq !== loadSeq) return;
     loading = false;
     if (failure) {

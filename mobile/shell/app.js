@@ -45,6 +45,7 @@ import { createBiometricGate, createLock, createPasskeyGate, createUnlockMemory 
 import { pageCandidates, parsePairingText, startPairing } from './pairing.js';
 import { carrierUrlOk, hostLabel, usableCarriers } from './carriers.js';
 import { createStopController, STOP_DONE_MS, STOP_NEEDS_UNLOCK } from './stop.js';
+import { ANSWER_TEXT, answerFromNotification, isAnswerLink } from './answer.js';
 import { createDebugLog } from './debug.js';
 import { createAndroidPush, dropWebPush, endpointHash, isRouteLink, parseNotificationHash, subscribeWebPush } from './push.js';
 import { NOTIFY_REPAIRED, NOTIFY_TEST_ON_WAY } from './screens/copy2.js';
@@ -233,6 +234,18 @@ export function makeFacade(shell, plugins) {
   });
 }
 
+// w7: whether the UI page may move to a copy from the computer now, from the app's built-in screens or (w7 follow-up) from an older copy
+// (ui-host.js refresh, mayMove): the HELLO
+// counts no run going on that computer, and no Stop is sending or queued on this page. The move reloads the page, so a reply that is streaming
+// or a Stop on its way is never cut. A HELLO without a count says nothing, so it is not quiet.
+export function uiMayMove(hello, stopState = 'idle') {
+  const pending = hello?.pending;
+  if (!pending || typeof pending !== 'object') return false;
+  const running = Number(pending.running ?? pending.runs);
+  if (!Number.isFinite(running) || running !== 0) return false;
+  return stopState !== 'sending' && stopState !== 'queued';
+}
+
 // A link for the shell page that waits in the store's meta for a moment: the UI page leaves it (ui-host.js openShell) and the shell page takes it
 // out once, if it is under two minutes old. A pairing link holds the pairing secret, so it never goes through sessionStorage or any web storage.
 export function createLinkStore(meta, now = () => Date.now()) {
@@ -318,7 +331,7 @@ function demoHello(replayView) {
     caps: ['demo'],
     pending: {
       approvals: waiting,
-      runs: running,
+      running, // the computer's name for the count (lib/remote/index.mjs pendingNow)
       driving: drive ? { app: drive.app, step: drive.step, of: drive.of } : null,
     },
     minShell: null,
@@ -599,8 +612,11 @@ export function createShell({
   // Counts the pairings this page finished (from the link or the paste), so the screens start the onboarding once per pairing.
   let pairedSeq = 0;
   let pairedId = null;
-  // The UI hand-over (ui-host.js): idle, loading, navigating (the page is leaving for the UI) or failed.
+  // The UI hand-over (ui-host.js): idle, loading, navigating (the page is leaving for the UI) or failed. w7: versions is
+  // { app, desktop, update } when the failure is that the built-in screens are for another release (cause 'version').
   let ui = { state: 'idle', cause: null, progress: null, hasCopy: false };
+  // w7: which screens this phone uses for its computer (ui-host.js uiSource): { kind: 'bundled' | 'computer', computerId, ... } or null.
+  let uiSource = null;
   let loadedUiHash;
   let refreshingUi = false;
   // True from a finished pairing until the screens say the onboarding (app lock, notifications) is over: the page is not handed to the UI
@@ -740,7 +756,7 @@ export function createShell({
     demo: replay ? replay.view() : null,
     paired: { seq: pairedSeq, id: pairedId },
     notice: notice ? { ...notice } : null,
-    ui: { ...ui, kind: uiHost?.kind ?? null },
+    ui: { ...ui, kind: uiHost?.kind ?? null, source: uiSource ? { ...uiSource } : null },
     intent: intent ? { ...intent } : null,
     screenRequest: screenRequest ? { ...screenRequest } : null,
     dictation: dictationState ? { ...dictationState } : null,
@@ -1146,6 +1162,13 @@ export function createShell({
       await clearNotification(parsed, link.computer ?? parsed.computer ?? '');
       return { ok: false, reason: 'expired', kind: parsed.kind };
     }
+    // Wave 8: the same for the Yes or No of a business's yes/no item (answer.js): an old one is not sent, and Today is opened instead.
+    if (isAnswerLink(parsed) && wall() - link.at > NOTIFICATION_LINK_MAX_AGE_MS) {
+      say(ANSWER_TEXT.old, 'warn');
+      emitRoute({ kind: 'today' });
+      await clearNotification(parsed, link.computer ?? parsed.computer ?? '');
+      return { ok: false, reason: 'expired', kind: parsed.kind };
+    }
     return api.handleHash(link.text, link.computer ?? '');
   }
 
@@ -1305,7 +1328,7 @@ export function createShell({
   if (typeof colorScheme?.addEventListener === 'function') colorScheme.addEventListener('change', () => applyBars());
   else if (typeof colorScheme?.addListener === 'function') colorScheme.addListener(() => applyBars());
 
-  // M11: "Hide Plenum in the app switcher" (on by default) is FLAG_SECURE on Android, set through the app's own PlenumPrivacy plugin. The
+  // "Hide content in the app switcher" controls the Recents thumbnail on Android 13+ through the PlenumPrivacy plugin. The
   // setting is also kept natively, so the flag is on from the first frame; this keeps the two in step with the phone's preference. The
   // web page keeps its CSS cover (screens/main.js).
   let appliedHide = null;
@@ -1390,7 +1413,9 @@ export function createShell({
   function afterHello() {
     if (!uiHost || replay || mode !== 'normal') return;
     if (pageKind === 'ui') {
-      refreshUi();
+      // w7: an Android UI page (the built-in screens, or an older copy) moves to the computer's newer copy only when nothing is running there
+      // (ui-host.js refreshStaged).
+      refreshUi({ reason: 'hello', mayMove: uiMayMove(hello, stopCtl?.state ?? 'idle') });
       return;
     }
     if (lockStatus.locked || holdUi) return;
@@ -1419,19 +1444,36 @@ export function createShell({
     if (out.ok) {
       ui = { ...ui, state: 'navigating', progress: { done: 1, total: 1 } };
     } else {
-      ui = { state: 'failed', cause: out.cause ?? 'checksum', progress: null, hasCopy: await uiHost.hasCopy().catch(() => false) };
+      ui = {
+        state: 'failed',
+        cause: out.cause ?? 'checksum',
+        progress: null,
+        hasCopy: await uiHost.hasCopy().catch(() => false),
+        versions: out.versions && typeof out.versions === 'object' ? { app: out.versions.app ?? null, desktop: out.versions.desktop ?? null, update: out.versions.update ?? null } : null,
+      };
     }
     refresh();
+    loadUiSource();
     return { ok: out.ok, reason: out.ok ? null : out.cause };
   }
 
+  // w7: reads which screens the phone uses for its computer (Phone settings and About show it). A host without uiSource has none.
+  function loadUiSource() {
+    if (typeof uiHost?.uiSource !== 'function') return;
+    Promise.resolve(uiHost.uiSource()).then(source => {
+      uiSource = source && typeof source === 'object' ? { ...source } : null;
+      refresh();
+    }, () => {});
+  }
+
   // On the UI page: the HELLO says whether the computer has a newer UI. The page reloads once per new UI (ui-loader shouldReload).
-  async function refreshUi() {
+  // w7: reason 'hello' or 'resume', and mayMove (uiMayMove), for the page on the app's built-in screens (ui-host.js refresh).
+  async function refreshUi({ reason = 'hello', mayMove = false } = {}) {
     if (!uiHost || refreshingUi) return;
     refreshingUi = true;
     try {
       if (loadedUiHash === undefined) loadedUiHash = await uiHost.loadedHash();
-      const out = await uiHost.refresh({ hello, loadedHash: loadedUiHash, computerId: activeId });
+      const out = await uiHost.refresh({ hello, loadedHash: loadedUiHash, computerId: activeId, reason, mayMove: mayMove === true });
       if (out.ok && out.reload) onReload();
     } finally {
       refreshingUi = false;
@@ -1518,6 +1560,7 @@ export function createShell({
       applyPrivacy();
       loadDictation();
       loadAndroidPush();
+      if (pageKind === 'shell') loadUiSource();
       if (mode === 'demo') {
         computers = [{ ...DEMO_COMPUTER }];
         activeId = DEMO_COMPUTER.id;
@@ -2080,6 +2123,8 @@ export function createShell({
       }
       // w4-m1: the worker hears how long the page was away; after RESUME_RACE_AFTER_MS it dials beside the probe (channel.worker.js).
       channel?.reconnect({ reason: 'resume', hiddenMs: away });
+      // w7: the page on the app's built-in screens tries the computer's copy again (staged only: a resume never moves the page).
+      if (pageKind === 'ui' && uiHost && hello && !replay && mode === 'normal' && !lockStatus.locked) refreshUi({ reason: 'resume', mayMove: false });
       // w4-m2: back from installing ntfy or from the notification settings: turn notifications on when that is now possible.
       if (fixWaiting) recheckNotifications().catch(() => {});
       return refresh();
@@ -2131,7 +2176,7 @@ export function createShell({
     async handleHash(hash, computerHint = '') {
       const out = await api.runHash(hash, computerHint);
       const link = parseNotificationHash(String(hash ?? ''));
-      if (androidPush && link && ['stop', 'deny', 'approve'].includes(link.kind) && out?.reason !== 'locked' && out?.reason !== 'opening' && out?.opening !== true) {
+      if (androidPush && link && ['stop', 'deny', 'approve', 'yes', 'no'].includes(link.kind) && out?.reason !== 'locked' && out?.reason !== 'opening' && out?.opening !== true) {
         await clearNotification(link, computerHint || link.computer || '');
       }
       return out;
@@ -2180,7 +2225,7 @@ export function createShell({
         delete link.computer;
         delete link.nt;
       }
-      const named = !isPair && RECORD_ID.test(hinted) && ['stop', 'deny', 'approve'].includes(link?.kind) ? hinted : '';
+      const named = !isPair && RECORD_ID.test(hinted) && ['stop', 'deny', 'approve', 'yes', 'no'].includes(link?.kind) ? hinted : '';
       if (!isPair && !link) return { ok: false, reason: 'no link' };
       if (booted) await lockRead;
       if (lockStatus.locked || lockUnreadable) {
@@ -2288,6 +2333,8 @@ export function createShell({
         emitRoute({ kind: 'waiting', id: link.id });
         return { ok: false, reason: out.reason, kind: 'approve' };
       }
+      // Wave 8: the Yes or No of a business's simple yes/no item (answer.js): one request, and the computer decides everything.
+      if (isAnswerLink(link)) return answerFromNotification(link, { whenConnected, postJson, say, emitRoute, refresh });
       if (isRouteLink(link)) {
         emitRoute(link);
         return { ok: true, reason: null, kind: link.kind };

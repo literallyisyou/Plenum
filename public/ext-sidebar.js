@@ -94,10 +94,16 @@
   });
   scrim.addEventListener('click', () => closeMenu());
 
-  // Escape closes the menu only while it is open.
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && isOpen()) closeMenu();
-  });
+  // Escape closes the menu only while it is open. The menu is the top layer over the Settings page, so it takes that Escape for itself
+  // (window, capture phase, then stopped): the page's own handler would otherwise close Settings behind it, and what was typed there.
+  // A dialog that is open takes Escape itself; an input method that is composing keeps it.
+  window.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || !isOpen() || e.isComposing) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeMenu();
+  }, true);
 
   // Choosing a project or a link closes the menu. The listener runs in the capture phase, so a .forget button that stops
   // its click from bubbling still counts. The close waits one tick, so the click's own handler runs first.

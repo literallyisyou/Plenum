@@ -200,28 +200,16 @@
   function paintChip() {
     if (!refs.chip) return;
     const sel = refs.modelSel;
-    const eff = refs.effortSel;
-    let label;
-    let full;
-    let provider = '';
+    let label = 'Plenum';
+    let full = 'Plenum chat options';
     if (modeNow() === 'council') {
       const seats = refs.boardSeats ? refs.boardSeats.children.length : 0;
       label = seats ? `Council · ${seats} seat${seats === 1 ? '' : 's'}` : 'Council';
-      full = seats ? `Council, ${seats} seats` : 'Council';
-    } else {
-      const opt = sel && sel.selectedOptions ? sel.selectedOptions[0] : null;
-      const name = opt ? txt(opt.querySelector('.o-name') || opt) : '';
-      const effOpt = eff && eff.selectedOptions ? eff.selectedOptions[0] : null;
-      const effName = effOpt ? txt(effOpt.querySelector('.o-name') || effOpt) : '';
-      provider = (opt && opt.querySelector('.o-dot') && opt.querySelector('.o-dot').dataset.p) || '';
-      label = name ? (effName ? `${name} · ${effName}` : name) : 'Choose a model';
-      full = name ? `Model ${name}${effName ? `, effort ${effName}` : ''}` : 'Choose a model';
+      full = seats ? `Council options, ${seats} ${seats === 1 ? 'seat' : 'seats'}` : 'Council options';
     }
     refs.chipText.textContent = label;
     refs.chip.title = full;
-    refs.chip.setAttribute('aria-label', `${full}. Change model and role`);
-    if (provider) refs.chipDot.dataset.p = provider;
-    else delete refs.chipDot.dataset.p;
+    refs.chip.setAttribute('aria-label', full);
     refs.chip.disabled = Boolean(sel && sel.disabled);
   }
 
@@ -487,7 +475,7 @@
 
   // A sheet: a scrim and a section over the page. Its bottom edge is the bar's top, so the bar and the Stop dock stay live under it.
   let focusTrapBound = false;
-  function openSheet({ title, note = '', className = '', fill, opener }) {
+  function openSheet({ title, note = '', className = '', fill, opener, onClose }) {
     const seq = ++sheetSeq;
     const titleId = `ph-sheet-title-${seq}`;
     const scrim = mk('div', 'ph-scrim');
@@ -517,6 +505,7 @@
       teardown: () => {
         scrim.remove();
         sheet.remove();
+        onClose?.();
       },
     });
     closeBtn.addEventListener('click', () => closeEntry(entry));
@@ -728,7 +717,7 @@
     refs.chip = chip;
     refs.chipDot = chipDot;
     refs.chipText = chipText;
-    if (refs.input) refs.input.placeholder = 'Message, or / for commands';
+    if (refs.input) refs.input.placeholder = 'Talk to Plenum';
   }
 
   // ---------- Projects: each row gets a visible "⋯"; a long-press opens the same sheet ----------
@@ -1135,6 +1124,7 @@
     row.append(dot, text);
     if (checked) row.append(icon('check', 'ph-check'));
     row.dataset.search = `${name} ${reason}`.toLowerCase();
+    row.dataset.modelRef = opt.value;
     row.addEventListener('click', () => {
       if (disabled) {
         MuseUI.toast(reason || 'Not available right now.', 'bad');
@@ -1149,7 +1139,9 @@
   }
 
   function openModelSheet(opener) {
+    let menuObserver;
     openSheet({
+      onClose: () => menuObserver?.disconnect(),
       title: 'Model and role',
       opener,
       className: 'ph-sheet-model',
@@ -1195,37 +1187,49 @@
         search.autocomplete = 'off';
         body.append(search);
         const busy = Boolean(sel && sel.disabled);
-        const groups = [];
-        const loose = [];
+        const list = mk('div', 'ph-model-list');
+        body.append(list);
         const addGroup = (label, options) => {
           if (!options.length) return;
-          const g = mk('div', 'ph-group');
-          if (label) g.append(mk('h2', 'ph-group-head', label));
+          const group = mk('div', 'ph-group');
+          if (label) group.append(mk('h2', 'ph-group-head', label));
           const radios = mk('div', 'ph-radios');
           radios.setAttribute('role', 'radiogroup');
           radios.setAttribute('aria-label', label || 'Models');
-          for (const opt of options) radios.append(optionRow(opt, busy, api));
-          g.append(radios);
-          body.append(g);
-          groups.push(g);
+          for (const opt of options) radios.append(optionRow(opt, sel.disabled, api));
+          group.append(radios);
+          list.append(group);
         };
-        for (const node of Array.from(sel ? sel.children : [])) {
-          if (node.tagName === 'OPTGROUP') addGroup(node.label, Array.from(node.children).filter(isOpt));
-          else if (isOpt(node)) loose.push(node);
-        }
-        addGroup('', loose);
-        search.addEventListener('input', () => {
+        const filter = () => {
           const needle = search.value.trim().toLowerCase();
-          for (const g of groups) {
+          for (const group of list.children) {
             let any = false;
-            for (const row of qa('.ph-opt', g)) {
+            for (const row of qa('.ph-opt', group)) {
               const show = !needle || row.dataset.search.includes(needle);
               row.hidden = !show;
-              if (show) any = true;
+              any ||= show;
             }
-            g.hidden = !any;
+            group.hidden = !any;
           }
-        });
+        };
+        const refreshChoices = () => {
+          const focused = document.activeElement?.dataset?.modelRef;
+          list.replaceChildren();
+          const loose = [];
+          for (const node of Array.from(sel ? sel.children : [])) {
+            if (node.tagName === 'OPTGROUP') addGroup(node.label, Array.from(node.children).filter(isOpt));
+            else if (isOpt(node)) loose.push(node);
+          }
+          addGroup('', loose);
+          filter();
+          if (focused) qa('.ph-opt', list).find(row => row.dataset.modelRef === focused && !row.hidden)?.focus({ preventScroll: true });
+        };
+        refreshChoices();
+        search.addEventListener('input', filter);
+        if (sel) {
+          menuObserver = new MutationObserver(refreshChoices);
+          menuObserver.observe(sel, { childList: true, attributes: true, attributeFilter: ['disabled'] });
+        }
 
         if (eff && eff.options.length) {
           body.append(sectionHead('Effort'));
@@ -2323,9 +2327,34 @@
     openSheet({
       title: `Threads in ${projectName()}`,
       opener,
+      // One row per open thread of the project, the one on screen ticked (Main's id is the project's id). Picking another one shows it.
       fill: (body, api) => {
-        body.append(sheetRow({ label: 'Main', note: 'The thread you are in', check: true, onPick: () => { api.close(); setTab('chat'); } }));
-        body.append(mk('p', 'ph-sheet-note', 'Only the main thread so far.'));
+        const project = MuseUI.state.activeProject;
+        const active = MuseUI.state.activeThread || project;
+        const open = (Array.isArray(MuseUI.state.threads) ? MuseUI.state.threads : []).filter(t => t && typeof t.id === 'string');
+        const rows = open.length ? open : [{ id: project, main: true }];
+        for (const t of rows) {
+          const main = t.main === true || t.id === project;
+          const here = t.id === active;
+          const note = here ? 'The thread you are in' : t.running ? 'Working' : t.waiting ? 'Waiting for you' : '';
+          body.append(sheetRow({
+            label: main ? 'Main' : String(t.name || 'Thread'),
+            note,
+            check: here,
+            onPick: async () => {
+              api.close();
+              if (!here) {
+                try {
+                  await MuseUI.threads?.switchTo?.(t.id);
+                } catch (err) {
+                  MuseUI.toast(err?.message || 'That thread could not be opened. Try again.', 'bad');
+                }
+              }
+              setTab('chat');
+            },
+          }));
+        }
+        if (rows.length <= 1) body.append(mk('p', 'ph-sheet-note', 'Only the main thread so far.'));
       },
     });
   }

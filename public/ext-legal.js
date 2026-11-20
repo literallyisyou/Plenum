@@ -13,6 +13,20 @@
 // There is no inline script and no style attribute: the look comes from ext-legal.css and the hidden attribute.
 (function () {
   const MuseUI = window.MuseUI;
+  // A caught error in plain words, as one sentence: the server's own sentence, or a fixed one when Plenum did not answer or sent only a
+  // status (never the browser's "Failed to fetch" or "Request failed (500)").
+  const plain = err => {
+    const t = String((MuseUI?.plainError ? MuseUI.plainError(err) : err?.message) || 'That could not be done.').trim();
+    return /[.!?…]$/.test(t) ? t : `${t}.`;
+  };
+  // The next step after a failure, said once: a message that already says to try again ("Plenum did not answer. Try again.") gets no
+  // second one (w7 review note). The Try again button stays either way.
+  const thenTry = (text, step) => (/\btry again\b/i.test(text) ? text : `${text} ${step}`);
+  // The error a refusal becomes: the server's sentence when it sent one, else only its status (plain() words that).
+  const refusal = (status, data) => {
+    const said = typeof data?.error === 'string' ? data.error.trim() : '';
+    return Object.assign(new Error(said || `The request was refused (${status}).`), { status, fromServer: Boolean(said) });
+  };
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
 
@@ -59,9 +73,7 @@
   async function readJson(res) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = new Error(data?.error || `Request failed (${res.status})`);
-      err.status = res.status;
-      throw err;
+      throw refusal(res.status, data);
     }
     return data;
   }
@@ -170,7 +182,7 @@
   function errorBlock(err, retry) {
     const box = make('div', 'legal-error');
     box.setAttribute('role', 'alert');
-    box.append(para(`Plenum could not load this: ${err?.message ?? err}. Check that Plenum is running, then try again.`));
+    box.append(para(thenTry(`Plenum could not load this. ${plain(err)}`, 'Check that Plenum is running, then try again.')));
     box.append(button('ghost small', 'Try again', retry));
     return box;
   }
@@ -319,7 +331,7 @@
   function errorBlockFor(err) {
     const box = make('div', 'legal-error');
     box.setAttribute('role', 'alert');
-    box.append(para(`${err?.message ?? err}. Check that Plenum is running, then press Try again.`));
+    box.append(para(thenTry(plain(err), 'Check that Plenum is running, then press Try again.')));
     box.append(button('primary small', 'Try again', () => openGate()));
     return box;
   }
@@ -411,7 +423,7 @@
         return;
       }
       setBusy(ui, false);
-      ui.status.textContent = `Plenum could not save your choice: ${err.message}. Press I agree to try again.`;
+      ui.status.textContent = `Plenum could not save your choice. ${plain(err)} Press I agree to try again.`;
       ui.status.classList.add('bad');
       return;
     }
@@ -453,7 +465,7 @@
     } catch (err) {
       saving = false;
       setBusy(ui, false);
-      ui.status.textContent = `Plenum could not quit: ${err.message}.`;
+      ui.status.textContent = `Plenum could not quit. ${plain(err)}`;
       ui.status.classList.add('bad');
     }
   }
@@ -496,7 +508,7 @@
     const card = gate.querySelector('.legal-card');
     if (!card) return;
     // Links are in the list too (a link inside the agreement is a stop), so focus on one is inside the card and Tab moves on from it.
-    const items = [...card.querySelectorAll('button, input, a[href], [tabindex]')].filter(el => !el.disabled && el.tabIndex >= 0);
+    const items = [...card.querySelectorAll('button, input, a[href], summary, [tabindex]')].filter(el => !el.disabled && el.tabIndex >= 0);
     if (items.length === 0) {
       e.preventDefault();
       return;
@@ -565,7 +577,7 @@
     try {
       await postJson('/api/legal/open-file', { name });
     } catch (err) {
-      MuseUI.toast(err.message, 'bad');
+      MuseUI.toast(plain(err), 'bad');
     }
   }
 
@@ -630,7 +642,7 @@
       await postJson(path, body);
       MuseUI.toast(okText);
     } catch (err) {
-      MuseUI.toast(err.message, 'bad');
+      MuseUI.toast(plain(err), 'bad');
     }
     // ext-notices keeps its own copy of the list; reading it again lets a notice that was shown again appear where its risk starts.
     try {

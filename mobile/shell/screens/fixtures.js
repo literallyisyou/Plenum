@@ -17,7 +17,7 @@ export const DEMO_BASE = Object.freeze({
     Object.freeze({ carrier: 'relay', reason: 'closed' }),
   ]),
   lock: Object.freeze({ mode: 'off', failures: 0, waitSec: 0 }),
-  pending: Object.freeze({ approvals: 2, runs: 1 }),
+  pending: Object.freeze({ approvals: 2, running: 1 }), // the HELLO's shape (lib/remote/index.mjs pendingNow)
   driving: null,
   pasteError: null,
   desktopVersion: '2.0',

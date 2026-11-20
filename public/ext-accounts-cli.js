@@ -358,12 +358,19 @@
     signIn.disabled = !c?.installed;
     if (!c?.installed) signIn.title = 'Cursor is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
+      // One press is one sign-in: the button is off until the request answers, so a quick second press opens no second terminal.
+      if (signIn.disabled) return;
+      signIn.disabled = true;
       try {
         const started = await MuseUI.api('/api/accounts/cursor/login', {});
         MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('cursor', 'Cursor', card, c);
       } catch (err) {
         MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
+      } finally {
+        signIn.disabled = false;
+        // A focused button that is switched off loses the focus to the page, so the press gives it back unless the person moved on.
+        if (!document.activeElement || document.activeElement === document.body) signIn.focus?.();
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');
@@ -415,12 +422,19 @@
     signIn.disabled = !g?.installed;
     if (!g?.installed) signIn.title = 'Grok Build is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
+      // One press is one sign-in: the button is off until the request answers, so a quick second press opens no second terminal.
+      if (signIn.disabled) return;
+      signIn.disabled = true;
       try {
         const started = await MuseUI.api('/api/accounts/grok/login', {});
         MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('grok', 'Grok Build', card, g);
       } catch (err) {
         MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
+      } finally {
+        signIn.disabled = false;
+        // A focused button that is switched off loses the focus to the page, so the press gives it back unless the person moved on.
+        if (!document.activeElement || document.activeElement === document.body) signIn.focus?.();
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');
@@ -462,12 +476,19 @@
     signIn.disabled = !a?.installed;
     if (!a?.installed) signIn.title = 'Antigravity is not installed. Install it, press Refresh, then sign in.';
     signIn.addEventListener('click', async () => {
+      // One press is one sign-in: the button is off until the request answers, so a quick second press opens no second terminal.
+      if (signIn.disabled) return;
+      signIn.disabled = true;
       try {
         const started = await MuseUI.api('/api/accounts/antigravity/login', {});
         MuseUI.toast(computerText(started) || 'Sign-in window opened. Finish in your browser, then press Refresh.');
         watchCard('antigravity', 'Antigravity', card, a);
       } catch (err) {
         MuseUI.toast(plain(err, 'The sign-in could not be started. Try again.'), 'bad');
+      } finally {
+        signIn.disabled = false;
+        // A focused button that is switched off loses the focus to the page, so the press gives it back unless the person moved on.
+        if (!document.activeElement || document.activeElement === document.body) signIn.focus?.();
       }
     });
     const refresh = MuseUI.button('ghost small', 'Refresh');

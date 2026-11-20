@@ -164,8 +164,10 @@ function fakeNode(tag) {
     value: '', dataset: {}, isConnected: true, children: [],
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     setAttribute() {}, removeAttribute() {}, addEventListener() {}, focus() {}, remove() {},
-    append(...items) { this.children.push(...items); }, replaceChildren() {},
-    querySelector() { return null; }, querySelectorAll() { return []; },
+    append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; },
+    querySelector(selector) { return this.children.find(child => child.tagName === selector.toUpperCase()) ?? null; },
+    querySelectorAll() { return []; },
+    get options() { return this.children; },
   };
 }
 
@@ -197,6 +199,33 @@ test('the chip appears from a presence event when MuseUI.settings is missing', a
   const chip = slotted.find(s => s.name === 'titlebar' && s.id === 'phones');
   assert.ok(chip, 'the chip is put in the title bar slot');
   assert.equal(chip.value.textContent, "Phone connected: Will's iPhone", 'the chip names the phone');
+});
+
+test('Phones displays the browser setup addresses supplied by the bridge', async () => {
+  const source = readFileSync(path.join(APP_ROOT, 'public', 'ext-remote.js'), 'utf8');
+  const tailscale = 'https://desktop.example.ts.net/pair/';
+  const lanV4 = 'http://192.0.2.3:54123/pair/';
+  const lanV6 = 'http://[fd00::2]:54123/pair/';
+  const view = {
+    enabled: true, devices: [],
+    carriers: { tailscale: { on: true, name: 'desktop.example.ts.net' }, lan: { on: true, addresses: ['192.0.2.3', 'fd00::2'] } },
+    pairAddresses: [{ kind: 'tailscale', url: tailscale }, { kind: 'lan', url: lanV4 }, { kind: 'lan', url: lanV6 }],
+  };
+  let section;
+  const MuseUI = {
+    settings: { register(value) { section = value; } },
+    request: async () => ({ ok: true, json: async () => view }),
+  };
+  const elements = [];
+  const document = { createElement(tag) { const el = fakeNode(tag); elements.push(el); return el; }, documentElement: { dataset: {} }, addEventListener() {} };
+  const context = { window: { MuseUI, addEventListener() {} }, document, console, setTimeout, clearTimeout, setInterval, clearInterval };
+  vm.runInNewContext(source, context);
+  section.render(fakeNode('div'));
+  await new Promise(resolve => setImmediate(resolve));
+  const textOf = el => el.textContent;
+  assert.ok(elements.some(el => textOf(el) === `Browser setup on Tailscale: ${tailscale}`));
+  assert.ok(elements.some(el => textOf(el) === `Browser setup on this network: ${lanV4}, ${lanV6}`));
+  assert.ok(elements.some(el => textOf(el).includes('In the Plenum phone app, scan the QR code from Add phone.')));
 });
 
 describe('desktop, 1280 px, light: the section, its notices and the chip', { timeout: 120_000, skip: SKIP }, () => {

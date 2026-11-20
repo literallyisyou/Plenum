@@ -14,6 +14,9 @@
 //    the bell), and a Windows notification on top of it would say the same thing twice (wave 5 integration). A notification of the same
 //    key that is still up from before is taken down, as it is out of date. With the window not in front: 'fyi' always without sound,
 //    'needs-you' and 'problem' without sound when the notice says silent.
+//  - The one exception: a test notification (key 'test:<ts>', Settings > Notifications > Send a test notification) shows while the
+//    window is in front, with sound. The button is pressed with the window in front, and the test is whether Windows shows Plenum's
+//    notifications at all, so showing nothing would tell a person whose notifications are blocked nothing (w7 notify-5).
 //  - One notification per key: a newer one for the same key replaces the older.
 // The words are the notice's own title (or "Plenum") and text, which the producers write in Plenum's own words (never a model's text, a
 // path or a key); they are cut to one line here. A click opens the place the notice names (route): Accounts, Today, Plan use,
@@ -71,13 +74,14 @@ function onEvent(shell, ev) {
   if (!body) return;
   const win = shell.win();
   const focused = Boolean(win && typeof win.isFocused === 'function' && win.isFocused());
-  if (focused) {
+  const testing = key.startsWith('test:');
+  if (focused && !testing) {
     // The page shows it (toast and bell). What this key showed before is out of date now.
     close(key);
     return;
   }
   if (!shell.Notification.isSupported()) return;
-  const silent = level === 'fyi' || n.silent === true;
+  const silent = !testing && (level === 'fyi' || n.silent === true);
   close(key);
   const route = routeOf(n);
   const note = new shell.Notification({ title, body, silent });

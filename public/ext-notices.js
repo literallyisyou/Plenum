@@ -26,9 +26,13 @@
   // The registry as the server answered it, or null when it could not be read. Each entry is
   // { id, rev, kind, status, feature, where, title, text, action, hidden, hiddenAt, updated }.
   let registry = null;
-  // Ids drawn during this launch (this page session), for strips only. A strip appears at most once per launch: its OK hides it until
-  // the next launch, and Show again clears its id here, so the notice returns once. A dialog is never remembered here (decide).
-  const seen = new Set();
+  // Ids drawn during this launch (this page session), for strips only. id -> { node, acked }. Its OK (or Escape) hides a strip until the
+  // next launch.
+  // A strip nobody acknowledged is drawn again when its place is drawn again (a drawer opened a second time builds its form anew, and
+  // the old strip went with the old form); while the earlier strip is still in the page, a second call draws nothing. Show again
+  // clears the id here, so the notice returns once. A dialog is never remembered here (decide).
+  const seen = new Map();
+  const inPage = node => (typeof node?.isConnected === 'boolean' ? node.isConnected : Boolean(node?.parentNode));
   // The question in flight for an id. A second call for the same id waits for the same answer; it never passes through.
   const asking = new Map();
   let seq = 0;
@@ -72,13 +76,28 @@
     }
   }
 
+  let firstSettled = false;
   const loaded = new Promise(resolve => {
     const timer = setTimeout(resolve, REGISTRY_WAIT_MS);
     load().then(() => {
+      firstSettled = true;
       clearTimeout(timer);
       resolve();
     });
   });
+
+  // A first read that failed (the server was restarting) or that is still on its way left no registry, and every strip would be skipped
+  // for the whole session. So a strip asked for without it, and a reconnect ('hello'), start one more read (at most one every
+  // RETRY_GAP_MS). The strip asked for at that moment is still skipped; the next one is drawn.
+  const RETRY_GAP_MS = 10000;
+  let retrying = null;
+  let retriedAt = 0;
+  function retryLoad() {
+    if (registry !== null || !firstSettled || retrying || Date.now() - retriedAt < RETRY_GAP_MS) return;
+    retriedAt = Date.now();
+    retrying = load().finally(() => { retrying = null; });
+  }
+  loaded.then(() => MuseUI.events?.on?.('hello', retryLoad));
 
   const find = id => registry?.find(n => n.id === id) ?? null;
   const toneOf = id => (RED_IDS.has(id) ? 'bad' : INFO_IDS.has(id) ? 'info' : 'warn');
@@ -163,7 +182,12 @@
     const okBtn = MuseUI.button('ghost small', 'OK');
     const hideBtn = MuseUI.button('ghost small', DONT_SHOW);
     const moreBtn = MuseUI.button('risk-more', 'More');
-    const close = () => note.remove();
+    // OK, Escape and Don't show again acknowledge the strip: it is not drawn again in this launch.
+    const close = () => {
+      note.remove();
+      const drawn = seen.get(n.id);
+      if (drawn && drawn.node === note) drawn.acked = true;
+    };
     okBtn.addEventListener('click', close);
     hideBtn.addEventListener('click', async () => {
       hideBtn.disabled = true;
@@ -189,15 +213,17 @@
 
   // Draws the strip before or after an element, or as the first child of a container. It returns true only when a strip was drawn.
   function notice(id, opts = {}) {
+    if (registry === null) retryLoad();
     const n = find(id);
-    if (!n || n.hidden || seen.has(id)) return false;
+    const drawn = seen.get(id);
+    if (!n || n.hidden || (drawn && (drawn.acked || inPage(drawn.node)))) return false;
     const { before, after, into } = opts ?? {};
     const note = buildStrip(n);
     if (before instanceof Element && before.parentNode) before.parentNode.insertBefore(note, before);
     else if (after instanceof Element && after.parentNode) after.parentNode.insertBefore(note, after.nextSibling);
     else if (into instanceof Element) into.prepend(note);
     else return false;
-    seen.add(id);
+    seen.set(id, { node: note, acked: false });
     return true;
   }
 

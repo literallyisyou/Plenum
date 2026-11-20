@@ -197,6 +197,8 @@ export const LOCK_TITLE = 'App lock';
 export const LOCK_ROW = 'Lock Plenum';
 export const LOCK_AFTER_LABEL = 'After';
 export const LOCK_SWITCHER = 'Hide content in the app switcher';
+export const LOCK_SWITCHER_ANDROID = 'This setting controls the app switcher preview on Android 13 or later. Older Android versions may show app content in the switcher. You can still take screenshots while using Plenum.';
+export const LOCK_SWITCHER_IOS = 'Plenum hides the app switcher preview. You can still take screenshots while using Plenum.';
 export const LOCK_NOW = 'Lock now';
 export const LOCK_OFF_TITLE = 'Turn off the app lock?';
 export const LOCK_OFF_TEXT = 'With the app lock off, anyone who can unlock this phone can run models, approve changes and use your computer through Plenum. If the phone is lost, remove it at the computer under Settings › Phones.';
@@ -251,6 +253,9 @@ export const ABOUT_SCREENS_LOADED = 'Screens: loaded from {computer}, {n} files,
 export const ABOUT_CONNECTED = 'Connected over {carrier} since {when}';
 export const ABOUT_NEWER_UI = '{computer} has features this app does not show yet. Update the app to use them.';
 export const ABOUT_NOT_CONNECTED = 'Not connected to a computer now.';
+
+// w7: Phone settings, under the computers, while the Android app runs its built-in screens because the computer could not send its own.
+export const SCREENS_BUNDLED = 'Using the screens built into this app; Plenum on {computer} could not send its own.';
 
 // Legal (6.17)
 export const LEGAL_TITLE = 'Legal';

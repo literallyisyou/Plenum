@@ -19,6 +19,9 @@ const el = {
   advisor: $('advisorSel'),
   auto: $('autoAdv'),
   effort: $('effortSel'),
+  chatOptions: $('chatOptions'),
+  chatOptionsLabel: $('chatOptionsLabel'),
+  pendingApprovals: $('pendingApprovals'),
   // The Mode menu's button (ext-approvals.js builds the menu). It replaces the Ask first and Auto-approve buttons.
   modeBtn: $('modeBtn'),
   modeBtns: [...document.querySelectorAll('.seg-btn[data-mode]')],
@@ -204,6 +207,7 @@ const COMMANDS = [
   { name: 'accounts', aliases: ['login', 'keys'], args: '', desc: 'Sign in and manage keys' },
   { name: 'gemini', args: '', desc: 'Open Accounts at the Gemini card' },
   { name: 'computer', args: '[task|runs]', desc: 'Let the model use your mouse and keyboard for one task, in apps you allow' },
+  { name: 'display', args: '[task]', desc: 'Choose a whole display and apps for one task' },
   { name: 'updates', args: '', desc: 'Review updates to Plenum' },
   { name: 'status', args: '', desc: 'Check what is connected' },
 ];
@@ -269,6 +273,8 @@ let refusedBy = null;
 // messages queued behind it, its notes and its relay route. Two threads of one project can therefore run at once, and a run only ever
 // draws into its own thread's box, never into whatever chat is on screen.
 const activeScope = () => S.activeThread || S.activeProject;
+const pendingBatches = new Set();
+let pendingApprovalSignature = '';
 // The project and thread every request about the chat on screen carries. Panels that send only a project still work: the server
 // takes the project's active thread then.
 const scopeBody = () => ({ project: S.activeProject, ...(S.activeThread ? { thread: S.activeThread } : {}) });
@@ -549,10 +555,10 @@ function noAnswer(cause) {
   return e;
 }
 
-async function api(path, body) {
+async function api(path, body, { signal } = {}) {
   let res;
   try {
-    res = await request(path, body === undefined ? {} : { method: 'POST', body });
+    res = await request(path, body === undefined ? { signal } : { method: 'POST', body, signal });
   } catch (err) {
     throw err?.name === 'AbortError' ? err : noAnswer(err);
   }
@@ -937,7 +943,14 @@ function stream() {
 // still arriving (B-10). The box is dropped when its run ends, and then the saved transcript shows the reply. A run holds its own box, so
 // what it draws goes there even when another thread (or another project) is on screen.
 const runBoxes = new Map();
+// The threads whose run ended well here while on screen: the box with the streamed reply stays on the page until the saved chat has
+// been read (readState drops it then), so the reply does not blink out at the end of a run, and a reading that fails leaves it shown.
+// Each is kept with the list of messages the page held when the run ended: a chat drawn from any newer state (the poll while the events
+// channel is down, /clear, a switch) holds the saved reply, so renderChat drops the box then too and the reply is never drawn twice.
+const boxesAfterRun = new Map();
 function runBox(scope = activeScope()) {
+  // A box kept after its run is not used again: the next run of the thread draws into a box of its own.
+  if (boxesAfterRun.delete(scope)) dropRunBox(scope);
   let box = runBoxes.get(scope);
   if (!box) {
     box = document.createElement('div');
@@ -987,10 +1000,11 @@ function pickable(pick) {
 
 // ---------- transcript pieces ----------
 
-function makeTurn(kind, { label = '', provider = '', when = null } = {}) {
+function makeTurn(kind, { label = '', provider = '', when = null, conversation = false } = {}) {
   // A turn of an earlier message that was not drawn yet has its place in the chat already (turnPlace): the turn is drawn into it.
   const article = takePlace(kind) ?? document.createElement('article');
   article.className = `turn ${kind}`;
+  if (conversation) article.classList.add('conversation');
   if (provider) article.dataset.p = provider;
   const head = document.createElement('div');
   head.className = 'turn-head';
@@ -1002,6 +1016,15 @@ function makeTurn(kind, { label = '', provider = '', when = null } = {}) {
   body.className = 'turn-body';
   article.append(head, body);
   return { article, body };
+}
+
+function turnWork(label, ...items) {
+  const details = document.createElement('details');
+  details.className = 'turn-work';
+  const summary = document.createElement('summary');
+  summary.textContent = label;
+  details.append(summary, ...items);
+  return details;
 }
 
 function systemTurn(text, cls = '') {
@@ -1069,6 +1092,28 @@ const APPROVAL_KEY_DELAY = 400; // milliseconds after the card takes focus befor
 // The last line of a full change that the server cut at 2,000,000 characters (editPlanDetail in lib/tools.mjs writes the same text).
 const FULL_CUT_NOTE = '\n…cut at 2,000,000 characters, the rest is not shown';
 
+// Numbers the cards, so each one's head and summary have ids of their own (the same approval can be on the page twice: chat and board).
+let approvalSeq = 0;
+// The cards a council card or a build card keeps in its own list (the card is built again on every update), by approval id: what takes
+// the card off that list. An answer from another window, the board or a phone, a time-out and a Stop all reach it through here
+// (events.on('approval')), so the next update does not draw the card again as waiting. At most 60 are kept.
+const listedApprovals = new Map();
+function keepApproval(holder, ev, paint) {
+  const a = { ...ev };
+  a.onDone = () => {
+    listedApprovals.delete(a.approvalId);
+    if (!holder.approvals.includes(a)) return;
+    holder.approvals = holder.approvals.filter(x => x !== a);
+    paint();
+  };
+  // Show all asks for the card to be built again, so its text reaches the card that is on the page (see approvalEl).
+  a.onChange = paint;
+  holder.approvals.push(a);
+  listedApprovals.set(a.approvalId, a.onDone);
+  while (listedApprovals.size > 60) listedApprovals.delete(listedApprovals.keys().next().value);
+  return a;
+}
+
 // source is 'board' for a card the Agents board shows (ext-agents.js): its answer says so, and the chat card in another window reads it.
 // A card that only a click answers (ev.clickOnly, a checkpoint restore) takes the same keys as a blocked command: Deny is the
 // focused primary button, Y does nothing, and N denies.
@@ -1081,7 +1126,15 @@ function approvalEl(ev, { reason: askReason = true, source = '' } = {}) {
   card.dataset.approvalId = ev.approvalId;
   const head = span('approval-head', 'Approval needed');
   head.prepend(icon('shield'));
-  card.append(head, span('approval-summary', ev.summary));
+  const summary = span('approval-summary', ev.summary);
+  // The dialog has a name and a description, so a screen reader says what is asked when the card takes the focus. The full change
+  // under the summary can be very long, so it is not part of the description; it is the next thing read.
+  const seq = ++approvalSeq;
+  head.id = `approval-head-${seq}`;
+  summary.id = `approval-summary-${seq}`;
+  card.setAttribute('aria-labelledby', head.id);
+  card.setAttribute('aria-describedby', summary.id);
+  card.append(head, summary);
   // A card of a computer run can carry the screenshot the model is acting on, with a ring at the point.
   if (ev.frame && typeof ev.frame.run === 'string' && Number.isInteger(ev.frame.n)) card.append(frameShot(ev.frame));
   let pre = null;
@@ -1162,8 +1215,9 @@ function approvalEl(ev, { reason: askReason = true, source = '' } = {}) {
     if (answered) return;
     answered = true;
     // This window answered, so the 'answered' event that comes back on the events channel must not replace the card with
-    // "in another window".
+    // "in another window". The event keeps it too, for a card that is built again while the answer is on its way.
     card.dataset.answeredHere = '1';
+    ev.answering = true;
     clearInterval(tick);
     yes.disabled = true;
     no.disabled = true;
@@ -1175,6 +1229,22 @@ function approvalEl(ev, { reason: askReason = true, source = '' } = {}) {
       await api('/api/approve', body);
     } catch (err) {
       toast(err.message, 'bad');
+      // Only the server's word that the approval is no longer waiting (404: it was answered elsewhere or timed out) ends the card. Any
+      // other failure means the answer did not arrive (the connection dropped, the server was restarting): the run still waits, so
+      // the card stays and can be pressed again until its time is up.
+      if (err?.status !== 404) {
+        ev.answering = false;
+        answered = false;
+        delete card.dataset.answeredHere;
+        yes.disabled = false;
+        no.disabled = false;
+        why.disabled = false;
+        paint();
+        if (!answered) startTick();
+        // A card that was built again meanwhile (the build view, a council card) is built once more, with its buttons live.
+        if (!card.isConnected) ev.onChange?.();
+        return;
+      }
     }
     // The button that answered is disabled, and a disabled button holds no focus once the card leaves the page. The composer takes
     // the focus then, so the next typing goes somewhere.
@@ -1237,14 +1307,24 @@ function approvalEl(ev, { reason: askReason = true, source = '' } = {}) {
     if (more) more.disabled = true; // the server has dropped the approval, and its full diff with it
     hint.textContent = 'Timed out: the action was denied.';
   };
-  paint();
-  if (!answered) {
+  const startTick = () => {
+    clearInterval(tick);
     tick = setInterval(() => {
       // A card in the box of a thread that is not on screen is not in the document, but it still counts down.
       if (card.isConnected || card.closest('.run-box')) paint();
       else clearInterval(tick);
     }, 1000);
+  };
+  paint();
+  // A card built again while this window's answer is on its way takes no second answer (decide).
+  if (!answered && ev.answering === true) {
+    answered = true;
+    card.dataset.answeredHere = '1';
+    yes.disabled = true;
+    no.disabled = true;
+    why.disabled = true;
   }
+  if (!answered) startTick();
   actions.append(yes, no, hint);
   card.append(actions);
   // A command card (run_command, or a Bash or PowerShell request) gets the untrusted-commands strip above Approve and Deny. It informs; the card still asks.
@@ -1331,6 +1411,7 @@ function openAccountsAt(id) {
 function showModelMenu() {
   if (settingsShown) closeSettingsPage();
   const menu = el.model;
+  if (document.documentElement.dataset.surface !== 'phone') el.chatOptions.open = true;
   if (menu.disabled || menu.getClientRects().length === 0) return false;
   menu.scrollIntoView({ block: 'nearest' });
   menu.focus();
@@ -1631,7 +1712,17 @@ function finishReopen() {
 // Fills a turn's body with a text as Markdown. A long text gets its first part and the Show all line under the body; one that was
 // opened before is drawn whole again (finishReopen).
 function fillMarkdown(t, text) {
-  const src = String(text ?? '');
+  const visible = PlenumAssistantContent.clean(text);
+  fillMarkdownText(t, visible.text);
+  appendProtocolDetails(t.article, visible.hidden);
+}
+
+function appendProtocolDetails(target, hidden) {
+  const details = PlenumAssistantContent.details(hidden);
+  if (details) target.append(details);
+}
+
+function fillMarkdownText(t, src) {
   const got = mdOnce(src);
   if (!got.long) {
     t.body.innerHTML = got.html;
@@ -1653,7 +1744,7 @@ function fillMarkdown(t, text) {
       // Show less: the first part again, and the message is no longer drawn whole on a redraw.
       setOpened(key, false);
       ui.row.remove();
-      fillMarkdown(t, src);
+      fillMarkdownText(t, src);
       return;
     }
     if (job.running) return;
@@ -1745,6 +1836,8 @@ function messageNodes(m) {
       steps.append(sum, ...toolRows);
       nodes.push(steps);
     }
+  } else if (m.conversation && toolRows.length) {
+    nodes.push(turnWork(`${toolRows.length} work ${toolRows.length === 1 ? 'step' : 'steps'}`, ...toolRows));
   } else {
     nodes.push(...toolRows);
   }
@@ -1753,9 +1846,16 @@ function messageNodes(m) {
   // (errorEl, so Retry and Copy error attach), and a stop is a quiet note under the text, or alone when there is none: never an empty bubble.
   // ext-turns.js (repliesOf) and ext-history.js (turnKind) mirror this: a reply with no text, no steps and an error or a stop draws no turn.
   if (text || (!nodes.length && !m.error && !m.aborted && !m.interrupted)) {
-    const t = makeTurn('assistant', { label: modelName(m.model) || 'Assistant', provider: providerOf(m.model), when: m.ts });
+    const lead = modelName(m.model) || 'Assistant';
+    const t = makeTurn('assistant', { label: m.conversation ? 'Plenum' : lead, provider: providerOf(m.model), when: m.ts, conversation: m.conversation });
     fillMarkdown(t, m.content ?? '');
     if (m.relay) t.article.insertBefore(relayLine(m.relay.fromLabel ?? seatLabelById(m.relay.from)), t.body);
+    const contributors = Array.isArray(m.contributors) && m.contributors.length ? span('field-note', `Contributors · ${m.contributors.join(', ')}`) : null;
+    if (m.conversation && m.model) {
+      t.article.append(turnWork('Team details', span('field-note', `Lead · ${lead}`), ...(contributors ? [contributors] : [])));
+    } else if (contributors) {
+      t.article.append(contributors);
+    }
     const seat = seatOfReply(m);
     if (seat && text) t.article.append(replyActions(m, seat));
     nodes.push(t.article);
@@ -1875,6 +1975,7 @@ function renderAll({ keep = false } = {}) {
   renderBadge();
   renderBoard();
   renderMusic();
+  renderPendingApprovals();
   callRenderHooks();
 }
 
@@ -1888,6 +1989,7 @@ function renderShell() {
   renderBadge();
   renderBoard();
   renderMusic();
+  renderPendingApprovals();
   callRenderHooks();
 }
 
@@ -1921,6 +2023,9 @@ function renderTop() {
   // The selector shows the model of the thread on screen (Main: the app's model).
   ensureOption(el.model, threadModelRef());
   el.model.value = threadModelRef();
+  // A saved advisor that is no longer offered still gets its line (marked as not offered), as the model does, so the menu never
+  // shows a blank while the server goes on using it.
+  if (S.advisor && S.advisor !== 'off') ensureOption(el.advisor, S.advisor);
   el.advisor.value = S.advisor ?? 'off';
   el.auto.checked = !!S.advisorAuto;
   el.effort.value = S.effort ?? 'high';
@@ -1964,9 +2069,15 @@ function effortOptions() {
   return Object.entries(EFFORT_LABELS).map(([value, name]) => menuOption(value, name, EFFORT_NOTES[value]));
 }
 
-// Every model menu fillModels has filled (the chat's, the Advisor's, each council seat's and the moderator's), so a new catalog reaches
-// all of them. A menu that left the page (a closed panel) is dropped when the list is next walked.
-const modelMenus = new Map(); // select element -> whether it has the Off choice
+// Keep native select elements in place as provider catalogs change. Each renderer reads the current choices and preserves its selection.
+const modelMenus = new Map();
+function trackModelMenu(select, render, chosen = select.value) {
+  if (modelMenus.size > 30) dropGoneMenus();
+  modelMenus.set(select, render);
+  render(chosen);
+}
+
+const modelChoices = (keep = '') => catalog.filter(c => c.offered !== false || `${c.provider}:${c.id}` === keep);
 
 // A catalog entry the CLI's own list does not have is marked offered: false (DECISIONS item 91). It stays in the menu and can still be
 // chosen; this is the line the person reads next to it. '' for a model that is offered, or not known to be gone.
@@ -2000,12 +2111,7 @@ function refreshModelMenus() {
     menuWait = setTimeout(refreshModelMenus, 200);
     return;
   }
-  for (const [select, withOff] of [...modelMenus]) {
-    const chosen = select.value;
-    fillModels(select, withOff);
-    ensureOption(select, chosen);
-    select.value = chosen;
-  }
+  for (const [select, render] of modelMenus) render(select.value);
   renderTop();
   renderBoard();
   // A council panel that is open and not in use is drawn again, so its seats show the new catalog.
@@ -2013,22 +2119,22 @@ function refreshModelMenus() {
 }
 
 function fillModels(select, withOff) {
-  if (modelMenus.size > 30) dropGoneMenus();
-  modelMenus.set(select, withOff);
-  const nodes = menuHead();
-  if (withOff) nodes.push(menuOption('off', 'Off', 'No second opinion', ''));
-  for (const [provider, name] of GROUPS) {
-    // A model the CLI's own list (or a refused run) says the account no longer has is left out, so nobody picks it again (17 Nov 2026: a
-    // council seat was set to Muse Wonder Full, which Muse Code 1.4.23 refuses). A menu whose saved choice is that model still shows it,
-    // marked, through ensureOption, and the line under the menu says to pick another.
-    const items = catalog.filter(x => x.provider === provider && x.offered !== false);
-    if (!items.length) continue;
-    const group = document.createElement('optgroup');
-    group.label = name;
-    for (const c of items) group.append(menuOption(`${c.provider}:${c.id}`, ...splitLabel(c.label), provider));
-    nodes.push(group);
-  }
-  select.replaceChildren(...nodes);
+  trackModelMenu(select, chosen => {
+    const nodes = menuHead();
+    if (withOff) nodes.push(menuOption('off', 'Off', 'No second opinion', ''));
+    const available = modelChoices();
+    for (const [provider, name] of GROUPS) {
+      const items = available.filter(x => x.provider === provider);
+      if (!items.length) continue;
+      const group = document.createElement('optgroup');
+      group.label = name;
+      for (const c of items) group.append(menuOption(`${c.provider}:${c.id}`, ...splitLabel(c.label), provider));
+      nodes.push(group);
+    }
+    select.replaceChildren(...nodes);
+    ensureOption(select, chosen);
+    select.value = chosen;
+  });
 }
 
 // Makes sure a saved model is an option even before the catalog has loaded.
@@ -2354,6 +2460,12 @@ function renderChat({ keep = false } = {}) {
   streamEl.className = 'stream';
   if (!S.activeProject) streamEl.append(welcomeNoProject());
   else if (!S.messages.length && !notes.length) streamEl.append(welcomeProject(S.projects.find(p => p.id === S.activeProject)));
+  // A box kept after its run goes once the chat is drawn from a state taken in since (boxesAfterRun): that state holds the saved reply.
+  for (const [scope, held] of boxesAfterRun) {
+    if (held === S.messages) continue;
+    boxesAfterRun.delete(scope);
+    dropRunBox(scope);
+  }
   // The live run of this thread, if it has one, goes back under the saved messages (B-9, B-10).
   const live = S.activeProject ? runBoxes.get(activeScope()) : null;
   // A long reply of the run that just ended here arrived whole, and stays whole (markStreamed).
@@ -2650,6 +2762,7 @@ function readSSE(res, onEvent, { onBytes, signal } = {}) {
       reader.cancel().catch(() => {});
     };
     signal?.addEventListener?.('abort', stop, { once: true });
+    if (signal?.aborted) stop();
     try {
       for (;;) {
         const { value, done } = await reader.read();
@@ -2817,7 +2930,10 @@ async function runStream(url, body, onEvent, { tick } = {}) {
     if (runs.get(scope) === ctl) runs.delete(scope);
     // B-5: a run that finished without failing lets its send's text go, so Retry never offers an old message. A failed one keeps it.
     if (!failed && lastSent?.scope === scope) lastSent = null;
-    dropRunBox(scope);
+    // A run that ended well in the thread on screen keeps its box until the saved chat is read (boxesAfterRun). A failed or stopped
+    // run, or one in a thread off screen, loses it now: its error is a note of the chat, drawn once.
+    if (ok && !failed && scope === activeScope()) boxesAfterRun.set(scope, S.messages);
+    else dropRunBox(scope);
     ranIn.add(scope);
     routeRuns.delete(scope);
     renderRouteBar();
@@ -2870,26 +2986,28 @@ function turnRenderer(scope = activeScope()) {
   const openTurn = (ln, html) => {
     const advisor = ln.kind === 'advisor';
     const t = makeTurn(advisor ? 'advisor' : 'assistant', {
-      label: advisor ? `Advisor · ${modelName(ln.model)}` : ln.label,
+      label: advisor ? `Advisor · ${modelName(ln.model)}` : ln.conversation ? 'Plenum' : ln.label,
       provider: advisor ? 'advisor' : providerOf(ln.model),
       when: Date.now(),
+      conversation: ln.conversation,
     });
+    if (ln.conversation && ln.model) t.article.append(turnWork('Team details', span('field-note', `Lead · ${ln.label}`)));
     if (ln.kind === 'relay' && hopFrom) t.article.insertBefore(relayLine(hopFrom), t.body);
     t.body.innerHTML = html;
     t.article.classList.add('fresh');
     box.append(t.article);
-    // text: the reply so far. at and kept: how much of it is settled (mdSplit), in characters and in nodes of the body. timer and nextAt:
+    // content: the visible reply as it arrives. at and kept: how much of it is settled (mdSplit), in characters and in nodes of the body. timer and nextAt:
     // the drawing that is waiting, and the earliest time of the next one.
-    return { article: t.article, body: t.body, text: '', at: 0, kept: 0, timer: 0, nextAt: 0 };
+    return { article: t.article, body: t.body, content: PlenumAssistantContent.createStream(), received: false, at: 0, kept: 0, timer: 0, nextAt: 0 };
   };
   // Text arrives in many small pieces. Each drawing parses only the end of the reply, the part more text can still change: the blocks
   // before it were drawn once and stay on the page as they are (mdSplit), so the work of a drawing does not grow with the reply, and a
-  // selection in the finished part survives. What the body holds after a drawing is exactly md(text).
+  // selection in the finished part survives. The protocol filter runs before Markdown is split into settled blocks.
   const draw = turn => {
     const began = performance.now();
     // Everything behind the settled nodes goes: the last drawing's open end, or the Thinking placeholder before the first one.
     while (turn.body.childNodes.length > turn.kept) turn.body.lastChild.remove();
-    const rest = turn.text.slice(turn.at);
+    const rest = turn.content.text.slice(turn.at);
     const part = typeof mdSplit === 'function' ? mdSplit(rest) : { at: 0, settled: '', tail: md(rest) };
     if (part.settled) {
       appendMarkdown(turn.body, part.settled);
@@ -2911,10 +3029,13 @@ function turnRenderer(scope = activeScope()) {
   };
   // A turn that closes (the reply ended, or a tool step or a card follows it) is drawn to its last character at once.
   const flush = turn => {
-    if (!turn?.timer) return;
+    if (!turn?.received) return;
     clearTimeout(turn.timer);
     turn.timer = 0;
+    const { hidden } = turn.content.finish();
     draw(turn);
+    if (!turn.article.querySelector('.assistant-protocol')) appendProtocolDetails(turn.article, hidden);
+    bottom();
   };
   // One line for the hop in progress; it is kept as a record once the hop is done.
   const step = text => {
@@ -2933,13 +3054,17 @@ function turnRenderer(scope = activeScope()) {
         ln.kind = ev.kind ?? 'chat';
         ln.model = ev.model;
         ln.label = ev.label || modelName(ev.model);
+        ln.conversation = ev.conversation === true;
         ln.current = openTurn(ln, THINKING);
         break;
       case 'delta':
         // Text that follows tool steps gets a turn of its own, under those steps.
         ln.current ??= openTurn(ln, '');
         // A delta with no text adds nothing (never the word "undefined").
-        ln.current.text += String(ev.text ?? '');
+        if (ev.text) {
+          ln.current.received = true;
+          ln.current.content.push(ev.text);
+        }
         paint(ln.current);
         break;
       case 'thought': {
@@ -2963,7 +3088,7 @@ function turnRenderer(scope = activeScope()) {
         break;
       case 'tool': {
         thought = null;
-        if (ln.current && !ln.current.text) ln.current.article.remove();
+        if (ln.current && !ln.current.received) ln.current.article.remove();
         flush(ln.current);
         ln.current = null;
         const d = toolEl(ev.name, ev.summary, 'running');
@@ -2979,7 +3104,7 @@ function turnRenderer(scope = activeScope()) {
         break;
       }
       case 'approval':
-        if (ln.current && !ln.current.text) ln.current.article.remove();
+        if (ln.current && !ln.current.received) ln.current.article.remove();
         flush(ln.current);
         ln.current = null;
         box.append(approvalEl(ev));
@@ -2990,7 +3115,7 @@ function turnRenderer(scope = activeScope()) {
         bottom();
         break;
       case 'error':
-        if (ln.current && !ln.current.text) ln.current.article.remove();
+        if (ln.current && !ln.current.received) ln.current.article.remove();
         flush(ln.current);
         ln.current = null;
         // Kept in the notes so the end-of-turn refresh does not wipe it. The failure's kind and model go with the card, for its buttons.
@@ -3012,7 +3137,7 @@ function turnRenderer(scope = activeScope()) {
         // again after a passing failure (server.mjs chatRepair). It is a plain Plenum line, never an error card. A note that comes before
         // the reply's first text goes above the turn that is still waiting for it, so the chat reads in the order things happened and
         // the reply that follows is under its note.
-        if (ln.current && !ln.current.text && ln.current.article.parentNode === box) box.insertBefore(systemTurn(ev.text), ln.current.article);
+        if (ln.current && !ln.current.received && ln.current.article.parentNode === box) box.insertBefore(systemTurn(ev.text), ln.current.article);
         else box.append(systemTurn(ev.text));
         // The server sends the Approve all notice once per thread per launch, and the end-of-run refresh would drop it, so it is kept
         // in the notes (drawn after the transcript, and cleared when the next message is sent).
@@ -3087,6 +3212,9 @@ function turnRenderer(scope = activeScope()) {
 // Images picked in the composer (public/ext-images.js) go with the next chat message to a model that takes them. A queued
 // message brings the images it was queued with. Without that script there are none.
 const pickedImages = () => window.MuseImages?.list() ?? [];
+// A file still being read in the composer (a large picture or PDF just pasted, dropped or chosen) goes with the message it was added
+// for, not the next one (w7 panels-a-20): Send, Enter while a run goes and sendMessage wait for MuseImages.settled() while
+// MuseImages.reading() is true, before they take pickedImages(). Stop never waits for it.
 // The reason a model cannot take the images in list, in the server's words, or '' when it can (or when there are none). The list
 // is the composer's files, or the files a queued message was queued with (B-94). public/ext-images.js takes(model, files) checks it.
 const imageRefusal = (list, model) => (list.length && window.MuseImages && !window.MuseImages.takes(model, list) ? window.MuseImages.REFUSAL : '');
@@ -3096,7 +3224,9 @@ const councilFiles = () => pickedImages();
 
 // computer (optional) is the settings of a computer run that this message starts (see sendComputer); appNames are its apps, for the chip.
 // scope (optional) is the thread the message goes to: the thread on screen, or (for a queued message) another thread of the project.
-async function sendMessage(text, model, images, computer, appNames, scope = activeScope()) {
+async function sendMessage(text, model, images, computer, appNames, scope = activeScope(), conversation = !model && !computer) {
+  // The composer's files go with this message once they are read (w7 panels-a-20). A caller that passes its own list does not wait.
+  if (!images && window.MuseImages?.reading?.() === true) await Promise.resolve(window.MuseImages.settled?.()).catch(() => {});
   refusedBy = null;
   if (!stateLoaded) return toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
   if (text.length > 14_000_000) return toast('That message is too long to send (over 14 million characters). Split it up or attach the file with @path.', 'bad');
@@ -3122,7 +3252,7 @@ async function sendMessage(text, model, images, computer, appNames, scope = acti
   }
   // B-5: the text is kept until the run is known to have gone through, so Retry can put back what the server refused.
   lastSent = { text, images: sent, project: S.activeProject, scope };
-  await streamTurn('/api/chat', { project: S.activeProject, thread: scope, message: text, model, ...(sent.length ? { images: sent.map(({ name, mime, data }) => ({ name, mime, data })) } : {}), ...(computer ? { computer } : {}) });
+  await streamTurn('/api/chat', { project: S.activeProject, thread: scope, message: text, model, ...(conversation ? { plenumConversation: true } : {}), ...(sent.length ? { images: sent.map(({ name, mime, data }) => ({ name, mime, data })) } : {}), ...(computer ? { computer } : {}) });
 }
 
 // ---------- queued follow-ups ----------
@@ -3134,9 +3264,28 @@ async function sendMessage(text, model, images, computer, appNames, scope = acti
 // The messages queued for the thread on screen (the queue line shows these; the others wait for their own thread).
 const queueItems = () => followUps.filter(f => f.scope === activeScope());
 
-function queueFollowUp() {
+async function queueFollowUp() {
   const text = el.input.value.trim();
   if (!text || !S.activeProject) return;
+  // /cancel and /stop are the one command made for a run that is going, and many messages say "Use /cancel first": they stop the run of
+  // the thread on screen, as the Stop button and Esc twice do. The queue stays as it is.
+  if (/^\/(cancel|stop)$/i.test(text)) {
+    el.input.value = '';
+    autosize();
+    hidePalette();
+    commandHint();
+    cancelRun();
+    return;
+  }
+  // A file still being read waits with the message (w7 panels-a-20): it is queued once the reads have settled, from what the box holds
+  // then, so a second Enter meanwhile finds the box empty.
+  if (window.MuseImages?.reading?.() === true) {
+    await Promise.resolve(window.MuseImages.settled?.()).catch(() => {});
+    await queueFollowUp();
+    // A run that ended during the read found the queue empty, so the message starts from here once its thread is idle.
+    scheduleDrain();
+    return;
+  }
   if (text.startsWith('/')) return toast('Commands run when nothing else is running. Press Esc twice to stop the run first.', 'bad');
   if (mode === 'council') return toast('A council question cannot be queued. Wait for this run to end, or press Esc twice to stop it.', 'bad');
   if (text.length > 14_000_000) return toast('That message is too long to send (over 14 million characters). Split it up or attach the file with @path.', 'bad');
@@ -3386,12 +3535,15 @@ const SPLIT = {
 // The fallback for the events channel. While the channel is down (and only then, every 5 seconds) the state is read and the
 // page is redrawn when the run, the project or the chat has changed, and the next queued message starts once the project is idle.
 // While the channel is up, the server sends every change and this does nothing.
+let checkingRun = false;
 async function watchRun() {
-  if (runs.size || events.connected) return;
+  if (checkingRun || runs.size || events.connected || shellLinkLost) return;
+  checkingRun = true;
   try {
-    const next = await api('/api/state');
-    if (runs.size || events.connected) return;
-    const changed = next.running !== S.running || next.activeProject !== S.activeProject || next.messages.length !== S.messages.length;
+    const next = await api('/api/state', undefined, { signal: AbortSignal.timeout?.(4000) });
+    if (runs.size || events.connected || shellLinkLost) return;
+    const changed = next.running !== S.running || next.activeProject !== S.activeProject || next.activeThread !== S.activeThread ||
+      next.messages.length !== S.messages.length || next.messages.at(-1)?.ts !== S.messages.at(-1)?.ts;
     if (changed) {
       // A reader who scrolled up in the same chat keeps the place, as with refresh.
       const away = chatAway();
@@ -3401,6 +3553,8 @@ async function watchRun() {
     scheduleDrain();
   } catch {
     // The next tick tries again.
+  } finally {
+    checkingRun = false;
   }
 }
 setInterval(watchRun, 5000);
@@ -3615,7 +3769,7 @@ function councilHandler(cd, paint) {
         // A seat that answers after the verdict was written is not part of it yet.
         if (ev.ok && cd.result && cd.newer && !cd.newer.includes(s.id)) cd.newer.push(s.id);
         // "None of the seats answered" is no longer true once a seat that was run again has answered.
-        if (ev.ok && cd.saved && !cd.result && cd.error && !/^The moderator/.test(cd.error)) {
+        if (ev.ok && cd.saved && !cd.result && cd.error && !/^The moderator\b/.test(cd.error)) {
           cd.error = '';
           cd.noVerdict = true;
         }
@@ -3648,17 +3802,16 @@ function councilHandler(cd, paint) {
         }
         break;
       }
-      case 'approval': {
-        const a = { ...ev };
-        a.onDone = () => {
-          cd.approvals = cd.approvals.filter(x => x !== a);
-          paint();
-        };
-        a.onChange = paint;
-        cd.approvals.push(a);
+      case 'approval':
+        keepApproval(cd, ev, paint);
         cue('approval');
+        // As for a chat turn: a card in a thread that is not on screen turns that thread's tab amber at once.
+        if (scope !== activeScope()) window.dispatchEvent(new CustomEvent('plenum:thread-waiting', { detail: { scope } }));
         break;
-      }
+      // A run that was stopped closes its waiting cards; the server says which, and the card goes.
+      case 'approval-closed':
+        cd.approvals.find(a => a.approvalId === ev.approvalId)?.onDone();
+        break;
       case 'consensus-start':
         cd.mod = ev.moderator ? { label: ev.moderator.label, ref: ev.moderator.ref } : cd.mod;
         cd.modState = 'running';
@@ -3732,6 +3885,8 @@ function councilEl(cd, fresh = false) {
   if (cd.noVerdict && !cd.result && cd.done) article.append(quietNote('No verdict yet. The moderator can write one from the answers above.', 'council-note'));
   if (canRerunModerator(cd) && !cd.result) article.append(moderatorActions(cd, /^The moderator\b/.test(cd.error ?? '') ? 'Run the moderator again' : 'Run the moderator'));
   article.append(slot);
+  // A plan that is open for this council, or being made, is drawn again with the card (openPlans).
+  if (cd.saved && cd.done) drawOpenPlan(cd, slot);
   return article;
 }
 
@@ -3755,9 +3910,9 @@ function canRetrySeat(cd, s, r) {
   return failed ? failed === r : r === 1 && !s.rounds[1];
 }
 
-// The moderator of an ended, saved council can run when a seat has answered round 1.
+// An ended council can rerun its saved moderator when a seat has answered round 1.
 function canRerunModerator(cd) {
-  return Boolean(cd.saved && cd.done && cd.ts !== undefined && cd.seats.some(s => s.rounds[1]?.state === 'done'));
+  return Boolean(cd.saved && cd.done && Number.isFinite(cd.ts) && cd.mod?.ref && cd.seats.some(s => s.rounds[1]?.state === 'done'));
 }
 
 // "Verdict based on A of N seats": from the consensus event (kept in the saved row). A save from before they were kept counts the
@@ -3901,6 +4056,8 @@ async function councilRerun(saved, target, pick = null) {
     cd.error = '';
     cd.modText = '';
     cd.modState = 'running';
+    // A plan made from the verdict that is now written again goes with it.
+    openPlans.delete(planKey(scope, cd));
   }
   notes = [];
   const entry = { ts: m.ts, el: councilEl(cd) };
@@ -4040,7 +4197,9 @@ function roundEl(cd, s, r) {
     body.innerHTML = THINKING;
     if (data.steps) body.append(span('round-steps', `${data.steps} ${data.steps === 1 ? 'step' : 'steps'}${data.step ? ` · ${data.step}` : ''}`));
   } else {
-    body.innerHTML = md(seatAnswer(data.text));
+    const visible = PlenumAssistantContent.clean(data.text, { streaming: data.state === 'running' });
+    body.innerHTML = md(seatAnswer(visible.text));
+    appendProtocolDetails(body, visible.hidden);
     if (data.position) {
       const pos = document.createElement('p');
       pos.className = 'seat-pos';
@@ -4084,11 +4243,10 @@ function consensusEl(cd, slot) {
       stale.className = 'consensus-stale';
       stale.append(span('', `${names.join(' and ')} answered after this verdict was written, so the verdict does not count ${names.length === 1 ? 'it' : 'them'} yet.`));
       box.append(stale);
-      if (canRerunModerator(cd)) box.append(moderatorActions(cd, 'Rerun the verdict'));
     }
   }
   if (!cd.result) {
-    if (cd.modText) box.append(preEl('raw-stream', cd.modText));
+    if (cd.modText) box.append(preEl('raw-stream', PlenumAssistantContent.clean(cd.modText, { streaming: !cd.stopped }).text));
     else if (!cd.stopped) {
       const wait = document.createElement('div');
       wait.innerHTML = THINKING;
@@ -4098,16 +4256,21 @@ function consensusEl(cd, slot) {
     if (cd.stopped) box.append(quietNote('Stopped before the consensus.'));
     return box;
   }
+  if (canRerunModerator(cd)) box.append(moderatorActions(cd, 'Rerun the verdict'));
   const r = cd.result;
   // Only a reply that parsed nothing is shown whole. A partial layout keeps every section it has and says which ones it left out (B-6).
   const parsed = r.consensus?.length || r.disagreements?.length || r.recommendation?.length || r.dissent?.length || r.confidence?.value != null;
   if (!r.complete && !parsed) {
-    box.append(quietNote('The moderator did not use the usual layout. This is its full reply.'), preEl('raw-full', r.verdict ?? ''));
+    const visible = PlenumAssistantContent.clean(r.verdict);
+    box.append(quietNote('The moderator did not use the usual layout. This is its reply.'), preEl('raw-full', visible.text));
+    appendProtocolDetails(box, visible.hidden);
     return box;
   }
   const verdict = document.createElement('div');
   verdict.className = 'verdict';
-  verdict.innerHTML = md(r.verdict ?? '');
+  const visible = PlenumAssistantContent.clean(r.verdict);
+  verdict.innerHTML = md(visible.text);
+  appendProtocolDetails(verdict, visible.hidden);
   box.append(verdict);
   if (r.consensus?.length) box.append(consensusList(r.consensus));
   if (r.disagreements?.length) box.append(disagreementList(cd, r.disagreements));
@@ -4165,6 +4328,8 @@ function recommendationBlock(cd, steps, slot) {
   const btn = button('primary small build-this', 'Build this');
   btn.title = 'Turn these steps into tasks you can edit, then run them';
   btn.addEventListener('click', () => openPlan(cd, slot, btn));
+  // A card drawn again while the planner works keeps the button off until the plan is there.
+  btn.disabled = cd.saved === true && openPlans.get(planKey(activeScope(), cd))?.tasks === null;
   row.append(main, btn);
   return row;
 }
@@ -4201,13 +4366,54 @@ function dissentBlock(items) {
   return box;
 }
 
-// The plan panel: the recommendation as tasks, editable, before anything runs.
-async function openPlan(cd, slot, btn) {
-  if (busyNow()) return toast('This project is already running. Use /cancel first.', 'bad');
-  const recommendation = (cd.result?.recommendation ?? []).map((s, i) => `${i + 1}. ${s}`).join('\n');
+// The plans that are open or being made, by thread and council ("scope|ts" of the saved row): { tasks }, where tasks is null while the
+// planner works. Kept here, the way retryPick keeps the model picker, because the chat is drawn again on a switch of thread or project
+// and on a state event: the new council card draws its plan from this (councilEl), with what was typed into it, and a plan that
+// arrives while its thread is off screen is there when the thread is shown again. Run, Cancel and a failed plan take the entry out.
+const openPlans = new Map();
+const planKey = (scope, cd) => `${scope}|${cd.ts}`;
+
+function planWaitEl() {
   const wait = document.createElement('p');
   wait.className = 'plan-wait';
   wait.append(span('spinner'), 'Turning the recommendation into tasks…');
+  return wait;
+}
+
+// The slot of the council card that is on the page for this council now: the one the plan was asked from while it is still there, else
+// the card the chat drew since (found by the time of its row). null while the thread is off screen.
+function planSlotNow(scope, cd, slot) {
+  if (slot?.isConnected) return slot;
+  if (scope !== activeScope() || cd.ts === undefined) return null;
+  const card = [...el.chat.querySelectorAll('.turn.council')].find(a => a.dataset.verdictTs === String(cd.ts));
+  return card?.querySelector('.council-slot') ?? null;
+}
+
+// Draws the plan of this council, or the line that says it is being made, into the slot of a card that was just built (councilEl).
+function drawOpenPlan(cd, slot) {
+  const key = planKey(activeScope(), cd);
+  const plan = openPlans.get(key);
+  if (!plan) return;
+  slot.append(plan.tasks ? planPanel(cd, plan.tasks, key, false) : planWaitEl());
+}
+
+// The plan panel: the recommendation as tasks, editable, before anything runs.
+async function openPlan(cd, slot, btn) {
+  if (busyNow()) return toast('This project is already running. Use /cancel first.', 'bad');
+  // A council card whose run has just ended is not saved yet (it has no time of its own, cd.ts): a plan asked from it could not be found
+  // again once the saved card is drawn, and would block the next one. The saved card is there a moment later.
+  if (cd.ts === undefined) return toast("The council's answer is still being saved. Try again in a moment.", 'bad');
+  const scope = activeScope();
+  const key = planKey(scope, cd);
+  // A plan of this council that is open already (or on its way) is shown, not asked for a second time.
+  if (openPlans.has(key)) {
+    planSlotNow(scope, cd, slot)?.querySelector('.plan, .plan-wait')?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    return;
+  }
+  const plan = { tasks: null };
+  openPlans.set(key, plan);
+  const recommendation = (cd.result?.recommendation ?? []).map((s, i) => `${i + 1}. ${s}`).join('\n');
+  const wait = planWaitEl();
   slot.append(wait);
   btn.disabled = true;
   try {
@@ -4215,14 +4421,23 @@ async function openPlan(cd, slot, btn) {
     if (data.error) throw new Error(data.error);
     const tasks = (data.tasks ?? []).map(normalizeTask);
     if (!tasks.length) throw new Error('The planner returned no tasks. Try again, or ask the council a narrower question.');
-    slot.append(planPanel(cd, slot, tasks));
-    slot.lastElementChild?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    plan.tasks = tasks;
   } catch (err) {
+    if (openPlans.get(key) === plan) openPlans.delete(key);
     toast(err.message, 'bad');
-  } finally {
-    wait.remove();
-    btn.disabled = false;
   }
+  wait.remove();
+  btn.disabled = false;
+  // The chat may have been drawn again while the planner worked (the planner can take minutes): the plan goes into the card that is on
+  // the page now. A thread that is off screen gets it from councilEl when it is shown again.
+  const now = planSlotNow(scope, cd, slot);
+  if (!now) return;
+  for (const line of now.querySelectorAll('.plan-wait')) line.remove();
+  const again = now.closest('.turn.council')?.querySelector('.build-this');
+  if (again) again.disabled = false;
+  if (openPlans.get(key) !== plan || !plan.tasks || now.querySelector('.plan')) return;
+  now.append(planPanel(cd, plan.tasks, key));
+  now.lastElementChild?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
 }
 
 // The agent types and models a build task can use, from GET /api/agents?project= (lib/routes/agents.mjs): effective.types (each type's
@@ -4273,7 +4488,7 @@ function modelsFor(kind) {
   const list = agentsInfo?.catalog?.length
     ? agentsInfo.catalog
     : CODERS.map(c => ({ ref: c.ref, label: c.label, provider: c.ref.slice(0, c.ref.indexOf(':')), tools: c.ref.startsWith('anthropic:') ? 'yes' : 'cli' }));
-  return list.filter(m => kind !== 'edit' || ((m.tools === 'yes' || m.tools === 'cli') && m.provider !== 'echo'));
+  return list.filter(m => m.offered !== false && (kind !== 'edit' || ((m.tools === 'yes' || m.tools === 'cli') && m.provider !== 'echo')));
 }
 
 function normalizeTask(t) {
@@ -4304,9 +4519,10 @@ function scopesOverlap(a = [], b = []) {
   }));
 }
 
-function planPanel(cd, slot, tasks) {
+// key names the plan in openPlans. fresh is false for a panel that is drawn again with the chat (it does not come in a second time).
+function planPanel(cd, tasks, key, fresh = true) {
   const panel = document.createElement('section');
-  panel.className = 'plan fresh';
+  panel.className = fresh ? 'plan fresh' : 'plan';
   const head = document.createElement('div');
   head.className = 'plan-head';
   head.append(span('kicker', 'Build plan'));
@@ -4321,11 +4537,17 @@ function planPanel(cd, slot, tasks) {
   run.addEventListener('click', () => {
     const bad = tasks.find(t => !t.title.trim() || (kindOf(t.agent) === 'edit' && !t.scope.length));
     if (bad) return toast(`Task ${bad.id} needs a title and, for a type that edits files, at least one scope path.`, 'bad');
+    // A build that cannot start now leaves the plan open, with what was typed into it.
+    if (busyNow()) return toast('This project is already running. Use /cancel first.', 'bad');
+    openPlans.delete(key);
     panel.remove();
-    runBuild(cd, slot, tasks);
+    runBuild(cd, tasks);
   });
   const cancel = button('ghost small', 'Cancel');
-  cancel.addEventListener('click', () => panel.remove());
+  cancel.addEventListener('click', () => {
+    openPlans.delete(key);
+    panel.remove();
+  });
   foot.append(run, cancel);
   panel.append(head, list, foot);
   // The delegation strip sits above Run: pressing Run lets coders change files in the scopes shown (delegation).
@@ -4391,7 +4613,7 @@ function taskEditor(t) {
     coder.title = isGemini ? GEMINI_EDIT : '';
   };
   fillAgents();
-  fillModels();
+  trackModelMenu(coder, fillModels);
   fillEffort();
   paintLimits();
   markGemini();
@@ -4469,7 +4691,7 @@ function scopeChips(t) {
 }
 
 // Runs a plan: the build streams into the card, and the review follows it.
-async function runBuild(cd, slot, tasks) {
+async function runBuild(cd, tasks) {
   if (busyNow()) return toast('This project is already running. Use /cancel first.', 'bad');
   // A task names its agent type. Its model and effort are sent only when they differ from the type's own.
   const payload = tasks.map(t => ({ id: t.id, title: t.title.trim(), instructions: t.instructions, scope: t.scope, depends: t.depends, agent: t.agent || 'coder', ...(t.coder ? { coder: t.coder } : {}), ...(t.effort ? { effort: t.effort } : {}) }));
@@ -4490,7 +4712,11 @@ async function runBuild(cd, slot, tasks) {
     focus: false,
   };
   let live = buildEl(run, true);
-  slot.append(live);
+  // The live card goes into the thread's run box, as a live council card does, and not into the council card's slot: the chat is drawn
+  // again on a switch of thread or project and on a state event, which makes a new council card with an empty slot, and only the run
+  // box is put back (renderChat). In the slot the card was lost for the rest of the build, and its approval cards with it. When the
+  // build ends the box goes and the saved build is drawn in the slot.
+  runBox(activeScope()).append(live);
   live.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   let queued = false;
   const paint = () => {
@@ -4498,11 +4724,12 @@ async function runBuild(cd, slot, tasks) {
     queued = true;
     requestAnimationFrame(() => {
       queued = false;
-      if (!live.isConnected) return;
+      // Built again while its thread is off screen too (see askCouncil). A card whose box is gone (the run ended) is left.
+      if (!live.parentNode) return;
       const next = buildEl(run);
       replaceKeepingFocus(live, next);
       live = next;
-      stickBottom();
+      if (live.isConnected) stickBottom();
     });
   };
   // The build card names each task's type and model; read them now when the plan was not opened with them.
@@ -4512,10 +4739,11 @@ async function runBuild(cd, slot, tasks) {
   await runStream('/api/build', { ...scopeBody(), goal: cd.question, tasks: payload }, buildHandler(run, paint), {
     tick: (secs, time) => {
       run.clock = time;
-      const t = el.chat.querySelector('.build-timer');
+      // This card's own clocks, on or off the screen.
+      const t = live.querySelector('.build-timer');
       if (t) t.textContent = `Working · ${time}`;
       // Each running task counts up from its own start (taskRowEl).
-      for (const n of el.chat.querySelectorAll('.bt-elapsed[data-start]')) n.textContent = clockText(Math.floor((Date.now() - Number(n.dataset.start)) / 1000));
+      for (const n of live.querySelectorAll('.bt-elapsed[data-start]')) n.textContent = clockText(Math.floor((Date.now() - Number(n.dataset.start)) / 1000));
     },
   });
 }
@@ -4573,18 +4801,16 @@ function buildHandler(run, paint) {
         }
         break;
       }
-      case 'approval': {
-        const a = { ...ev };
-        a.onDone = () => {
-          run.approvals = run.approvals.filter(x => x !== a);
-          paint();
-        };
-        // Show all asks for the card to be built again, so its text reaches the card that is on the page (see approvalEl).
-        a.onChange = paint;
-        run.approvals.push(a);
+      case 'approval':
+        keepApproval(run, ev, paint);
         cue('approval');
+        // As for a chat turn: a card in a thread that is not on screen turns that thread's tab amber at once.
+        if (scope !== activeScope()) window.dispatchEvent(new CustomEvent('plenum:thread-waiting', { detail: { scope } }));
         break;
-      }
+      // A run that was stopped closes its waiting cards; the server says which, and the card goes.
+      case 'approval-closed':
+        run.approvals.find(a => a.approvalId === ev.approvalId)?.onDone();
+        break;
       case 'review-start':
         run.reviewing = ev.reviewer?.label ?? 'the reviewer';
         run.reviewText = '';
@@ -4660,7 +4886,7 @@ function buildEl(run, fresh = false) {
     h.className = 'review-head';
     h.append(span('kicker', `Review · ${run.reviewing}`), span('spinner'));
     wait.append(h);
-    if (run.reviewText) wait.append(preEl('raw-stream', run.reviewText));
+    if (run.reviewText) wait.append(preEl('raw-stream', PlenumAssistantContent.clean(run.reviewText, { streaming: true }).text));
     box.append(wait);
   }
   if (run.review) box.append(reviewEl(run.review));
@@ -4810,18 +5036,21 @@ async function askCouncil(question) {
     queued = true;
     requestAnimationFrame(() => {
       queued = false;
-      if (!live.isConnected) return;
+      // The card is built again while its thread is off screen too (its box is then out of the page), so the thread comes back to the
+      // card as it is now, with an approval card that arrived meanwhile. A card whose box is gone (the run ended) is left.
+      if (!live.parentNode) return;
       const next = councilEl(cd);
       replaceKeepingFocus(live, next);
       live = next;
-      stickBottom();
+      if (live.isConnected) stickBottom();
     });
   };
   const sentRow = S.messages.at(-1);
   await runStream('/api/council', { ...scopeBody(), question: text, config, ...(files.length ? { images: files.map(({ name, mime, data }) => ({ name, mime, data })) } : {}) }, councilHandler(cd, paint), {
     tick: (secs, time) => {
       cd.clock = time;
-      const t = el.chat.querySelector('.council-timer');
+      // This card's own timer, on or off the screen (another thread's council may be the one on screen).
+      const t = live.querySelector('.council-timer');
       if (t) t.textContent = `Working · ${time}`;
     },
   });
@@ -4845,6 +5074,10 @@ async function askCouncil(question) {
 
 function setMode(next) {
   mode = next;
+  if (el.chatOptions.open) {
+    el.chatOptions.open = false;
+    el.chatOptions.querySelector('summary')?.focus({ preventScroll: true });
+  }
   // The board takes room from the transcript: a transcript that was at its end stays at its end.
   const atEnd = el.chat.scrollHeight - el.chat.scrollTop - el.chat.clientHeight < 80;
   renderBoard();
@@ -4853,8 +5086,20 @@ function setMode(next) {
   if (next === 'council') window.MuseUI?.notice?.('multi-provider', { before: el.board });
 }
 
+document.addEventListener('pointerdown', event => {
+  if (el.chatOptions.open && !el.chatOptions.contains(event.target)) el.chatOptions.open = false;
+});
+el.chatOptions.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || !el.chatOptions.open) return;
+  event.stopPropagation();
+  event.preventDefault();
+  el.chatOptions.open = false;
+  el.chatOptions.querySelector('summary')?.focus();
+});
+
 function renderBoard() {
   const council = mode === 'council';
+  el.chatOptionsLabel.textContent = council ? 'Council options' : 'Chat options';
   el.board.hidden = !council;
   el.boardSummary.hidden = !council;
   for (const b of el.modeBtns) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
@@ -5043,8 +5288,11 @@ async function editSeat(index, field, value) {
 // candidate the CLI's own list says it no longer offers (offered: false in the catalog) is skipped, so a retired model is never added.
 // The Muse seat is Muse Wonder 1.0 (Muse Code no longer offers Muse Wonder Full); if Muse Code's own list ever drops that too, the seat
 // takes the first Muse model the list does offer (newSeat). A saved council keeps the model it names: only a new seat is chosen here.
+// DECISIONS item 207: since Gemini 4 Neon (18 Nov 2026) the Gemini seat takes Neon High, else another Neon level the list offers, and
+// Hydrogen (High first) only when the list has no Neon.
 const NEW_SEAT_MODELS = [['gemini', 'gemini:default'], ['codex', 'codex:default'], ['muse', 'muse:muse-wonder-1.0'], ['anthropic', 'anthropic:claude-opus-5-5']];
 const HYDROGEN_HIGH = 'antigravity:gemini-4-hydrogen-high';
+const NEON_HIGH = 'antigravity:gemini-4-neon-high';
 const catalogRef = c => `${c.provider}:${c.id}`;
 const retiredRef = ref => catalog.some(c => catalogRef(c) === ref && c.offered === false);
 
@@ -5058,9 +5306,11 @@ const antigravitySignedIn = () => {
 function geminiSeatModel(fallback) {
   if (antigravitySignedIn()) {
     const listed = catalog.filter(c => c.provider === 'antigravity' && c.offered !== false);
-    if (listed.some(c => catalogRef(c) === HYDROGEN_HIGH)) return HYDROGEN_HIGH;
-    const other = listed.find(c => c.id.startsWith('gemini-4-hydrogen-'));
-    if (other) return catalogRef(other);
+    for (const [high, family] of [[NEON_HIGH, 'gemini-4-neon-'], [HYDROGEN_HIGH, 'gemini-4-hydrogen-']]) {
+      if (listed.some(c => catalogRef(c) === high)) return high;
+      const other = listed.find(c => c.id.startsWith(family));
+      if (other) return catalogRef(other);
+    }
   }
   return fallback;
 }
@@ -5561,6 +5811,9 @@ async function readState(flight) {
     S = next;
     stateLoaded = true;
     notes = notes.filter(n => !n.startsWith(CONNECTION_LINE));
+    // The saved chat now holds the replies of the runs that ended: their boxes go before the chat is drawn from it.
+    for (const scope of boxesAfterRun.keys()) dropRunBox(scope);
+    boxesAfterRun.clear();
   } catch (err) {
     flight.applying = true;
     if (!notes.some(n => n.startsWith(CONNECTION_LINE))) notes.push(connectionNote(err));
@@ -5599,6 +5852,13 @@ function applyState(next, { chat } = {}) {
     notes = threadNotes.get(activeScope()) ?? [];
     threadNotes.delete(activeScope());
   }
+  // A run of another window that this window draws belongs to the chat that was on screen. Another project or thread is shown now, so
+  // that drawing ends here, with its box, and the chat of the new one is read below instead of staying under the new title. The run's
+  // thread shown again while it still runs is drawn again from its next event (events.on('run')).
+  if ((switched || threadSwitched) && foreign) {
+    dropRunBox(foreign.scope);
+    foreign = null;
+  }
   renderShell();
   const changed = typeof next.messageCount === 'number' && (next.messageCount !== S.messages.length || (next.lastMessageTs ?? 0) !== (S.messages.at(-1)?.ts ?? 0));
   const read = chat !== false && !activeRun() && !foreign && (switched || threadSwitched || changed);
@@ -5625,6 +5885,8 @@ let startedBuild = null;
 let startedAt = 0; // the server process the page last heard from (hello carries it); it changes on every plain restart
 let reconnecting = false;
 const CHANNEL_QUIET_MS = 45_000;
+const CHANNEL_STABLE_MS = 15_000;
+let shellLinkLost = false;
 let channelWake = null; // ends the wait before the next try, while there is one
 function wakeChannel() {
   channelWake?.();
@@ -5636,9 +5898,10 @@ document.addEventListener('visibilitychange', () => {
 {
   let shellLink = '';
   try {
-    if (typeof window.plenumShell?.onConnection === 'function') {
+    if (window.plenumShell?.desktop === false && typeof window.plenumShell.onConnection === 'function') {
       window.plenumShell.onConnection(view => {
         const now = String(view?.state ?? '');
+        shellLinkLost = ['reconnecting', 'offline', 'asleep'].includes(now);
         if (now === 'connected' && shellLink !== 'connected') wakeChannel();
         shellLink = now;
       });
@@ -5668,6 +5931,7 @@ function setConnected(connected) {
 
 const events = {
   connected: false,
+  retry: wakeChannel,
   on(type, fn) {
     if (!eventHandlers.has(type)) eventHandlers.set(type, new Set());
     eventHandlers.get(type).add(fn);
@@ -5682,10 +5946,11 @@ const events = {
     for (let fails = 0; ; ) {
       // The watchdog: when nothing (not even a ping) came for CHANNEL_QUIET_MS, the request is stopped, which ends the reading below.
       const ctl = new AbortController();
-      let heard = Date.now();
+      let heard = performance.now();
+      let helloAt = null;
       let quiet = 0;
       const watch = () => {
-        const still = Date.now() - heard;
+        const still = performance.now() - heard;
         if (still >= CHANNEL_QUIET_MS) ctl.abort();
         else quiet = setTimeout(watch, CHANNEL_QUIET_MS - still);
       };
@@ -5693,14 +5958,17 @@ const events = {
       try {
         const res = await request('/api/events', { signal: ctl.signal });
         if (tokenRefused(res)) showTokenCard();
-        if (!res.ok) throw new Error(`Request failed (${res.status})`);
-        heard = Date.now();
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new Error(`Request failed (${res.status})`);
+        }
+        heard = performance.now();
         await readSSE(res, ev => {
-          fails = 0;
+          if (ev.type === 'hello') helloAt ??= performance.now();
           fanOut(ev);
         }, {
           onBytes: () => {
-            heard = Date.now();
+            heard = performance.now();
           },
           signal: ctl.signal,
         });
@@ -5710,13 +5978,15 @@ const events = {
         clearTimeout(quiet);
       }
       setConnected(false);
+      if (helloAt !== null && heard - helloAt >= CHANNEL_STABLE_MS) fails = 0;
       await new Promise(resolve => {
         const done = () => {
           clearTimeout(timer);
           if (channelWake === done) channelWake = null;
           resolve();
         };
-        const timer = setTimeout(done, [1000, 2000, 4000, 8000, 10000][Math.min(fails, 4)]);
+        const delay = shellLinkLost ? 30_000 : [1000, 2000, 4000, 8000, 10000][Math.min(fails, 4)];
+        const timer = setTimeout(done, delay);
         channelWake = done;
       });
       fails += 1;
@@ -5748,7 +6018,10 @@ events.on('hello', ev => {
   setConnected(true);
   // One reading of the state at most: applyState reads it when the chat changed, and a restart reads it only if that did not.
   const read = applyState(ev.state);
-  if (restarted && !read && !activeRun()) refresh();
+  // A reading that failed while the channel was down left "Cannot reach the Plenum server" in the chat; the server answers again, so
+  // the state is read once more and the line goes (readState takes it away on a reading that works).
+  const cutOff = notes.some(n => n.startsWith(CONNECTION_LINE));
+  if ((restarted || cutOff) && !read && !activeRun()) refresh();
 });
 
 events.on('state', ev => applyState(ev.state));
@@ -5779,11 +6052,17 @@ events.on('approval', ev => {
   const cards = [...document.querySelectorAll(selector), ...[...runBoxes.values()].filter(box => !box.isConnected).flatMap(box => [...box.querySelectorAll(selector)])];
   // A card a phone answered says who did it: "Approved on Will's iPhone" (ev.via is the phone's device id; MOBILE-UI 8.6 and 15.9).
   const answeredOn = ev.via && ev.action === 'answered' ? `${ev.allow ? 'Approved' : 'Denied'} on ${phoneNamed(ev.via)}` : '';
+  // A card that a council card or a build card keeps in its list leaves that list, however it ended and wherever it was answered: the
+  // card is built again on every update, and would otherwise come back as a waiting card that nobody can answer any more.
+  listedApprovals.get(ev.approvalId)?.();
   for (const card of cards) {
     if (card.dataset.answeredHere) continue;
     // A card on the Agents board (inside its pane, .ext-agl) says where it was answered in the chat's words.
     const onBoard = Boolean(card.closest?.('.ext-agl'));
-    if (ev.by === 'board') {
+    if (ev.by === 'batch') {
+      const text = answeredOn || 'Approved with the pending requests.';
+      card.replaceWith(onBoard ? span('note-quiet', text) : systemTurn(text));
+    } else if (ev.by === 'board') {
       card.replaceWith(span('note-quiet', 'Answered from the Agents board.'));
     } else if (answeredOn) {
       card.replaceWith(onBoard ? span('note-quiet', answeredOn) : systemTurn(answeredOn));
@@ -5795,6 +6074,67 @@ events.on('approval', ev => {
     }
   }
 });
+
+function pendingApprovalControl(cards, { board = false } = {}) {
+  const project = S.activeProject;
+  const scope = activeScope();
+  if (!project || !scope) return null;
+  const here = cards.filter(card => card.projectId === project && card.scope === scope);
+  if (!here.length) return null;
+  const eligible = here.filter(card => card.batchEligible === true);
+  const approvalIds = eligible.slice(0, 60).map(card => card.approvalId);
+  const key = `${project}/${scope}`;
+  const individual = here.length - eligible.length;
+  const control = document.createElement('div');
+  control.className = 'pending-approval-control';
+  if (approvalIds.length) {
+    const count = approvalIds.length;
+    const label = count < eligible.length ? `Approve next ${count} routine requests`
+      : individual ? `Approve all routine (${count})`
+        : `Approve all pending (${count})`;
+    const action = button('ghost small approve-pending-button', label);
+    action.dataset.batchScope = key;
+    action.disabled = pendingBatches.has(key);
+    action.title = 'Approve the currently shown requests in this chat.';
+    const setWaiting = waiting => {
+      for (const btn of document.querySelectorAll('.approve-pending-button')) {
+        if (btn.dataset.batchScope === key) btn.disabled = waiting;
+      }
+    };
+    action.addEventListener('click', async () => {
+      if (S.activeProject !== project || activeScope() !== scope || pendingBatches.has(key)) return;
+      pendingBatches.add(key);
+      setWaiting(true);
+      try {
+        const { approved } = await api('/api/approve', { project, scope, approvalIds, allow: true }, { signal: AbortSignal.timeout?.(10000) });
+        toast(`Approved ${approved} pending ${approved === 1 ? 'request' : 'requests'} in this chat.`);
+      } catch (err) {
+        toast(err.message, 'bad');
+      } finally {
+        pendingBatches.delete(key);
+        setWaiting(false);
+        void window.MuseUI?.board?.reload();
+      }
+    });
+    control.append(action);
+  }
+  if (board) control.prepend(span('field-note', 'This chat'));
+  if (individual) control.append(span('field-note', `${individual} ${individual === 1 ? 'request needs' : 'requests need'} individual approval.`));
+  return control;
+}
+
+function renderPendingApprovals() {
+  const cards = (window.MuseUI?.board?.view().approvals ?? [])
+    .filter(card => card.projectId === S.activeProject && card.scope === activeScope());
+  const signature = JSON.stringify([activeScope(), ...cards.map(card => [card.approvalId, card.batchEligible])]);
+  if (pendingApprovalSignature === signature) return;
+  pendingApprovalSignature = signature;
+  const control = pendingApprovalControl(cards);
+  el.pendingApprovals.replaceChildren(...(control ? [control] : []));
+  el.pendingApprovals.hidden = !control;
+}
+
+window.addEventListener('plenum:board', renderPendingApprovals);
 
 // A phone switched the project (MOBILE-UI 15, item 9). The first switch from each phone in this window says so here: the event names the
 // project and carries the phone's device id as via. Server side, POST /api/settings publishes it when a phone sets activeProject.
@@ -5816,6 +6156,11 @@ function foreignFeed(ev) {
   if (!foreign || foreign.runId !== ev.runId) {
     if (foreignDone.has(ev.runId)) return;
     const scope = ev.event?.thread ?? ev.project;
+    // Another window's run was drawn here already (its thread is off screen now, or its done never arrived): its box goes, so its
+    // half-written reply never stays under the saved one (its done would no longer match and would not drop it). Shown again while it
+    // still runs, it is drawn again. This comes before the new run takes its box: in the same thread it would otherwise take the old
+    // box, which is then dropped, and draw off the page.
+    if (foreign) dropRunBox(foreign.scope);
     const run = { runId: ev.runId, kind: ev.kind, project: ev.project, scope, ready: false, queue: [], ...turnRenderer(scope) };
     foreign = run;
     refresh().then(() => {
@@ -5941,6 +6286,10 @@ async function readProviders(refreshCodex) {
     const first = catalogKey === '';
     catalogKey = key;
     refreshModelMenus();
+    if ([...modelMenus.keys()].some(select => select.classList.contains('pt-coder'))) {
+      void loadAgentsInfo().then(refreshModelMenus);
+    }
+    fanOut({ type: 'catalog' });
     // The state can answer before the status: the chat was drawn with raw model ids, so the first catalog draws it again with names.
     if (first && stateLoaded) renderChat({ keep: true });
   }
@@ -6057,7 +6406,9 @@ function takeOverlay(info) {
   rollbackNotice = rb;
   if (setAsideNotice(rb)) {
     // Setting old changes aside after a Plenum update is expected, so the notice is not the red one.
-    toast(`Changes applied for Plenum ${rb.setAsideFor} were set aside. The Updates panel says why.`, 'ok', 8000);
+    // The version reads as the rollback reason words it: '0.6.0+20261117.1900' as '0.6.0 (build 20261117.1900)'.
+    const [version, ...build] = String(rb.setAsideFor).split('+');
+    toast(`Changes applied for Plenum ${build.length ? `${version} (build ${build.join('+')})` : version} were set aside. The Updates panel says why.`, 'ok', 8000);
   } else if (rb.ignored === true) {
     toast(IGNORED_ROLLBACK_TEXT, 'bad', 8000);
   } else {
@@ -6310,6 +6661,11 @@ function refreshDrawer() {
     el.drawerBody.replaceChildren();
     drawerRender(el.drawerBody);
   } else if (settingsShown) {
+    // A redraw asked from the background (a sign-in watch that ended or gave up, a late answer) builds every section again. While the
+    // person is typing in a field of the page (the Rules editor, a key being pasted) it waits: what was typed, the focus and the place
+    // stay, and the page is drawn afresh the next time it opens or a section asks again.
+    const at = document.activeElement;
+    if (at && at !== el.settingsSearch && el.settingsContent.contains(at) && at.tagName !== 'SELECT' && holdsText(at)) return;
     settingsRedraw();
   }
 }
@@ -8363,9 +8719,7 @@ settingsRegister({
   },
 });
 
-// Auto-compact: a dial for each model, in tokens (DECISIONS item 86, lib/compact-limits.mjs and lib/routes/compact-limits.mjs). A model with a
-// limit has its chat compacted by Plenum when the thread holds that many tokens, and Claude Code and Codex are told the same limit for their
-// own compaction. Default leaves the model as it was; Off also turns Claude Code's own auto-compaction off.
+// Auto-compact: the shared target and model overrides, with the threshold each route can reach.
 settingsRegister({
   id: 'compaction',
   scope: 'app',
@@ -8373,61 +8727,122 @@ settingsRegister({
   order: 35,
   render(body) {
     body.append(para('Reading the limits…'));
-    // The "Add another model" menu is filled from the model catalog; Settings opened while the page is still starting has none yet.
     const models = catalog.length ? null : loadProviders().catch(() => {});
     return Promise.all([api('/api/compact-limits'), models]).then(([data]) => drawCompaction(body, data));
   },
 });
 
-// 37_500 -> "38K", 1_000_000 -> "1M".
-const tokenWords = n => (n >= 1_000_000 ? `${Math.round(n / 100_000) / 10}M` : `${Math.round(n / 1000)}K`);
+const compactTokens = n => `${Number(n).toLocaleString()} tokens`;
 
-// What one model's limit does, in a sentence or two, from the server's description of it (GET /api/compact-limits).
-function compactNote(m, value) {
+function compactNote(m, value, defaultTarget) {
   const room = m.room ?? {};
+  const target = value ?? defaultTarget;
+  const effective = value === m.value ? m.effective : typeof target === 'number' && Number.isFinite(room.tokens) ? Math.min(target, room.tokens) : target;
+  const origin = value === null ? 'Inherited target' : 'Model target';
+  const native = room.kind === 'session';
+  const knob = m.knob === 'claude' ? 'Claude Code' : m.knob === 'codex' ? 'Codex' : '';
   const parts = [];
-  if (value === null) {
-    parts.push('Model default: Plenum does not compact this chat on its own.');
-    if (m.knob) parts.push(`${m.knob === 'claude' ? 'Claude Code' : 'Codex'} keeps its own default.`);
-  } else if (value === 'off') {
-    parts.push('Off: Plenum never compacts this chat on its own.');
-    if (m.knob === 'claude') parts.push('Claude Code\'s own auto-compaction is turned off too.');
-    if (m.knob === 'codex') parts.push('Codex has no switch that turns its own compaction off, so it keeps its default.');
+  if (target === 'off') {
+    parts.push(`${origin}: Off. Plenum does not automatically compact the chat.`);
+    if (m.knob === 'claude') parts.push('Claude Code’s auto-compaction is disabled too.');
+    else if (native || m.knob === 'codex') parts.push(`${knob || 'The provider'} controls compaction in its own session.`);
   } else {
-    const tokens = `${tokenWords(value)} tokens`;
-    const share = m.published && m.window ? ` (${Math.round((value / m.window) * 100)}% of its ${tokenWords(m.window)} token context window)` : '';
-    if (room.kind === 'session') {
-      parts.push('This model keeps its own session here (Native session mode), so it compacts that session itself.');
-    } else {
-      parts.push(`Plenum compacts the chat when it holds about ${tokens}${share}: the model writes a summary, which replaces the earlier messages.`);
-      if (room.kind === 'prompt' && value > room.tokens) parts.push(`One prompt to this model carries about ${tokenWords(room.tokens)} tokens of the chat at most, so until then the oldest messages are left out of what it is sent.`);
+    parts.push(`${origin}: ${compactTokens(target)}.`);
+    if (native) {
+      parts.push(knob
+        ? `${knob} compacts its own session at a target of about ${compactTokens(effective)}, subject to its context limits.`
+        : 'The provider controls its native session. Plenum has no native compaction setting for this route.');
+    } else if (Number.isFinite(effective)) {
+      parts.push(`Plenum compacts at about ${compactTokens(effective)} on this route.`);
     }
-    if (!m.published) parts.push('No context window is published for this model.');
-    // Claude Code keeps 13,000 tokens free below its own window (at most 1M), so it never compacts later than that (lib/compact-limits.mjs).
-    const claudeTop = m.published && m.window ? Math.min(m.window, 1_000_000) - 13_000 : null;
-    if (m.knob === 'claude' && claudeTop !== null && value > claudeTop) parts.push(`Claude Code is told the same limit, but it keeps 13K tokens free below its window, so it compacts its own context at about ${tokenWords(claudeTop)} tokens.`);
-    else if (m.knob === 'claude' && !m.published) parts.push(`Claude Code is told to compact its own context at ${tokens} too, or 13K tokens below its own window if that comes first.`);
-    else if (m.knob === 'claude') parts.push(`Claude Code is told to compact its own context at ${tokens} too.`);
-    if (m.knob === 'codex') parts.push(`Codex is told to compact its own context at ${tokens} too.`);
+  }
+  const inputTokens = room.inputTokens ?? room.tokens;
+  if (Number.isFinite(inputTokens)) {
+    parts.push(`Estimated input allowance: ${compactTokens(inputTokens)}${room.estimated ? ' using an assumed context size' : ''}.`);
   }
   return parts.join(' ');
 }
 
+function compactDefaultRow(body, data, range) {
+  const max = data.unpublishedMax ?? 1_000_000;
+  const row = document.createElement('div');
+  row.className = 'setting compact-model';
+  const status = settingStatus();
+  const enabled = document.createElement('select');
+  enabled.setAttribute('aria-label', 'Default auto-compact mode');
+  enabled.append(new Option('Limit', 'limit'), new Option('Off', 'off'));
+  enabled.value = data.defaultValue === 'off' ? 'off' : 'limit';
+  const box = document.createElement('input');
+  box.type = 'number';
+  box.min = String(range.min);
+  box.max = String(max);
+  box.step = '1';
+  box.inputMode = 'numeric';
+  box.className = 'compact-tokens';
+  box.value = String(data.defaultValue === 'off' ? 500_000 : data.defaultValue);
+  box.disabled = enabled.value === 'off';
+  box.setAttribute('aria-label', 'Default auto-compact target in tokens');
+  enabled.addEventListener('change', () => { box.disabled = enabled.value === 'off'; });
+  const save = button('primary small', 'Save default');
+  const reset = button('ghost small', 'Apply to all models');
+  let busy = false;
+  const apply = async resetOverrides => {
+    if (busy) return;
+    const defaultValue = enabled.value === 'off' ? 'off' : Number(box.value);
+    if (defaultValue !== 'off' && (!Number.isInteger(defaultValue) || defaultValue < range.min || defaultValue > max)) {
+      status.failed(`Type whole tokens from ${range.min.toLocaleString()} to ${max.toLocaleString()}.`);
+      return;
+    }
+    if (resetOverrides) {
+      const confirmed = await confirmBox({
+        title: 'Apply the default to all models?',
+        body: 'Plenum clears every per-model override. Each model then inherits this default target.',
+        action: 'Apply to all models',
+        focusCancel: true,
+      });
+      if (!confirmed || busy) return;
+    }
+    busy = true;
+    save.disabled = reset.disabled = enabled.disabled = box.disabled = true;
+    try {
+      const next = await api('/api/compact-limits', { defaultValue, ...(resetOverrides ? { resetOverrides: true } : {}) });
+      drawCompaction(body, next);
+      toast(resetOverrides ? 'All models now inherit the default.' : 'Auto-compact default saved.');
+    } catch (err) {
+      status.failed(err.message);
+      save.disabled = reset.disabled = enabled.disabled = false;
+      box.disabled = enabled.value === 'off';
+      busy = false;
+    }
+  };
+  save.addEventListener('click', () => void apply(false));
+  reset.addEventListener('click', () => void apply(true));
+  const controls = document.createElement('div');
+  controls.className = 'range-row';
+  controls.append(enabled, box, span('compact-unit', 'tokens'), save, reset);
+  row.append(span('field-label', data.defaultValue === 'off' ? 'Default target: Off' : `Default target: ${compactTokens(data.defaultValue)}`),
+    controls, span('field-note', 'Save default keeps model overrides. Apply to all models clears them.'), status.note);
+  return row;
+}
+
 function drawCompaction(body, data) {
   body.replaceChildren();
-  body.append(para('A dial for each model, in tokens: when a chat holds that many, it is compacted into a summary first, as /compact does. Claude Code and Codex are given the same limit for their own compaction. Default changes nothing.'));
+  body.append(para('Plenum summarizes earlier messages when the chat reaches its target. Routes with less input room compact earlier. Native sessions follow the provider’s own compaction rules.'));
   const range = data.range ?? { min: 10_000, step: 1000 };
   const rows = document.createElement('div');
-  for (const m of data.models ?? []) rows.append(compactRow(m, range));
+  rows.append(compactDefaultRow(body, data, range));
+  for (const m of data.models ?? []) rows.append(compactRow(m, range, data.defaultValue));
   body.append(rows);
-  // Any other model can be given a limit too: it gets a row, on its default until its menu or dial is changed.
+
   const shown = new Set((data.models ?? []).map(m => m.ref));
-  const others = catalog.filter(c => c.provider && c.id && !shown.has(`${c.provider}:${c.id}`));
-  if (!others.length) return;
   const pick = document.createElement('select');
   pick.setAttribute('aria-label', 'Add a model to set its auto-compact limit');
-  pick.append(new Option('Add another model…', ''));
-  for (const c of others) pick.append(new Option(plainModel(c.label) || `${c.provider}:${c.id}`, `${c.provider}:${c.id}`));
+  trackModelMenu(pick, chosen => {
+    const others = modelChoices().filter(c => c.provider && c.id && !shown.has(`${c.provider}:${c.id}`));
+    pick.replaceChildren(new Option('Add another model…', ''),
+      ...others.map(c => new Option(plainModel(c.label) || `${c.provider}:${c.id}`, `${c.provider}:${c.id}`)));
+    if ([...pick.options].some(o => o.value === chosen)) pick.value = chosen;
+  });
   const status = settingStatus();
   pick.addEventListener('change', () => {
     const ref = pick.value;
@@ -8435,7 +8850,8 @@ function drawCompaction(body, data) {
     pick.disabled = true;
     api(`/api/compact-limits?ref=${encodeURIComponent(ref)}`)
       .then(next => {
-        rows.append(compactRow(next.model, next.range ?? range));
+        shown.add(ref);
+        rows.append(compactRow(next.model, next.range ?? range, next.defaultValue));
         pick.querySelector(`option[value="${CSS.escape(ref)}"]`)?.remove();
         rows.lastElementChild?.querySelector('select')?.focus({ preventScroll: false });
       })
@@ -8454,7 +8870,7 @@ function drawCompaction(body, data) {
   body.append(row, status.note);
 }
 
-function compactRow(m, range) {
+function compactRow(m, range, defaultTarget) {
   const wrap = document.createElement('div');
   wrap.className = 'setting compact-model';
   wrap.dataset.ref = m.ref;
@@ -8462,7 +8878,7 @@ function compactRow(m, range) {
   const start = Number(m.suggested) || Math.min(max, 100_000);
   const mode = document.createElement('select');
   mode.setAttribute('aria-label', `Auto-compact for ${m.label}`);
-  mode.append(new Option('Model default', 'default'), new Option('Limit', 'limit'), new Option('Off', 'off'));
+  mode.append(new Option('Inherit default', 'default'), new Option('Override', 'limit'), new Option('Off', 'off'));
   const dial = document.createElement('input');
   dial.type = 'range';
   dial.min = String(range.min);
@@ -8490,7 +8906,7 @@ function compactRow(m, range) {
     dial.value = String(last);
     box.value = String(last);
     dial.disabled = box.disabled = typeof value !== 'number';
-    note.textContent = compactNote(m, value);
+    note.textContent = compactNote(m, value, defaultTarget);
   };
   // Only the answer to the latest change repaints the row, so two quick changes cannot leave the dial on the earlier value. Every success
   // newer than the last one recorded still becomes what the server holds, so a change that fails goes back to that; and an earlier change
@@ -8527,7 +8943,7 @@ function compactRow(m, range) {
   mode.addEventListener('change', () => save(mode.value === 'default' ? null : mode.value === 'off' ? 'off' : Number(box.value) || start));
   dial.addEventListener('input', () => {
     box.value = dial.value;
-    note.textContent = compactNote(m, Number(dial.value));
+    note.textContent = compactNote(m, Number(dial.value), defaultTarget);
   });
   dial.addEventListener('change', () => save(Number(dial.value)));
   box.addEventListener('change', () => {
@@ -8600,6 +9016,9 @@ function confirmBox({ title = '', body = '', action = 'OK', cancel = 'Cancel', t
     const keepFocus = e => {
       if (!dlg.contains(e.target)) (danger || focusCancel ? cancelBtn : actionBtn).focus();
     };
+    // The control that asked the question (Forget chat, Remove key, Reset) takes the focus back when the dialog goes, so the keyboard
+    // carries on from there and not from the top of the window.
+    const opener = document.activeElement;
     let settled = false;
     const finish = answer => {
       if (settled) return;
@@ -8607,6 +9026,8 @@ function confirmBox({ title = '', body = '', action = 'OK', cancel = 'Cancel', t
       document.removeEventListener('focusin', keepFocus);
       scrim.remove();
       dlg.remove();
+      const lost = !document.activeElement || document.activeElement === document.body || dlg.contains(document.activeElement);
+      if (lost && opener && opener !== document.body && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
       resolve(answer);
     };
     cancelBtn.addEventListener('click', () => finish(false));
@@ -8762,6 +9183,9 @@ async function runCommand(line) {
         if (arg.toLowerCase() === 'runs') return window.MuseUI?.openComputerRuns ? window.MuseUI.openComputerRuns() : toast('The Computer runs panel did not load (public/ext-computer.js).', 'bad');
         if (typeof window.MuseUI?.openComputer !== 'function') return toast('The Computer panel did not load (public/ext-computer.js).', 'bad');
         return window.MuseUI.openComputer(arg);
+      case 'display':
+        if (typeof window.MuseUI?.openComputer !== 'function') return toast('The Computer panel is unavailable.', 'bad');
+        return window.MuseUI.openComputer(arg, { scope: 'display' });
       // ext-legal.js defines MuseUI.openLegal; the optional call keeps /legal quiet when that panel has not loaded.
       case 'legal':
         return window.MuseUI.openLegal?.();
@@ -8833,7 +9257,7 @@ async function runCommand(line) {
       }
       case 'plan':
         if (!arg) return toast('Usage: /plan <task>', 'bad');
-        return await sendMessage(`Make a step-by-step plan for the task below. Do not modify any files yet. List the files you would touch and the main risks.\n\nTask: ${arg}`);
+        return await sendMessage(`Make a step-by-step plan for the task below. Do not modify any files yet. List the files you would touch and the main risks.\n\nTask: ${arg}`, undefined, undefined, undefined, undefined, activeScope(), false);
       // Build focus is the same switch as the Focus control and the Mode menu (ext-focus.js), which toasts its own result.
       // The await keeps a refusal inside this try, so it reaches the toast below.
       case 'focus': {
@@ -8896,14 +9320,20 @@ async function cancelRun() {
     return toast('Stopping…');
   }
   if (!S.activeProject) return toast('Nothing is running.');
-  // Stop acts on the thread on screen only (the request names it).
-  const { cancelled } = await api('/api/cancel', scopeBody());
+  // Stop acts on the thread on screen only (the request names it). A Stop that could not be sent says so: the callers (the Stop
+  // button, Esc twice, the relay bar) do not catch, and the run would go on with no word.
+  let cancelled = false;
+  try {
+    ({ cancelled } = await api('/api/cancel', scopeBody()));
+  } catch (err) {
+    return toast(`The run was not stopped. ${err.message}`, 'bad');
+  }
   toast(cancelled ? 'Cancel sent.' : `Nothing is running in this ${(S.threads ?? []).length > 1 ? 'thread' : 'project'}.`);
 }
 
 // ---------- wiring ----------
 
-el.form.addEventListener('submit', e => {
+el.form.addEventListener('submit', async e => {
   e.preventDefault();
   const run = activeRun();
   if (run) {
@@ -8916,6 +9346,13 @@ el.form.addEventListener('submit', e => {
     cancelRun();
     return;
   }
+  // ext-prompts.js sets sendingSaved only during its requestSubmit call (C-39), so it is read here, before the wait below.
+  const savedSend = window.MuseUI?.sendingSaved === true;
+  // A file still being read (a large picture or PDF just pasted, dropped or chosen) goes with this message, not with the next one:
+  // Send waits until the reads have settled (w7 panels-a-20) and then takes the box as it is. A second press meanwhile finds the box
+  // empty, and a run that started meanwhile is not stopped by this press: the text stays in the box.
+  const waited = window.MuseImages?.reading?.() === true;
+  if (waited) await Promise.resolve(window.MuseImages.settled?.()).catch(() => {});
   const text = el.input.value.trim();
   // The text stays in the box until the saved model has arrived: a message must not go out with the built-in default.
   if (text && !stateLoaded) return toast('Plenum is still loading your settings. Try again in a moment.', 'bad');
@@ -8923,13 +9360,20 @@ el.form.addEventListener('submit', e => {
     if (pickedImages().length) toast('Type a message to send with the image.', 'bad');
     return;
   }
+  if (waited && (activeRun() || S.running)) return toast('This project is already running. Use /cancel first.', 'bad');
   // The text and the images stay in the composer when they cannot be sent as they are.
   const images = pickedImages();
   // A saved prompt's text is a message even when it starts with a slash, so it cannot run a command such as /approvals auto (C-39).
-  // ext-prompts.js sets sendingSaved for the one submit a saved prompt makes. A typed /command is unchanged.
-  const command = text.startsWith('/') && window.MuseUI?.sendingSaved !== true;
+  // ext-prompts.js sets sendingSaved for the one submit a saved prompt makes (savedSend, read before the wait). A typed /command is unchanged.
+  const command = text.startsWith('/') && !savedSend;
   const held = command || mode === 'council' ? '' : imageRefusal(images);
   if (held) return toast(held, 'bad');
+  // With no project yet there is nowhere to send a message or a council question: what was typed stays in the box while the form for
+  // adding a folder opens. A command needs no project.
+  if (!command && !S.activeProject) {
+    openAddForm();
+    return toast('Add a project folder first.', 'bad');
+  }
   el.input.value = '';
   autosize();
   hidePalette();
@@ -9083,7 +9527,7 @@ el.chat.addEventListener('click', async e => {
 {
   const wide = el.input.getAttribute('placeholder') ?? '';
   const narrow = window.matchMedia?.('(max-width: 560px)');
-  const fitHint = () => { el.input.placeholder = narrow?.matches ? 'Ask, review or plan. Type / for commands.' : wide; };
+  const fitHint = () => { el.input.placeholder = narrow?.matches ? 'Talk to Plenum…' : wide; };
   if (narrow && wide) {
     fitHint();
     narrow.addEventListener?.('change', fitHint);
@@ -9103,7 +9547,12 @@ el.addForm.addEventListener('submit', async e => {
   }
 });
 
-const onSettingError = err => toast(err.message, 'bad');
+// A choice the server refused (a run is going in the thread, the server is restarting) is taken back in the controls: they show what
+// is set (S), so the top bar never names one model while the next message goes out with another.
+const onSettingError = err => {
+  toast(err.message, 'bad');
+  renderTop();
+};
 el.model.addEventListener('change', () => setThreadModel(el.model.value).then(() => toast(`Model set to ${modelName(threadModelRef())}`)).catch(onSettingError));
 el.advisor.addEventListener('change', () => update({ advisor: el.advisor.value }).then(() => toast(advisorLine())).catch(onSettingError));
 el.auto.addEventListener('change', () => update({ advisorAuto: el.auto.checked }).catch(onSettingError));
@@ -9190,17 +9639,24 @@ function cycleRegion(step) {
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeRelayMenus();
+  // While an input method is composing text, Escape cancels its conversion and belongs to it (as in the message box, B-59): it closes
+  // neither the Settings page nor a drawer, which would throw away what is being typed there.
+  const escape = e.key === 'Escape' && !e.isComposing && e.keyCode !== 229;
   // The Settings page is the layer under a drawer and a dialog. Escape clears its search first, then closes the page.
-  if (e.key === 'Escape' && settingsShown && el.drawer.hidden && !dialogOpen()) {
+  if (escape && settingsShown && el.drawer.hidden && !dialogOpen()) {
     if (el.settingsSearch.value) {
       el.settingsSearch.value = '';
       settingsApplySearch();
+    } else if (e.target !== el.settingsSearch && el.settingsPage.contains(e.target) && holdsText(e.target)) {
+      // A field of the page that holds text (the Rules editor, a key being pasted), or a list that may be open, takes the first Escape
+      // for itself, as in the side pane: the focus leaves it for the page and what was typed stays. The next Escape closes the page.
+      el.settingsPage.focus({ preventScroll: true });
     } else {
       closeSettingsPage();
     }
   }
   // A dialog that is open takes Escape for itself, so the drawer under it stays as it is.
-  if (e.key === 'Escape' && !el.drawer.hidden && !dialogOpen()) closeDrawer();
+  if (escape && !el.drawer.hidden && !dialogOpen()) closeDrawer();
   // Ctrl+Comma opens Settings from anywhere in the window.
   if (e.key === ',' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
     e.preventDefault();
@@ -9392,6 +9848,7 @@ window.MuseUI = {
   turnText: node => partShown.get(node instanceof Element ? node.closest('.turn') ?? node : node),
   // The approval card (see approvalEl): the Agents board builds its waiting cards with it, so the keys, the countdown and Show all are the chat's own.
   approvalEl,
+  pendingApprovalControl,
   // Stops a run (POST /api/cancel), as the Stop button does. The Agents pane stops a run through this. Pass a project id to stop that
   // project's run (the active thread's when it runs), or the scope id of a run (a thread's id) to stop exactly that one; a thread id as the
   // second argument names the thread of the project.
@@ -9417,6 +9874,8 @@ window.MuseUI = {
   },
   get state() { return S; },
   get catalog() { return catalog; },
+  modelChoices,
+  trackModelMenu,
   get aliases() { return aliases; },
   get providers() { return providers; },
   // The provider registry (read-only copies: id, name, mark), for every picker and badge a panel draws.

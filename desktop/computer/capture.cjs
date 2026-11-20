@@ -276,7 +276,7 @@ function createCapture({ electron, space, native, overlay = null, platform = pro
 
   // The stacking order is read before and after the grab and the grey parts of both are painted, so a window that opened or closed
   // while the picture was taken cannot leak into it.
-  async function captureWindowViaDisplay(win, maxEdge, before) {
+  async function captureWindowViaDisplay(win, maxEdge, before, expectedWindow) {
     const all = space.displays();
     const holder = displayAt(all, win.bounds);
     if (!holder) return fail('no-window', 'That window is not on any display.');
@@ -284,8 +284,16 @@ function createCapture({ electron, space, native, overlay = null, platform = pro
     if (!crop) return fail('no-window', 'That window is not on screen.');
     const grabbed = await grabDisplay(holder);
     if (grabbed.ok === false) return grabbed;
-    const after = (await windowStack()) ?? before;
-    const target = { id: win.id, exe: win.exe };
+    const latest = await windowStack();
+    if (expectedWindow) {
+      const atSamePlace = w => geometry.sameWindow(w, expectedWindow)
+        && ['x', 'y', 'width', 'height'].every(key => w.bounds?.[key] === win.bounds[key]);
+      if (!latest?.some(atSamePlace) || !before.some(atSamePlace)) {
+        return fail('no-window', 'The selected window moved or was closed. Take a new screenshot.');
+      }
+    }
+    const after = latest ?? before;
+    const target = { id: win.id, exe: win.exe, pid: win.pid, strict: Boolean(expectedWindow) };
     const masks = [...geometry.maskRects(crop, before, target), ...geometry.maskRects(crop, after, target)];
     let image = grabbed.image.crop({ x: crop.x - grabbed.rect.x, y: crop.y - grabbed.rect.y, width: crop.width, height: crop.height });
     if (masks.length) {
@@ -313,7 +321,7 @@ function createCapture({ electron, space, native, overlay = null, platform = pro
     return encode(source.thumbnail, physical, { width: size.width, height: size.height, maxEdge });
   }
 
-  async function capture({ scope = 'display', target = null, maxEdge = DEFAULT_EDGE } = {}) {
+  async function capture({ scope = 'display', target = null, maxEdge = DEFAULT_EDGE, expectedWindow = null } = {}) {
     if (scope !== 'display' && scope !== 'window') return fail('unsupported', 'The scope must be display or window.');
     const edge = clampEdge(maxEdge);
     try {
@@ -338,9 +346,13 @@ function createCapture({ electron, space, native, overlay = null, platform = pro
       const list = await native.windows({ all: false });
       const win = Array.isArray(list) ? list.find(w => String(w.id) === String(windowId)) : null;
       if (!win) return fail('no-window', 'That window is gone.');
+      if (expectedWindow && (!geometry.sameWindow(win, expectedWindow) || win.elevated !== false || win.own)) {
+        return fail('no-window', 'The selected window changed or was closed.');
+      }
       if (win.minimized) return fail('no-window', 'That window is minimised.');
       const stack = await windowStack();
-      return stack ? await captureWindowViaDisplay(win, edge, stack) : await captureWindowViaSource(win, edge);
+      if (expectedWindow && !stack) return fail('no-window', 'The desktop could not verify the selected window.');
+      return stack ? await captureWindowViaDisplay(win, edge, stack, expectedWindow) : await captureWindowViaSource(win, edge);
     } catch (err) {
       return fail('failed', `The capture failed: ${String(err?.message ?? err).slice(0, 160)}`);
     } finally {

@@ -1,0 +1,16 @@
+/* The answers of a row on the phone's Today card (public/ext-phone-answer.js; wave 8). Tokens only, no viewport query: the card is
+   laid out for its own width. Every control is at least as high as the phone's touch size (--ctl). */
+.pa-row { display: grid; gap: var(--sp-2); min-width: 0; padding: var(--sp-1) 0 var(--sp-2); }
+.pa-opts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.pa-opts button, .pa-row > button { min-height: var(--ctl); max-width: 100%; overflow-wrap: anywhere; }
+.pa-row > button { justify-self: start; }
+.pa-note { margin: 0; overflow-wrap: anywhere; }
+.pa-bad { color: var(--bad); }
+.pa-link { user-select: text; }
+.pa-draft-name { margin: 0; color: var(--text-2); font-size: var(--fs-small); font-weight: 600; overflow-wrap: anywhere; }
+/* The draft is shown whole, never in a box that scrolls inside the page: on a phone the end of it would hide behind a second scroll. */
+.pa-draft {
+  margin: 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg);
+  white-space: pre-wrap; overflow-wrap: anywhere; font: var(--fs-body)/var(--lh-body) var(--ui); color: var(--text); user-select: text;
+}
+.pa-draft:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

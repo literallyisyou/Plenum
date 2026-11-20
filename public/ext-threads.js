@@ -633,23 +633,24 @@
     const select = make('select', 'ext-thread-model');
     select.setAttribute('aria-label', 'Model');
     const registry = MU.providerRegistry;
-    const catalog = Array.isArray(MU.catalog) ? MU.catalog : [];
-    const seenRefs = new Set();
-    for (const entry of registry) {
-      const items = catalog.filter(c => c.provider === entry.id);
-      if (!items.length) continue;
-      const group = document.createElement('optgroup');
-      group.label = entry.name;
-      for (const c of items) {
-        const ref = `${c.provider}:${c.id}`;
-        seenRefs.add(ref);
-        group.append(new Option(c.label, ref));
+    MU.trackModelMenu(select, chosen => {
+      const available = MU.modelChoices(chosen);
+      const groups = [];
+      for (const entry of registry) {
+        const items = available.filter(c => c.provider === entry.id);
+        if (!items.length) continue;
+        const group = document.createElement('optgroup');
+        group.label = entry.name;
+        for (const c of items) {
+          const label = c.offered === false ? `${c.label} — not offered to this account` : c.label;
+          group.append(new Option(label, `${c.provider}:${c.id}`));
+        }
+        groups.push(group);
       }
-      select.append(group);
-    }
-    // A model that is not in the catalog (an OpenRouter id, say) is still offered when it is the one on screen.
-    if (initial && !seenRefs.has(initial)) select.prepend(new Option(MU.modelName(initial) || initial, initial));
-    if (initial) select.value = initial;
+      select.replaceChildren(...groups);
+      if (chosen && ![...select.options].some(o => o.value === chosen)) select.prepend(new Option(MU.modelName(chosen) || chosen, chosen));
+      if (chosen) select.value = chosen;
+    }, initial);
     return select;
   }
 
@@ -943,6 +944,12 @@
     exportLink.href = `/api/project/export?project=${encodeURIComponent(p.id)}`;
     exportLink.download = '';
     exportLink.setAttribute('role', 'button');
+    // A role=button is pressed with Space too, as every other button here; a link alone takes only Enter (and Space would scroll).
+    exportLink.addEventListener('keydown', e => {
+      if (e.key !== ' ' || e.repeat) return;
+      e.preventDefault();
+      exportLink.click();
+    });
     // The click itself is the download, as before (app.js saves a download link into /api/ with the token, and toasts a refusal such
     // as a file over 64 MB). Beside it the page asks what the file leaves out and says it under the buttons. A refusal is not said
     // twice: the download's own toast gives the reason.

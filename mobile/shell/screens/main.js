@@ -210,6 +210,10 @@ export function buildVm(s, nav, env, core = null) {
   const lockLabel = lockMode === 'biometric' ? C.biometricName(platform) : lockMode === 'pin' ? 'PIN' : lockMode === 'passkey' ? 'passkey' : 'Off';
   const debugLines = core?.debug?.lines?.() ?? [];
   const demo = s?.demo ?? { computer: { name: 'Demo computer' }, projects: [], runs: [], approvals: [], agents: [], drive: null, diff: null, artifacts: [] };
+  // w7: which screens the phone uses for the active computer (app.js ui.source, Android only): its built-in ones, or a checked copy from it.
+  const source = s?.ui?.source ?? null;
+  const sourceHere = source && (source.computerId === null || source.computerId === (s?.activeId ?? null)) ? source : null;
+  const loadedFiles = sourceHere?.kind === 'computer' && Number.isInteger(sourceHere.files) && sourceHere.files > 0 ? sourceHere.files : null;
   return {
     native,
     platform,
@@ -221,9 +225,10 @@ export function buildVm(s, nav, env, core = null) {
       desktopVersion: hello?.desktopVersion || null,
       since,
       carrierLabel: connectedCarrier,
-      screensLoaded: null,
+      screensLoaded: loadedFiles,
       newerUi: false,
     },
+    screens: { bundled: sourceHere?.kind === 'bundled' },
     // Wave 4 (m2): on Android the row is what the phone knows (the push app, the computer holding the endpoint, Android's own switch); the
     // web Notification API is not in the Android WebView, so it would say "Not asked" while notifications work.
     notify: platform === 'android'
@@ -578,7 +583,7 @@ export function mountScreens(env = globalThis) {
       stop.removeAttribute('data-driving');
       stop.removeAttribute('aria-description');
     }
-    if (ctx.pending?.runs > 0 || driving || state === 'sending') stop.setAttribute('data-active', '');
+    if (C.runsGoing(ctx.pending) > 0 || driving || state === 'sending') stop.setAttribute('data-active', '');
     else stop.removeAttribute('data-active');
     stop.querySelector('.plenum-stop-label').textContent = STOP_LABEL[state] ?? 'Stop';
     stop.querySelector('.plenum-stop-note').textContent = (fixtureMode ? ctx.stopText : snapshot?.stop?.text) || '';

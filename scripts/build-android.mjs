@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Builds Plenum's Android debug APK for the owner's own phone, in one command (wave 4, k1). Node only, no dependencies.
 //
-// usage: node scripts/build-android.mjs [--check | --native-only]
+// usage: node scripts/build-android.mjs [--check | --native-only] [--phone]
+//   --phone    builds the phone build type instead (64-bit ARM only, unused code removed; dist-android/plenum-phone-*.apk, the
+//              newest three kept apart from the debug ones).
 //   no option  finds the toolchain, writes mobile/android/local.properties (sdk.dir), then runs, in order:
 //                node scripts/build-mobile.mjs (and its --check), cap sync android (in mobile/, the local Capacitor CLI),
 //                gradlew assembleDebug --no-daemon (in mobile/android/),
@@ -218,17 +220,19 @@ export function apkVersionName(outputDir) {
 
 // The APK names this script gives its copies (plenum-debug-<versionName>.apk; apkVersionName's pattern, or the date fallback).
 export const APK_NAME = /^plenum-debug-[\w.+-]{1,64}\.apk$/;
+// The phone build's copies (--phone: plenum-phone-<versionName>.apk), kept and pruned apart from the debug ones.
+export const PHONE_APK_NAME = /^plenum-phone-[\w.+-]{1,64}\.apk$/;
 export const APKS_KEPT = 3;
 
 // After a successful copy: keeps the newest `keep` APKs this script made in `dir` (by its own name pattern), the one just copied
 // always among them, and deletes the older ones. Anything else in the folder (other names, folders, links) is never touched.
 // Returns { removed: [names], failed: [names] }.
-export function pruneApks(dir, { keep = APKS_KEPT, justMade = null } = {}) {
+export function pruneApks(dir, { keep = APKS_KEPT, justMade = null, pattern = APK_NAME } = {}) {
   const removed = [];
   const failed = [];
   const mine = [];
   for (const name of listDir(dir)) {
-    if (!APK_NAME.test(name)) continue;
+    if (!pattern.test(name)) continue;
     const full = path.join(dir, name);
     let st;
     try { st = fs.lstatSync(full); } catch { continue; }
@@ -252,7 +256,9 @@ export function pruneApks(dir, { keep = APKS_KEPT, justMade = null } = {}) {
 export function main(argv = process.argv.slice(2)) {
   const check = argv.includes('--check');
   const nativeOnly = argv.includes('--native-only');
-  const unknown = argv.filter(a => a !== '--check' && a !== '--native-only');
+  // --phone: the phone build type (app/build.gradle): 64-bit ARM only, unused code and resources removed, signed with the debug key.
+  const phone = argv.includes('--phone');
+  const unknown = argv.filter(a => a !== '--check' && a !== '--native-only' && a !== '--phone');
   if (unknown.length) {
     console.log(`Unknown option ${unknown[0]}. Use node scripts/build-android.mjs, or add --check to only look.`);
     return 1;
@@ -281,17 +287,21 @@ export function main(argv = process.argv.slice(2)) {
     run('Phone bundle check', process.execPath, [path.join(ROOT, 'scripts', 'build-mobile.mjs'), '--check'], { cwd: ROOT, env });
     run('cap sync android', process.execPath, [capacitorCli(), 'sync', 'android'], { cwd: MOBILE, env });
   }
+  const variant = phone ? 'phone' : 'debug';
+  const task = phone ? 'assemblePhone' : 'assembleDebug';
+  // -PplenumPhone keeps only English library resources in the phone build (app/build.gradle, defaultConfig).
+  const gradleArgs = phone ? ['--no-daemon', '-PplenumPhone', task] : ['--no-daemon', task];
   if (process.platform === 'win32') {
     // A .bat runs only through cmd.exe. The full path is quoted (the project folder has a space), and the line is passed as is,
     // so Node does not quote it a second time; cmd /s takes off the outer pair of quotes.
     const gradlew = path.join(ANDROID, 'gradlew.bat');
-    run('Gradle assembleDebug', env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${gradlew}" --no-daemon assembleDebug"`], { cwd: ANDROID, env, windowsVerbatimArguments: true });
+    run(`Gradle ${task}`, env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${gradlew}" ${gradleArgs.join(' ')}"`], { cwd: ANDROID, env, windowsVerbatimArguments: true });
   } else {
-    run('Gradle assembleDebug', path.join(ANDROID, 'gradlew'), ['--no-daemon', 'assembleDebug'], { cwd: ANDROID, env });
+    run(`Gradle ${task}`, path.join(ANDROID, 'gradlew'), gradleArgs, { cwd: ANDROID, env });
   }
 
-  const outDir = path.join(ANDROID, 'app', 'build', 'outputs', 'apk', 'debug');
-  const apk = path.join(outDir, 'app-debug.apk');
+  const outDir = path.join(ANDROID, 'app', 'build', 'outputs', 'apk', variant);
+  const apk = path.join(outDir, `app-${variant}.apk`);
   if (!isFile(apk)) {
     console.log(`\nGradle finished but left no APK at ${apk}. Run this again; if it repeats, look at the Gradle messages above.`);
     return 1;
@@ -299,20 +309,32 @@ export function main(argv = process.argv.slice(2)) {
   const versionName = apkVersionName(outDir) ?? new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
   const destDir = path.join(ROOT, 'dist-android');
   fs.mkdirSync(destDir, { recursive: true });
-  const dest = path.join(destDir, `plenum-debug-${versionName}.apk`);
+  const dest = path.join(destDir, `plenum-${variant}-${versionName}.apk`);
   fs.copyFileSync(apk, dest);
   const size = fs.statSync(dest).size;
   console.log('\nThe APK is ready.');
   console.log(`  ${dest}`);
   console.log(`  ${(size / 1048576).toFixed(1)} MB (${size} bytes)`);
   console.log(`  sha256 ${sha256(dest)}`);
-  const pruned = pruneApks(destDir, { justMade: dest });
+  const pruned = pruneApks(destDir, { justMade: dest, pattern: phone ? PHONE_APK_NAME : APK_NAME });
   if (pruned.removed.length) console.log(`  Removed ${pruned.removed.length} older APK${pruned.removed.length === 1 ? '' : 's'} (the newest ${APKS_KEPT} are kept).`);
   if (pruned.failed.length) console.log(`  Could not remove ${pruned.failed.join(', ')}; it is still in ${destDir}.`);
   console.log(`To put it on your phone (USB debugging on): adb install -r "${dest}"`);
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(realOr(path.resolve(process.argv[1]))).href) {
+// Whether this file was started as the script (not imported). Node keeps the case of the path as it was typed in import.meta.url, while
+// the real path has the case on disk, so "d:\projects\muse console" never matched and the script did nothing and said nothing (shell-3).
+// As scripts/stamp-build.mjs does: the typed path first, then the real path of both sides.
+const startedHere = () => {
+  const typed = path.resolve(process.argv[1]);
+  if (import.meta.url === pathToFileURL(typed).href) return true;
+  try {
+    return fs.realpathSync.native(fileURLToPath(import.meta.url)) === fs.realpathSync.native(typed);
+  } catch {
+    return false;
+  }
+};
+if (process.argv[1] && startedHere()) {
   process.exitCode = main();
 }

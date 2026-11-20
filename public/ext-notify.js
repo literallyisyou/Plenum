@@ -7,7 +7,8 @@
 //  - GET /api/notify -> { settings: { quiet: { on, from, to }, mutes: { <business>: untilMs }, summary: { on, at } }, recent: [notice + { clearedAt }]
 //    (newest first), open: [notice] (newest first), seenAt, unseen, quietNow, saving }.
 //  - POST /api/notify/settings { quiet?, summary? } answers as the GET. POST /api/notify/mute { business, minutes | 'day' } (0 ends a mute).
-//    POST /api/notify/test {}. POST /api/notify/seen {}.
+//    POST /api/notify/test {}. POST /api/notify/seen {}. POST /api/notify/clear { key } (Dismiss on a Needs you row: the hub takes the
+//    key off its open list and publishes the clear; a way out for a row that went stale, for example one kept across a restart).
 //  - Event 'notice': { type: 'notice', notice: { key, level, title, text, route, business, project, seq, at, repeat, quiet, silent, clear } }.
 //    A notice that is a repeat, is held back as quiet, or is a clear, is not shown as a toast. A clear takes the key off the open list.
 //    A notice without stamps is shown the way notices always were. Event 'hello' (a reconnect): the list is read again.
@@ -30,7 +31,11 @@
   const TEXT = {
     loadFailed: 'Notifications could not be loaded. Try again.',
     saveFailed: 'That could not be saved. Try again.',
+    // The server put the change in force but could not write it down (a locked file, or the hub works in memory).
+    unwritten: 'This could not be written to disk. It holds until Plenum restarts.',
+    sameTimes: 'Pick two different times for quiet hours.',
     muteFailed: 'That could not be changed. Try again.',
+    dismissFailed: 'That could not be dismissed. Try again.',
     testFailed: 'The test notification could not be sent. Try again.',
     testSent: 'A test notification is on its way.',
     saved: 'Saved',
@@ -88,11 +93,17 @@
   let opener = null;
   let strip = null;
   let hiddenAt = 0;
+  let unwatched = false;      // the page has not been in front since it started (a window started with Windows, in the tray)
+  let sheetNote = '';         // a failure sentence on the open sheet (a Dismiss that did not work), gone when it opens again
+  let pendingTime = null;     // { field, value }: a quiet-hours time not sent because it equals the other one (see saveTime)
   let view = null;            // the Settings section on the page
   const said = new Map();
   const sayTimers = new Map();
 
   const onPage = () => Boolean(view && view.root.isConnected);
+  // The owner is watching only when the page is visible AND its window has the focus. A window created hidden (started with Windows,
+  // kept in the tray) reports visibilityState 'visible' in Electron, so visibility alone counted a window nobody saw as watched.
+  const watching = () => document.visibilityState === 'visible' && (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
 
   // ---------- requests ----------
 
@@ -155,7 +166,7 @@
     if (level === 'fyi') MuseUI.toast?.(text, 'ok');
     else MuseUI.toast?.(text, 'bad', LONG_TOAST_MS);
     // The owner watched it arrive: move the seen mark, so it is not counted as news when he comes back.
-    if (document.visibilityState === 'visible') markPresent();
+    if (watching()) markPresent();
   }
 
   // ---------- going to a place ----------
@@ -237,6 +248,8 @@
     scrim.hidden = true;
     const dlg = make('dialog', 'ntf-sheet');
     dlg.hidden = true;
+    // The sheet can hold the focus itself when the row that had it is gone (not reachable with Tab).
+    dlg.tabIndex = -1;
     dlg.setAttribute('role', 'dialog');
     dlg.setAttribute('aria-modal', 'true');
     dlg.setAttribute('aria-labelledby', 'ntfSheetTitle');
@@ -291,18 +304,38 @@
   function needRow(n) {
     const li = make('li', 'ntf-item');
     li.dataset.level = levelOf(n.level);
+    li.dataset.key = str(n.key);
     const text = make('div', 'ntf-text');
     text.append(make('span', 'ntf-title', str(n.title) || 'Plenum'), make('span', 'ntf-sub', str(n.text)));
     li.append(text);
+    const name = str(n.title) || 'this notice';
     const label = GO[str(n.route)];
     if (label) {
       const b = make('button', 'ghost small ntf-go', label);
       b.type = 'button';
-      b.setAttribute('aria-label', `${label}: ${str(n.title) || 'this notice'}`);
+      b.setAttribute('aria-label', `${label}: ${name}`);
       b.addEventListener('click', () => go(n));
       li.append(b);
     }
+    // Dismiss: a row whose producer will not clear it (it was kept across a restart, or its routine was deleted) can still be taken down.
+    const x = make('button', 'ghost small ntf-dismiss', 'Dismiss');
+    x.type = 'button';
+    x.setAttribute('aria-label', `Dismiss: ${name}`);
+    x.addEventListener('click', () => dismiss(str(n.key)));
+    li.append(x);
     return li;
+  }
+
+  async function dismiss(key) {
+    if (!key) return;
+    try {
+      await ask('/api/notify/clear', { key });
+      open.delete(key);
+      sheetNote = '';
+    } catch {
+      sheetNote = TEXT.dismissFailed;
+    }
+    paintAll();
   }
   function recentRow(n) {
     const li = make('li', 'ntf-item ntf-past');
@@ -314,18 +347,33 @@
   function paintSheet() {
     if (!sheet || sheet.dlg.hidden) return;
     const s = sheet;
-    s.line.textContent = failed ? TEXT.loadFailed : '';
-    s.line.hidden = !failed;
+    s.line.textContent = failed ? TEXT.loadFailed : sheetNote;
+    s.line.hidden = !s.line.textContent;
+    s.line.classList.toggle('ntf-bad', !failed && Boolean(sheetNote));
     s.retry.hidden = !failed;
+    // The rows are drawn new: a focused row button would be destroyed and the focus would fall to the page, where the sheet's Escape
+    // and Tab handling no longer reach. Remember which row and which button had it, and give it back after drawing.
+    const had = document.activeElement;
+    const rows = [...s.needs.children];
+    const row = had && had !== s.needs && s.needs.contains(had) ? rows.find(li => li.contains(had)) : null;
+    const which = row ? (had.classList?.contains('ntf-dismiss') ? 'ntf-dismiss' : 'ntf-go') : '';
+    const index = row ? rows.indexOf(row) : -1;
     const needs = [...open.values()];
     s.needs.replaceChildren(...(needs.length ? needs.map(needRow) : [make('li', 'ntf-empty', TEXT.nothingNeeds)]));
     const past = recent.filter(n => sentence(n)).slice(0, RECENT_SHOWN);
     s.recentEl.replaceChildren(...(past.length ? past.map(recentRow) : [make('li', 'ntf-empty', TEXT.nothingYet)]));
+    if (!row) return;
+    const now = [...s.needs.children].filter(li => li.dataset?.key);
+    // The same row when it is still there, else the row that took its place (the next one, or the last), else the sheet itself.
+    const same = now.find(li => li.dataset.key === row.dataset.key) ?? now[Math.min(index, now.length - 1)] ?? null;
+    const target = same ? same.querySelector(`.${which}`) ?? same.querySelector('.ntf-dismiss') : null;
+    (target ?? s.dlg).focus();
   }
 
   function openSheet(from) {
     const s = ensureSheet();
     opener = from ?? null;
+    sheetNote = '';
     s.scrim.hidden = false;
     s.dlg.hidden = false;
     if (typeof s.dlg.show === 'function') s.dlg.show();
@@ -348,7 +396,14 @@
     paintBell();
     if (!returnFocus) return;
     const back = opener && opener.isConnected && !opener.disabled ? opener : bell && !bell.disabled ? bell : null;
-    back?.focus?.();
+    if (back) {
+      back.focus?.();
+      return;
+    }
+    // Neither the opener nor the bell can take it (the last thing was cleared, so the bell is out of reach; or the sheet was opened from
+    // the away strip): the message box takes it, so the focus is not left nowhere.
+    const box = document.getElementById('input');
+    if (box && !box.disabled) box.focus?.({ preventScroll: true });
   }
 
   // ---------- While you were away ----------
@@ -362,7 +417,7 @@
     if (presentTimer) return;
     presentTimer = setTimeout(() => {
       presentTimer = null;
-      if (document.visibilityState === 'visible') postSeen();
+      if (watching()) postSeen();
     }, wait);
   }
 
@@ -459,13 +514,19 @@
     return n;
   };
 
+  // A change that failed may still be in force: the server puts it in force before it writes notify.json, and answers 500 when the write
+  // fails (or always, while the hub works in memory). So after a failure the settings are read again and shown as the server has them,
+  // and the sentence says which it was.
   async function save(key, body) {
     try {
       const answer = await ask('/api/notify/settings', body);
       if (isObj(answer?.settings)) take(answer);
       say(key, TEXT.saved);
     } catch {
-      say(key, TEXT.saveFailed, true);
+      const read = await load();
+      const s = isObj(data?.settings) ? data.settings : {};
+      const inForce = read && Object.entries(body).every(([part, vals]) => Object.entries(vals).every(([name, v]) => isObj(s[part]) && s[part][name] === v));
+      say(key, inForce ? TEXT.unwritten : TEXT.saveFailed, true);
     }
     paintAll();
   }
@@ -476,8 +537,28 @@
       say('mute', TEXT.saved);
       await load();
     } catch {
-      say('mute', TEXT.muteFailed, true);
+      const read = await load();
+      const until = Number((isObj(data?.settings?.mutes) ? data.settings.mutes : {})[business]) || 0;
+      const inForce = read && (minutes === 0 ? !(until > Date.now()) : until > Date.now());
+      say('mute', inForce ? TEXT.unwritten : TEXT.muteFailed, true);
     }
+  }
+
+  // Quiet hours from and to the same time never hold, so the page does not send them; it says so. The time that was not sent stays in
+  // its box, and the next change of the other box sends both together: a swap (23:00-07:00 to 07:00-23:00) takes two steps, where
+  // refusing each step alone would leave no way to it.
+  function saveTime(field, value) {
+    const q = isObj(data?.settings?.quiet) ? data.settings.quiet : {};
+    const otherField = field === 'from' ? 'to' : 'from';
+    const waiting = pendingTime?.field === otherField ? pendingTime.value : null;
+    if (value === (waiting ?? q[otherField])) {
+      pendingTime = { field, value };
+      say('quiet', TEXT.sameTimes, true);
+      paintSettings();
+      return;
+    }
+    pendingTime = null;
+    save('quiet', { quiet: waiting ? { [field]: value, [otherField]: waiting } : { [field]: value } });
   }
 
   async function readBusinesses() {
@@ -534,9 +615,10 @@
     const to = timeField('To', 'quiet-to');
     const times = make('div', 'ntf-times');
     times.append(from.wrap, to.wrap);
-    quiet.input.addEventListener('change', () => save('quiet', { quiet: { on: quiet.input.checked } }));
-    from.input.addEventListener('change', () => { if (from.input.value) save('quiet', { quiet: { from: from.input.value } }); else paintSettings(); });
-    to.input.addEventListener('change', () => { if (to.input.value) save('quiet', { quiet: { to: to.input.value } }); else paintSettings(); });
+    quiet.input.addEventListener('change', () => { pendingTime = null; save('quiet', { quiet: { on: quiet.input.checked } }); });
+    from.input.addEventListener('change', () => { if (from.input.value) saveTime('from', from.input.value); else paintSettings(); });
+    to.input.addEventListener('change', () => { if (to.input.value) saveTime('to', to.input.value); else paintSettings(); });
+    for (const box of [from.input, to.input]) box.addEventListener('blur', () => paintSettings());
 
     const summary = switchRow('Morning summary', 'One note with what waited, at the time you pick.', 'summary-on');
     const at = timeField('At', 'summary-at');
@@ -611,8 +693,10 @@
     const m = isObj(s.summary) ? s.summary : {};
     const held = n => document.activeElement === n;
     v.quiet.input.checked = q.on === true;
-    if (!held(v.from.input)) v.from.input.value = str(q.from);
-    if (!held(v.to.input)) v.to.input.value = str(q.to);
+    // A time that was not sent (it equals the other one) stays in its box, next to the sentence, until the other box is changed.
+    const shown = field => (pendingTime?.field === field ? pendingTime.value : str(q[field]));
+    if (!held(v.from.input)) v.from.input.value = shown('from');
+    if (!held(v.to.input)) v.to.input.value = shown('to');
     v.from.input.disabled = v.to.input.disabled = q.on !== true;
     v.summary.input.checked = m.on === true;
     if (!held(v.at.input)) v.at.input.value = str(m.at);
@@ -648,6 +732,7 @@
     for (const t of sayTimers.values()) clearTimeout(t);
     sayTimers.clear();
     said.clear();
+    pendingTime = null;
     body.textContent = '';
     build(body);
     paintSettings();
@@ -677,6 +762,18 @@
     }
     MuseUI.events?.on?.('notice', onNotice);
     MuseUI.events?.on?.('hello', () => { load(); });
+    // He is back: the page became visible, its window got the focus (shown from the tray, or clicked), or he pressed a key or the
+    // pointer in it (a person is there, even when the system has not said the window is in front). After a start nobody watched, the
+    // first return is "away" however long it took, and the news is counted from the server's seen mark only.
+    const cameBack = byHand => {
+      if (!hiddenAt || (!byHand && !watching())) return;
+      const since = hiddenAt;
+      const never = unwatched;
+      hiddenAt = 0;
+      unwatched = false;
+      if (never) checkAway(0);
+      else if (Date.now() - since > AWAY_AFTER_MS) checkAway(since);
+    };
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         if (!hiddenAt) {
@@ -688,12 +785,18 @@
         }
         return;
       }
-      const since = hiddenAt;
-      const away = since && Date.now() - since > AWAY_AFTER_MS;
-      hiddenAt = 0;
-      if (away) checkAway(since);
+      cameBack(false);
     });
+    window.addEventListener?.('focus', () => cameBack(false));
+    for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => { if (hiddenAt) cameBack(true); }, true);
+    // A page that starts where nobody sees it (a window created hidden, in the tray) draws no strip and marks nothing seen: it waits
+    // until he is first there.
+    const watchedAtStart = watching();
+    if (!watchedAtStart) {
+      hiddenAt = Date.now();
+      unwatched = true;
+    }
     await load();
-    showAway();
+    if (watchedAtStart) showAway();
   })();
 })();

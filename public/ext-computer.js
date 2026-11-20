@@ -93,8 +93,9 @@
 
   // ---------- the + menu item (UI-ARCH 2) ----------
 
-  // Offered only where computer use can run: the probe is read once, at load. /computer still opens the dialog, which explains.
-  function openComputer(task = '') {
+  // Offered only where computer use can run: the probe is read at load (and again after a failed read, below). /computer still opens the
+  // dialog, which explains.
+  function openComputer(task = '', { scope } = {}) {
     if (!MuseUI.state.activeProject) {
       MuseUI.openAddForm?.();
       return toast(NO_PROJECT, 'bad');
@@ -102,7 +103,7 @@
     // The task is the text after /computer when there is one, else the message being typed (a line that is a command is not a task).
     const draft = String(MuseUI.el?.input?.value ?? '').trim();
     const first = typeof task === 'string' && task.trim() ? task.trim() : draft.startsWith('/') ? '' : draft;
-    return openPanel('Computer use', (body, live) => renderComputer(body, first, live));
+    return openPanel('Computer use', (body, live) => renderComputer(body, first, live, scope));
   }
 
   // The composer's Computer button (UI-ARCH 2, until the + menu reads the plusMenu slot): a small button before the Mode menu, icon
@@ -132,20 +133,41 @@
     modeWrap.parentNode.insertBefore(seg, modeWrap);
   }
 
-  api('/api/computer/probe')
-    .then(probe => {
-      // The shortcut sheet (ext-drive.js) takes the stop key's label from this read instead of making its own.
-      window.dispatchEvent(new CustomEvent('plenum:computer-probe', { detail: { hotkey: probe?.hotkey ?? null } }));
-      if (probe && probe.available === true) {
-        MuseUI.slots.add('plusMenu', 'computer', { label: 'Use the computer…', icon: 'monitor', run: () => openComputer() }, 30);
-        addComposerButton();
-      }
-    })
-    .catch(() => {});
+  // The probe is read at load. A read that fails (the server was starting or restarting, the connection dropped) is tried again after a
+  // short delay and on the events channel's 'hello' (a reconnect), so one failed read does not hide the Computer button and the + menu
+  // item for the whole session (panels-a-19). An answer is final: the server's answer does not change while it runs.
+  const PROBE_RETRY_MS = [2000, 6000, 20000];
+  let probeReading = false;
+  let probeAnswered = false;
+  let probeRetries = 0;
+  let probeTimer = null;
+  function readProbe() {
+    if (probeReading || probeAnswered) return;
+    probeReading = true;
+    clearTimeout(probeTimer);
+    probeTimer = null;
+    api('/api/computer/probe')
+      .then(probe => {
+        probeAnswered = true;
+        // The shortcut sheet (ext-drive.js) takes the stop key's label from this read instead of making its own.
+        window.dispatchEvent(new CustomEvent('plenum:computer-probe', { detail: { hotkey: probe?.hotkey ?? null } }));
+        if (probe && probe.available === true) {
+          MuseUI.slots.add('plusMenu', 'computer', { label: 'Use the computer…', icon: 'monitor', run: () => openComputer() }, 30);
+          MuseUI.slots.add('plusMenu', 'computer-display', { label: 'Share a whole display…', icon: 'monitor', run: () => openComputer('', { scope: 'display' }) }, 31);
+          addComposerButton();
+        }
+      }, () => {
+        if (probeRetries < PROBE_RETRY_MS.length) probeTimer = setTimeout(readProbe, PROBE_RETRY_MS[probeRetries++]);
+      })
+      .catch(() => {})
+      .finally(() => { probeReading = false; });
+  }
+  readProbe();
+  MuseUI.events?.on?.('hello', () => readProbe());
 
   // ---------- the dialog ----------
 
-  async function renderComputer(body, firstTask, live) {
+  async function renderComputer(body, firstTask, live, initialScope) {
     body.append(quietNote('Checking this computer…'));
     const projectId = MuseUI.state.activeProject;
     let probe;
@@ -218,6 +240,7 @@
       task: firstTask || '',
       choice: '',
       apps: new Set(),
+      shared: new Set(),
       model: '',
       steps: prefs?.steps !== undefined ? prefs.steps : STEPS.usual,
       minutes: clampInt(prefs?.minutes ?? MINUTES.usual, MINUTES),
@@ -231,12 +254,12 @@
     };
     if (d.steps !== null) d.steps = clampInt(d.steps, STEPS);
     const remembered = new Set((prefs?.allowExes ?? []).map(e => String(e).toLowerCase()));
-    if (prefs?.scope === 'display' && displays.length) {
-      d.choice = `d:${displays[0].id}`;
+    if ((initialScope === 'display' || prefs?.scope === 'display') && displays.length) {
+      d.choice = `d:${(displays.find(display => display.primary) ?? displays[0]).id}`;
       for (const w of usable) if (remembered.has(exeOf(w))) d.apps.add(exeOf(w));
     } else if (prefs?.targetExe) {
-      const hit = usable.find(w => exeOf(w) === String(prefs.targetExe).toLowerCase());
-      if (hit) d.choice = `w:${hit.id}`;
+      const matches = usable.filter(w => exeOf(w) === String(prefs.targetExe).toLowerCase());
+      if (matches.length === 1) d.choice = `w:${matches[0].id}`;
     }
     const current = project?.model ?? MuseUI.state.model;
     d.model = ready.find(m => m.ref === current)?.ref ?? ready.find(m => m.ref === prefs?.model)?.ref
@@ -267,7 +290,34 @@
     seeField.append(seeNote, seeWarn, barredNote);
     const otherNote = span('field-note', 'Other apps: ask each time. If an action lands in another app, a card asks you first.');
     seeField.append(otherNote);
+    const sharedBox = el('details', 'cu-more');
+    sharedBox.hidden = true;
     form.append(seeField);
+    form.append(sharedBox);
+
+    function paintShared() {
+      const targets = usable.filter(w => w.shareable && `w:${w.id}` !== d.choice);
+      sharedBox.hidden = probe.windowGroups !== true || !usable.some(w => w.shareable && `w:${w.id}` === d.choice) || !targets.length;
+      for (const id of d.shared) if (!targets.some(w => w.id === id) || sharedBox.hidden) d.shared.delete(id);
+      if (sharedBox.hidden) return;
+      const summary = el('summary');
+      summary.textContent = 'Share additional windows';
+      const body = el('div', 'relay-form cu-more-body');
+      body.append(span('field-note', 'Select windows for this run. The model can switch between them, one window at a time. This option uses models with the Plenum computer bridge.'));
+      for (const w of targets) {
+        const title = `${clip(w.title || '(no title)', 75)}${w.minimized ? ' · minimized' : ''}`;
+        body.append(switchRow(w.app, title, d.shared.has(w.id), on => {
+          if (on && d.shared.size >= 7) {
+            toast('Choose up to eight windows in total.', 'bad');
+            paintShared();
+            return;
+          }
+          if (on) d.shared.add(w.id); else d.shared.delete(w.id);
+          paint();
+        }));
+      }
+      sharedBox.replaceChildren(summary, body);
+    }
 
     // The picker's options: the open windows (never-allowed programs are left out), then the displays.
     function buildPick() {
@@ -280,7 +330,7 @@
         const group = el('optgroup');
         group.label = 'Windows';
         for (const w of usable) {
-          const option = new Option(`${w.app} — ${clip(w.title || '(no title)', 70)}`, `w:${w.id}`);
+          const option = new Option(`${w.app} — ${clip(w.title || '(no title)', 70)}${w.minimized ? ' · minimized' : ''}`, `w:${w.id}`);
           option.title = w.title || '';
           group.append(option);
         }
@@ -298,18 +348,22 @@
       barredNote.hidden = barred.length === 0;
     }
     buildPick();
-    pick.addEventListener('change', () => { d.choice = pick.value; paintApps(); paint(); });
+    pick.addEventListener('change', () => { d.choice = pick.value; paintApps(); paintShared(); paint(); });
+    function replaceWindows(windows) {
+      all = windows ?? [];
+      usable = all.filter(w => !w.denied);
+      barred = all.filter(w => w.denied);
+      buildPick();
+      paintApps();
+      paintShared();
+      paint();
+    }
     // Refresh re-reads the windows and keeps what was typed and chosen.
     refreshWins.addEventListener('click', async () => {
       try {
         const fresh = await api('/api/computer/windows');
         if (!live()) return;
-        all = fresh.windows ?? [];
-        usable = all.filter(w => !w.denied);
-        barred = all.filter(w => w.denied);
-        buildPick();
-        paintApps();
-        paint();
+        replaceWindows(fresh.windows);
       } catch (err) {
         toast(err.message, 'bad');
       }
@@ -460,20 +514,23 @@
       const win = targetWindow();
       const display = d.choice.startsWith('d:');
       unknownField.hidden = !display;
-      otherNote.hidden = !win;
+      otherNote.hidden = !win || d.shared.size > 0;
       seeNote.textContent = win
-        ? `The model sees this window with the menus and dialogs it opens, and can act only in ${win.app}.`
+        ? d.shared.size > 0
+          ? `The model can switch among ${d.shared.size + 1} selected windows. It sees one window at a time.`
+          : `The model sees this window with the menus and dialogs it opens, and can act only in ${win.app}.`
         : display ? 'The model sees every window on this display. Pick the apps it may use below.' : 'Pick the one window the model works in, or a whole display.';
       const warn = [];
-      if (win?.flag === 'browser' || chosenApps().some(w => w.flag === 'browser')) {
+      const shared = usable.filter(w => d.shared.has(w.id));
+      if (win?.flag === 'browser' || [...chosenApps(), ...shared].some(w => w.flag === 'browser')) {
         warn.push('A browser gives the model every site you are signed in to. The in-app browser is safer for web tasks.');
       }
       if (win?.flag === 'terminal') warn.push(`In ${win.app} the model can run commands, and Plenum's command rules do not apply there.`);
-      for (const w of chosenApps()) {
+      for (const w of [...chosenApps(), ...shared]) {
         if (w.flag === 'terminal') warn.push(`In ${w.app} the model can run commands, and Plenum's command rules do not apply there.`);
       }
       seeWarn.textContent = [...new Set(warn)].join(' ');
-      const otherWords = !display ? 'ask before other apps' : d.unknownApps === 'allow' ? 'any app, no asking' : d.unknownApps === 'refuse' ? 'other apps refused' : 'ask before other apps';
+      const otherWords = d.shared.size ? 'selected windows only' : !display ? 'ask before other apps' : d.unknownApps === 'allow' ? 'any app, no asking' : d.unknownApps === 'refuse' ? 'other apps refused' : 'ask before other apps';
       moreSum.textContent = `Limits and checks: ${stepsText()} · ${d.minutes} minutes · ${otherWords}${d.confirmEvery ? ' · ask before every action' : ''}`;
       const asks = asked();
       // While Approve all covers this run's cards, the list says they are answered; the switch puts them back to asking.
@@ -484,13 +541,14 @@
       const reason = !d.task.trim() ? 'Type what the model should do.'
         : !d.choice ? 'Choose a window or a display.'
           : display && !d.apps.size && d.unknownApps !== 'allow' ? 'Pick at least one app the model may use, or choose Any app.'
-            : '';
+            : d.shared.size && !ready.find(m => m.ref === d.model)?.windowGroups ? 'Choose a model that supports shared windows, such as a Codex CLI model.' : '';
       start.disabled = reason !== '';
       // A reply that runs is not a reason to grey Start: pressing it says so with a toast and keeps the dialog open.
       missing.textContent = reason || (MuseUI.computer?.busy?.() ? BUSY : '');
     }
     paintUnknown();
     paintApps();
+    paintShared();
     paint();
 
     start.addEventListener('click', async () => {
@@ -504,11 +562,35 @@
           if (w) ids.push(w.id);
         }
       }
-      const names = display ? chosenApps().map(w => w.app) : [win?.app].filter(Boolean);
+      const shared = usable.filter(w => d.shared.has(w.id));
+      if (shared.length) {
+        const choice = d.choice;
+        const model = d.model;
+        start.disabled = true;
+        try {
+          const fresh = await api('/api/computer/windows');
+          if (!live()) return;
+          if (choice !== d.choice || model !== d.model || shared.length !== d.shared.size || shared.some(w => !d.shared.has(w.id))) {
+            paint();
+            return;
+          }
+          const selected = [win, ...shared];
+          if (selected.some(window => !(fresh.windows ?? []).some(w => w.id === window.id && w.shareable))) {
+            replaceWindows(fresh.windows);
+            toast('A shared window was closed. Review your selection and press Start again.', 'bad');
+            return;
+          }
+        } catch (err) {
+          if (live()) { toast(err.message, 'bad'); paint(); }
+          return;
+        }
+      }
+      const names = display ? chosenApps().map(w => w.app) : [win?.app, ...shared.map(w => w.app)].filter(Boolean);
       const settings = {
         scope: display ? 'display' : 'window',
         target: d.choice.slice(2),
         ...(display ? { allow: ids } : {}),
+        ...(shared.length ? { additionalWindows: shared.map(w => w.id) } : {}),
         steps: d.steps,
         minutes: d.minutes,
         confirmEvery: d.confirmEvery,
@@ -569,7 +651,9 @@
       runs = (await api('/api/computer/runs')).runs ?? [];
     } catch (err) {
       if (!live()) return;
-      body.replaceChildren(para(err.message));
+      const again = button('ghost small', 'Try again');
+      again.addEventListener('click', () => openComputerRuns());
+      body.replaceChildren(para(err.message), again);
       return;
     }
     if (!live()) return;
@@ -617,7 +701,9 @@
       run = await api(`/api/computer/run?id=${encodeURIComponent(id)}`);
     } catch (err) {
       if (!live()) return;
-      body.replaceChildren(back(), para(err.message));
+      const again = button('ghost small', 'Try again');
+      again.addEventListener('click', () => openComputerRuns(id));
+      body.replaceChildren(back(), para(err.message), again);
       return;
     }
     if (!live()) return;
@@ -687,7 +773,7 @@
       wrap.setAttribute('aria-label', `Open screenshot ${n}`);
       const shotIndex = shots.length;
       shots.push(n);
-      const open = () => openViewer(run, shots, shotIndex, frames);
+      const open = () => openViewer(run, shots, shotIndex, frames, wrap);
       wrap.addEventListener('click', open);
       wrap.addEventListener('keydown', e => {
         if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -751,8 +837,10 @@
     return text;
   }
 
-  // A full-window view of one screenshot: Left and Right step through the run's screenshots, Esc or a click outside closes it.
-  function openViewer(run, shots, index, total) {
+  // A full-window view of one screenshot: Left and Right step through the run's screenshots, Esc or a click outside closes it. It is modal:
+  // Tab and Shift+Tab go round its own buttons and the Stop controls, a dialog opened above it keeps its own keys, and closing it gives the
+  // focus back to the screenshot that opened it (opener).
+  function openViewer(run, shots, index, total, opener = null) {
     const root = el('div', 'cr-viewer');
     root.setAttribute('role', 'dialog');
     root.setAttribute('aria-modal', 'true');
@@ -776,18 +864,55 @@
       img.alt = `Screenshot ${n}`;
       img.removeAttribute('src');
       MuseUI.computer.frameUrl(run.id, n).then(url => { img.src = url; }, () => { caption.textContent = `Screenshot ${n} is not kept`; });
+      const had = document.activeElement;
       prev.disabled = at <= 0;
       next.disabled = at >= shots.length - 1;
+      // A button that goes off at the first or last screenshot does not keep the focus: it moves to the other one, or to Close.
+      if ((had === prev && prev.disabled) || (had === next && next.disabled)) {
+        const other = had === prev ? next : prev;
+        (other.disabled ? close : other).focus({ preventScroll: true });
+      }
+    };
+    // The Stop controls stay in the ring after the viewer's own buttons (the drive bar and pill sit above the viewer, and any other button
+    // named Stop), with the rule of the drawer's ring in ext-a11y.js, so Stop stays reachable by keyboard while a screenshot is open.
+    const stopControls = () => {
+      const out = [];
+      for (const b of document.querySelectorAll('button')) {
+        if (b.disabled || b.hidden || b.closest('[hidden], [inert], .settings-page, .cr-viewer') || b.getClientRects().length === 0) continue;
+        const name = (b.getAttribute('aria-label') || b.textContent || '').trim();
+        if (/^stop\b/i.test(name) || b.closest('.drivebar, .drive-pill')) out.push(b);
+        if (out.length >= 12) break;
+      }
+      return out;
+    };
+    const stops = () => [...[prev, next, close].filter(b => !b.disabled), ...stopControls()];
+    // A dialog opened above the viewer (a question that waits, a confirm box) has the focus and keeps its own keys. The dialog the viewer
+    // was opened from (the drawer, or a sheet on the phone) is behind it and does not count.
+    const DIALOGS = 'dialog, [role="dialog"], [role="alertdialog"]';
+    const behind = opener?.closest?.(DIALOGS) ?? null;
+    const dialogAbove = () => {
+      const box = document.activeElement?.closest?.(DIALOGS) ?? null;
+      return Boolean(box && box !== root && box !== behind && box.id !== 'drawer');
     };
     const closeViewer = () => {
       document.removeEventListener('keydown', onKey, true);
       root.remove();
+      if (opener && opener.isConnected !== false && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
     };
     function onKey(e) {
+      if (dialogAbove()) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         closeViewer();
+      } else if (e.key === 'Tab') {
+        // The viewer is modal (aria-modal): the focus goes round its own buttons and the Stop controls, never to the rest of the page.
+        e.preventDefault();
+        const list = stops();
+        if (!list.length) return;
+        const i = list.indexOf(document.activeElement);
+        const to = i < 0 ? (e.shiftKey ? list[list.length - 1] : list[0]) : list[(i + (e.shiftKey ? list.length - 1 : 1)) % list.length];
+        to.focus({ preventScroll: true });
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         show(at - 1);

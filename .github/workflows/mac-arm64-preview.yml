@@ -1,0 +1,46 @@
+name: Plenum Apple Silicon preview
+
+on:
+  push:
+    branches:
+      - codex/plenum-mac-preview-20261120
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Check out the preview
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mobile/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          node node_modules/electron/install.js
+          npm ci --prefix mobile --ignore-scripts --no-audit --no-fund
+
+      - name: Build and test the installed Mac app
+        run: bash scripts/build-mac-preview.sh
+
+      - name: Upload the tested disk image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Plenum-Apple-Silicon-Preview
+          path: release/mac-preview/Plenum-Apple-Silicon-Preview.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

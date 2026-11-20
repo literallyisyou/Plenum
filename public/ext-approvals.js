@@ -26,6 +26,8 @@
 
   // True while a change is on its way to the server, so a second click cannot send a second one.
   let busy = false;
+  // True while the Approve all question is open over the menu. The menu stays open under it, so the answer lands back in the menu.
+  let asking = false;
 
   const activeProject = () => MuseUI.state.projects?.find(p => p.id === MuseUI.state.activeProject) ?? null;
   const focusKnown = id => (typeof MuseUI.focusOf === 'function' ? MuseUI.focusOf(id) : undefined);
@@ -134,7 +136,11 @@
     const locked = Boolean(thread) && thread.writer === false && MuseUI.state.multiWriter !== true;
     const plan = p?.chatMode === 'plan' || (Boolean(thread) && !thread.main && thread.chatMode === 'plan') || locked;
     const focus = p ? focusKnown(p.id) === true : false;
-    const off = !p || busy;
+    // The menu's controls are not switched off while a change is on its way: a control switched off while it has focus drops the focus
+    // to the page, and arrows and Escape no longer reach the menu (panels-a-7). The menu says it is busy, and a change made meanwhile is
+    // ignored (pickMode, setPlan, setFocus and Use app default return while busy).
+    const off = !p;
+    menu.setAttribute('aria-busy', String(busy));
 
     btn.dataset.tone = plan ? 'plan' : mode;
     btn.textContent = `${plan ? 'Plan' : NAMES[mode]}${focus ? ' · Focus' : ''}`;
@@ -165,7 +171,12 @@
     busy = true;
     paint();
     try {
-      if (mode === 'all' && !(await MuseUI.askApproveAll())) return;
+      asking = mode === 'all';
+      try {
+        if (mode === 'all' && !(await MuseUI.askApproveAll())) return;
+      } finally {
+        asking = false;
+      }
       await MuseUI.setProjectApprovals({ approvals: mode }, p.id);
       if (mode === 'all') MuseUI.toast(`Approve all is on for ${p.name}. Edits and commands run without asking; credential and system folders stay blocked.`);
       else if (mode === 'auto') {
@@ -177,7 +188,20 @@
     } finally {
       busy = false;
       paint();
+      keepFocus();
     }
+  }
+
+  // After a change the focus stays in the open menu. When it fell to the page (the control that had it is hidden now, as Use app default
+  // is once it is used, or a question took it), it goes to the mode in force, so arrows and Escape work in the menu again.
+  function keepFocus() {
+    if (menu.hidden) return;
+    const at = document.activeElement;
+    if (at && menu.contains(at)) return;
+    // Focus that moved on to another control of the page on purpose stays there.
+    if (at && at !== document.body && !wrap.contains(at)) return;
+    const current = choices.radios.find(r => r.checked && !r.disabled) ?? choices.radios.find(r => !r.disabled);
+    (current ?? menu).focus();
   }
 
   // Plan is the chat mode of the thread on screen: Main's is the project's, any other thread has its own. It is the same request the
@@ -216,6 +240,7 @@
     } finally {
       busy = false;
       paint();
+      keepFocus();
     }
   }
 
@@ -232,6 +257,7 @@
     } finally {
       busy = false;
       paint();
+      keepFocus();
     }
   }
 
@@ -248,6 +274,7 @@
     } finally {
       busy = false;
       paint();
+      keepFocus();
     }
   });
 
@@ -283,8 +310,9 @@
   });
   // A click outside closes it. Moving focus out with Tab closes it too; a focus move to nothing (a click on the menu's own empty
   // space) does not, because there is no element to move to.
-  document.addEventListener('pointerdown', e => { if (!menu.hidden && !wrap.contains(e.target)) closeMenu(false); });
-  menu.addEventListener('focusout', e => { if (!menu.hidden && e.relatedTarget && !wrap.contains(e.relatedTarget)) closeMenu(false); });
+  // While the Approve all question is open, its own clicks and focus are not a move away: the menu stays open under it.
+  document.addEventListener('pointerdown', e => { if (!menu.hidden && !asking && !wrap.contains(e.target)) closeMenu(false); });
+  menu.addEventListener('focusout', e => { if (!menu.hidden && !asking && e.relatedTarget && !wrap.contains(e.relatedTarget)) closeMenu(false); });
 
   // The page redraws its top bar, and so changes the project name, whenever its state is read again. The button is not inside the
   // project name, so painting cannot trigger the observer. Focus and approval changes are announced on window.

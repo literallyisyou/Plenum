@@ -117,8 +117,8 @@
 
   // ---------- notices ----------
 
-  // MuseUI.notice draws the registered notice when the notices module is loaded. When it draws nothing, this file draws the strip
-  // itself with the same words. OK and Don't show again dismiss it (the second one is kept on this computer only); More opens Settings.
+  // MuseUI.notice draws the registered notice when the notices module is loaded and lists it. Without the module, or for an id it does
+  // not list, this file draws the strip itself with the same words. OK and Don't show again dismiss it (the second one is kept on this computer only); More opens Settings.
   const hiddenKey = id => `plenum-notice-hidden:${id}`;
   function noticeHidden(id) {
     try {
@@ -134,12 +134,32 @@
       // Without storage the strip shows again next time, which is the safe side.
     }
   }
-  function notice(ui, id, { title, text, anchor }) {
-    if (typeof MuseUI.notice === 'function') {
-      if (MuseUI.notice(id, { before: anchor ?? undefined })) return;
+  // Whether the notices module (ext-notices.js) lists this notice. MuseUI.notice() also answers false for a notice hidden by Don't show
+  // again, one already shown in this launch or one without a place, so false alone does not mean the module is missing (w7 panels-a-6):
+  // this file draws its own strip only when the module is missing or does not list the id.
+  function sharedKnows(id) {
+    try {
+      const list = typeof MuseUI.notice === 'function' ? MuseUI.notices?.list?.() : null;
+      return Array.isArray(list) && list.some(n => n?.id === id);
+    } catch {
+      return false;
+    }
+  }
+  // The strip this file drew for each notice, so a second one replaces it instead of adding one more.
+  const strips = new Map();
+  function notice(ui, id, { title, text, anchor, into }) {
+    if (sharedKnows(id)) {
+      try {
+        MuseUI.notice(id, anchor ? { before: anchor } : { into: into ?? ui.notes });
+        return;
+      } catch (err) {
+        console.error(err); // the shared notice failed; the strip below says the same thing
+      }
     }
     if (noticeHidden(id)) return;
+    strips.get(id)?.remove();
     const strip = mk('div', 'ext-art-notice');
+    strips.set(id, strip);
     strip.setAttribute('role', 'note');
     const actions = mk('div', 'ext-art-notice-actions');
     const ok = MuseUI.button('ghost small', 'OK');
@@ -427,7 +447,7 @@
     closeSave(ui);
     if (!madeShown) {
       madeShown = true;
-      notice(ui, MADE_NOTICE, { title: 'This was made by a model', text: MADE_TEXT });
+      notice(ui, MADE_NOTICE, { title: 'This was made by a model', text: MADE_TEXT, into: ui.notes });
     }
     syncList(ui);
     live = { api, ui };

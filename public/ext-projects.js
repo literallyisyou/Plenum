@@ -128,7 +128,13 @@
       })
       .catch(err => {
         if (seq !== loadSeq || !drawerIsOpen(body)) return;
-        body.replaceChildren(MuseUI.para(err.message));
+        // The read is tried again in place, without closing and opening the drawer.
+        const again = MuseUI.button('ghost small', 'Try again');
+        again.addEventListener('click', () => {
+          body.replaceChildren();
+          renderDrawer(body);
+        });
+        body.replaceChildren(MuseUI.para(err.message || 'This project’s settings could not be read.'), again);
       });
   }
 
@@ -359,7 +365,7 @@
     f.box.append(rowOf(select), f.note);
     painters.push(() => {
       const set = Boolean(view.settings.model);
-      fillModels(select, view.effective.model ?? view.global.model);
+      MuseUI.trackModelMenu(select, shown => fillModels(select, shown), view.effective.model ?? view.global.model);
       f.note.textContent = `${set ? 'This project. App default: ' : 'Inherits: '}${modelLabel(view.global.model)}`;
       f.resetBtn.disabled = !set;
     });
@@ -608,11 +614,9 @@
 
   // The model menu: the catalog grouped by provider. A model the catalog does not list still shows by name.
   function fillModels(select, shown) {
-    const catalog = MuseUI.catalog ?? [];
+    const catalog = MuseUI.modelChoices(shown);
     const byProvider = new Map();
     for (const c of catalog) {
-      // A model the account no longer has is left out, unless it is the one shown (it is marked then).
-      if (c.offered === false && `${c.provider}:${c.id}` !== shown) continue;
       if (!byProvider.has(c.provider)) byProvider.set(c.provider, []);
       byProvider.get(c.provider).push(c);
     }

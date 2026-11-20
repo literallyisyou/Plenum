@@ -980,9 +980,22 @@ describe('listener, tailscale name and the shell', () => {
     assert.equal(r.status, 200);
     assert.equal(r.headers['set-cookie'], undefined, 'the secure page does not need the cookie');
     const cookie = String((await get(`/p/${key}/`)).headers['set-cookie']).split(';')[0];
-    assert.equal((await get('/', { host: name, cookie })).status, 404);
+    assert.equal((await get('/app.js', { host: name, cookie })).status, 404);
     assert.equal((await get(`/p/${key}/`, { host: `${name}:443` })).status, 200);
     assert.equal((await get(`/p/${key}/`, { host: 'other.tail1234.ts.net' })).status, 404);
+    for (const method of ['GET', 'HEAD']) {
+      const redirect = await get('/?discard=1', { host: name }, method);
+      assert.equal(redirect.status, 308);
+      assert.equal(redirect.headers.location, '/pair/');
+      assert.equal(redirect.headers['set-cookie'], undefined);
+      assert.equal(redirect.body.length, 0);
+    }
+    const pairing = await get('/pair/', { host: name });
+    assert.equal(pairing.status, 200);
+    assert.match(pairing.body.toString(), /Plenum/);
+    assert.equal(pairing.headers['set-cookie'], undefined);
+    assert.equal((await get('/', { host: 'other.tail1234.ts.net' })).status, 404);
+    assert.equal((await get('/', { host: name }, 'POST')).status, 404);
     name = '';
     assert.equal((await get(`/p/${key}/`, { host: 'pc.tail1234.ts.net' })).status, 404, 'no Tailscale name known: not served');
   });

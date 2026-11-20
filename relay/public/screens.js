@@ -69,8 +69,12 @@ function biometricName(platform) {
 function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
+function runsGoing(pending) {
+  let n = Number(pending?.running ?? pending?.runs);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
 function pendingLine(computer, pending) {
-  let approvals = Number(pending?.approvals) || 0, runs = Number(pending?.runs) || 0, parts = [];
+  let approvals = Number(pending?.approvals) || 0, runs = runsGoing(pending), parts = [];
   return approvals && parts.push(plural(approvals, "approval waiting", "approvals waiting")), runs && parts.push(plural(runs, "run going", "runs going")), parts.length ? `On ${computer} now: ${parts.join(", ")}.` : null;
 }
 function updateAppBody(computer, desktop, app) {
@@ -80,7 +84,11 @@ function updateAppBody(computer, desktop, app) {
 function updateDesktopBody(computer, minimum, have) {
   return `This app needs Plenum ${minimum} or later on ${computer}, which has ${have}. On the computer, open Settings \u203A Updates and install the update.`;
 }
-function uiFailedBody(computer, cause) {
+function uiFailedBody(computer, cause, versions = null) {
+  if (cause === "version" && versions?.app && versions?.desktop) {
+    let why = `${computer} could not send Plenum's screens. The screens built into this app are for Plenum ${versions.app}, and ${computer} runs Plenum ${versions.desktop}.`;
+    return versions.update === "app" ? `${why} Update this app, then open it again.` : `${why} On the computer, open Settings \u203A Updates and install the update.`;
+  }
   return cause === "not-sent" ? `${computer} did not send Plenum's screens. Try again.` : cause === "stopped" ? `Plenum on ${computer} stopped while the screens were loading.` : "Part of Plenum did not arrive intact from " + computer + ", so the phone kept what it had. Try again. If it keeps happening, restart Plenum on the computer.";
 }
 function drivingLine(computer, driving) {
@@ -187,7 +195,7 @@ function notifyFixFor(reason, { platform = "android", computer = "your computer"
 }
 var LOCK_TITLE = "App lock", LOCK_ROW = "Lock Plenum", LOCK_AFTER_LABEL = "After", LOCK_SWITCHER = "Hide content in the app switcher", LOCK_NOW = "Lock now", LOCK_OFF_TITLE = "Turn off the app lock?", LOCK_OFF_TEXT = "With the app lock off, anyone who can unlock this phone can run models, approve changes and use your computer through Plenum. If the phone is lost, remove it at the computer under Settings \u203A Phones.", LOCK_OFF_KEEP = "Keep the lock on", LOCK_OFF_TURN = "Turn off";
 var LOCK_WEB_KEY = "The key that pairs this phone is kept in this browser's storage. Clearing the browser's website data removes it, and you pair again. A PIN or passkey protects the key from someone else using the unlocked phone.";
-var PHONE_PUSH_TEXT = "Plenum sends your phone only the project name and a status, such as an approval is waiting. Anyone holding the phone can read that on the lock screen. Turning on Include the first line adds the first line of the card, which can name files and commands.", LOCK_OFF_HINT = "The app lock is off. Turn it on to ask for your passcode or Face ID before Plenum connects.", APPEARANCE_TITLE = "Appearance", APPEARANCE_THEME = "Theme", APPEARANCE_TEXT = "Text size", APPEARANCE_FOLLOW_TEXT = "Follow phone", APPEARANCE_SAMPLE = "Coding agents work in the folders you choose, and you approve what they change. This paragraph shows the text size you picked.", APPEARANCE_STOP = "Stop button", APPEARANCE_STOP_RIGHT = "Right", APPEARANCE_STOP_LEFT = "Left", APPEARANCE_HAPTICS = "Haptics", APPEARANCE_NOTE = "The theme here is for this phone. Settings \u203A General \u203A Theme changes {computer}.", APPEARANCE_HAPTICS_IOS = "Haptics are not available in the web app on iPhone.", DICTATION_TITLE = "Dictation", DICTATION_PREFER = "Prefer recognition on this phone", DICTATION_ALLOW = "Allow that", DICTATION_ALLOW_TEXT = "When your language is not available on the phone, Plenum can use Apple's or Google's speech service instead.", DICTATION_WEB = "Dictation runs in the Plenum app on your phone.", PHONE_VOICE = "Plenum asks your phone to turn what you say into text in the message box. It prefers recognition on the phone itself; where your language is not available there, Apple or Google may process the audio under their own terms. Nothing reaches your computer until you press Send.", DEBUG_TITLE = "Debug console", DEBUG_LEAD = "Holds the last 500 lines, kept only on this phone.", DEBUG_EMPTY = "No log lines yet.", DEBUG_COPY = "Copy", DEBUG_SEND = "Send to {computer}", DEBUG_CLEAR = "Clear", DEBUG_SENT = "Sent {n} lines to {computer}.", DEBUG_SEND_FAILED = "Could not send the log to {computer}. Connect, then try again.", DEBUG_COPIED = "Copied.", DEBUG_NO_CLIPBOARD = "This browser does not allow copying here. Select the lines to copy them.", ABOUT_TITLE = "About", ABOUT_APP = "Plenum app {version}", ABOUT_COMPUTER = "{computer}: Plenum {version}", ABOUT_LINK = "Link version {version}", ABOUT_SCREENS_BUILT = "Screens: built into this app", ABOUT_SCREENS_LOADED = "Screens: loaded from {computer}, {n} files, all checked", ABOUT_CONNECTED = "Connected over {carrier} since {when}", ABOUT_NEWER_UI = "{computer} has features this app does not show yet. Update the app to use them.", ABOUT_NOT_CONNECTED = "Not connected to a computer now.", LEGAL_TITLE = "Legal", LEGAL_ROWS = Object.freeze({ license: "License Agreement", privacy: "Privacy Notice", third: "Third-party notices" }), LEGAL_VERSIONS = "The versions {computer} uses are in Settings \u203A Legal.";
+var PHONE_PUSH_TEXT = "Plenum sends your phone only the project name and a status, such as an approval is waiting. Anyone holding the phone can read that on the lock screen. Turning on Include the first line adds the first line of the card, which can name files and commands.", LOCK_OFF_HINT = "The app lock is off. Turn it on to ask for your passcode or Face ID before Plenum connects.", APPEARANCE_TITLE = "Appearance", APPEARANCE_THEME = "Theme", APPEARANCE_TEXT = "Text size", APPEARANCE_FOLLOW_TEXT = "Follow phone", APPEARANCE_SAMPLE = "Coding agents work in the folders you choose, and you approve what they change. This paragraph shows the text size you picked.", APPEARANCE_STOP = "Stop button", APPEARANCE_STOP_RIGHT = "Right", APPEARANCE_STOP_LEFT = "Left", APPEARANCE_HAPTICS = "Haptics", APPEARANCE_NOTE = "The theme here is for this phone. Settings \u203A General \u203A Theme changes {computer}.", APPEARANCE_HAPTICS_IOS = "Haptics are not available in the web app on iPhone.", DICTATION_TITLE = "Dictation", DICTATION_PREFER = "Prefer recognition on this phone", DICTATION_ALLOW = "Allow that", DICTATION_ALLOW_TEXT = "When your language is not available on the phone, Plenum can use Apple's or Google's speech service instead.", DICTATION_WEB = "Dictation runs in the Plenum app on your phone.", PHONE_VOICE = "Plenum asks your phone to turn what you say into text in the message box. It prefers recognition on the phone itself; where your language is not available there, Apple or Google may process the audio under their own terms. Nothing reaches your computer until you press Send.", DEBUG_TITLE = "Debug console", DEBUG_LEAD = "Holds the last 500 lines, kept only on this phone.", DEBUG_EMPTY = "No log lines yet.", DEBUG_COPY = "Copy", DEBUG_SEND = "Send to {computer}", DEBUG_CLEAR = "Clear", DEBUG_SENT = "Sent {n} lines to {computer}.", DEBUG_SEND_FAILED = "Could not send the log to {computer}. Connect, then try again.", DEBUG_COPIED = "Copied.", DEBUG_NO_CLIPBOARD = "This browser does not allow copying here. Select the lines to copy them.", ABOUT_TITLE = "About", ABOUT_APP = "Plenum app {version}", ABOUT_COMPUTER = "{computer}: Plenum {version}", ABOUT_LINK = "Link version {version}", ABOUT_SCREENS_BUILT = "Screens: built into this app", ABOUT_SCREENS_LOADED = "Screens: loaded from {computer}, {n} files, all checked", ABOUT_CONNECTED = "Connected over {carrier} since {when}", ABOUT_NEWER_UI = "{computer} has features this app does not show yet. Update the app to use them.", ABOUT_NOT_CONNECTED = "Not connected to a computer now.", SCREENS_BUNDLED = "Using the screens built into this app; Plenum on {computer} could not send its own.", LEGAL_TITLE = "Legal", LEGAL_ROWS = Object.freeze({ license: "License Agreement", privacy: "Privacy Notice", third: "Third-party notices" }), LEGAL_VERSIONS = "The versions {computer} uses are in Settings \u203A Legal.";
 var DEMO_STRIP = "Demo: nothing here reaches a computer.", DEMO_EXIT = "Exit demo", DEMO_TITLE = "Demo computer", DEMO_RUNS = "RUNS", DEMO_APPROVAL = "Waiting for you", DEMO_APPROVE = "Approve", DEMO_DENY = "Deny", DEMO_RUN_LABEL = "Computer run", DEMO_DIFF_LABEL = "Changes", DEMO_ARTIFACT_LABEL = "Artifacts", DEMO_NO_PAIR = "The demo cannot pair with a computer. Exit the demo to pair.";
 var DEMO_RESET = "Start the demo again", DEMO_EMPTY = "Nothing here yet.";
 var SAVE = "Save", NOT_NOW = "Not now";
@@ -471,6 +479,8 @@ function ctxFor(s, nav = {}, env = {}) {
     haveVersion: conn.failure?.have ?? hello?.desktopVersion ?? null,
     appVersion: env.plenumAppVersion ?? null,
     cause: s?.ui?.cause ?? nav.uiCause ?? "checksum",
+    // w7: { app, desktop, update } when the built-in screens are for another release than the computer's (cause 'version').
+    versions: s?.ui?.versions ?? null,
     hasCopy: !!(s?.ui?.hasCopy ?? nav.hasCopy),
     forwarder: FORWARDER_BUILD,
     consentGiven: !!nav.consentGiven,
@@ -526,7 +536,8 @@ var DEMO_BASE = Object.freeze({
     Object.freeze({ carrier: "relay", reason: "closed" })
   ]),
   lock: Object.freeze({ mode: "off", failures: 0, waitSec: 0 }),
-  pending: Object.freeze({ approvals: 2, runs: 1 }),
+  pending: Object.freeze({ approvals: 2, running: 1 }),
+  // the HELLO's shape (lib/remote/index.mjs pendingNow)
   driving: null,
   pasteError: null,
   desktopVersion: "2.0",
@@ -1172,7 +1183,7 @@ function uiFailed(ctx, io) {
   return frame(ctx, io, {
     title: "Plenum's screens did not load",
     body: [
-      para(ctx.cause === "worker" ? WORKER_TEXT : uiFailedBody(ctx.computer, ctx.cause), "sh-note"),
+      para(ctx.cause === "worker" ? WORKER_TEXT : uiFailedBody(ctx.computer, ctx.cause, ctx.versions ?? null), "sh-note"),
       pending ? para(pending, "sh-help") : null
     ],
     actions: [
@@ -1527,6 +1538,8 @@ function settings(ctx, io) {
     body: [
       section(SETTINGS_COMPUTERS),
       el("div", { class: "sh-rows" }, computerRows, row(PAIR_ANOTHER_SHORT, null, () => io.go("how"))),
+      // w7: only while the Android app runs its built-in screens for this computer.
+      vm.screens?.bundled ? para(fillName(SCREENS_BUNDLED, ctx.computer), "sh-help") : null,
       section(ctx.browser ? SETTINGS_THIS_BROWSER : SETTINGS_THIS_PHONE),
       el(
         "div",
@@ -2122,7 +2135,7 @@ function buildVm(s, nav, env, core = null) {
       ways: (Array.isArray(c.carriers) ? c.carriers : []).map((x) => x.kind),
       waysDetail: null
     };
-  }), since = conn.since ? clockTime(conn.since) : null, connectedCarrier = CARRIER_LABEL[conn.carrier] ?? null, perm = core?.notificationPermission?.() ?? "unknown", lockLabel = lockMode === "biometric" ? biometricName(platform) : lockMode === "pin" ? "PIN" : lockMode === "passkey" ? "passkey" : "Off", debugLines = core?.debug?.lines?.() ?? [], demo = s?.demo ?? { computer: { name: "Demo computer" }, projects: [], runs: [], approvals: [], agents: [], drive: null, diff: null, artifacts: [] };
+  }), since = conn.since ? clockTime(conn.since) : null, connectedCarrier = CARRIER_LABEL[conn.carrier] ?? null, perm = core?.notificationPermission?.() ?? "unknown", lockLabel = lockMode === "biometric" ? biometricName(platform) : lockMode === "pin" ? "PIN" : lockMode === "passkey" ? "passkey" : "Off", debugLines = core?.debug?.lines?.() ?? [], demo = s?.demo ?? { computer: { name: "Demo computer" }, projects: [], runs: [], approvals: [], agents: [], drive: null, diff: null, artifacts: [] }, source = s?.ui?.source ?? null, sourceHere = source && (source.computerId === null || source.computerId === (s?.activeId ?? null)) ? source : null, loadedFiles = sourceHere?.kind === "computer" && Number.isInteger(sourceHere.files) && sourceHere.files > 0 ? sourceHere.files : null;
   return {
     native,
     platform,
@@ -2134,9 +2147,10 @@ function buildVm(s, nav, env, core = null) {
       desktopVersion: hello?.desktopVersion || null,
       since,
       carrierLabel: connectedCarrier,
-      screensLoaded: null,
+      screensLoaded: loadedFiles,
       newerUi: !1
     },
+    screens: { bundled: sourceHere?.kind === "bundled" },
     // Wave 4 (m2): on Android the row is what the phone knows (the push app, the computer holding the endpoint, Android's own switch); the
     // web Notification API is not in the Android WebView, so it would say "Not asked" while notifications work.
     notify: platform === "android" ? { label: androidNotifyLabel(s?.androidPush ?? null), hint: null, last: lastNotificationLine(s?.androidPush?.lastAt) } : { label: NOTIFY_PERMISSION[perm] ?? NOTIFY_PERMISSION.unknown, hint: perm === "denied" ? NOTIFY_DENIED_HINT : null, last: null },
@@ -2332,7 +2346,7 @@ function mountScreens(env = globalThis) {
     let state = fixtureMode ? ctx.stopState : snapshot?.stop?.state ?? "idle";
     stop.setAttribute("data-state", state), state === "sending" ? stop.setAttribute("aria-busy", "true") : stop.removeAttribute("aria-busy");
     let driving = ctx.driving ?? drivingText(snapshot?.hello?.pending?.driving);
-    driving ? (stop.setAttribute("data-driving", ""), stop.setAttribute("aria-description", `A model is driving: ${driving}`)) : (stop.removeAttribute("data-driving"), stop.removeAttribute("aria-description")), ctx.pending?.runs > 0 || driving || state === "sending" ? stop.setAttribute("data-active", "") : stop.removeAttribute("data-active"), stop.querySelector(".plenum-stop-label").textContent = STOP_LABEL[state] ?? "Stop", stop.querySelector(".plenum-stop-note").textContent = (fixtureMode ? ctx.stopText : snapshot?.stop?.text) || "", updateNotices(), setHidden(demoStrip, !replayMode);
+    driving ? (stop.setAttribute("data-driving", ""), stop.setAttribute("aria-description", `A model is driving: ${driving}`)) : (stop.removeAttribute("data-driving"), stop.removeAttribute("aria-description")), runsGoing(ctx.pending) > 0 || driving || state === "sending" ? stop.setAttribute("data-active", "") : stop.removeAttribute("data-active"), stop.querySelector(".plenum-stop-label").textContent = STOP_LABEL[state] ?? "Stop", stop.querySelector(".plenum-stop-note").textContent = (fixtureMode ? ctx.stopText : snapshot?.stop?.text) || "", updateNotices(), setHidden(demoStrip, !replayMode);
     let lanOn = !fixtureMode && !!ctx.lan && snapshot?.prefs?.lanDismissed !== !0;
     setHidden(lanStrip, !lanOn), lanOn && (lanStrip.querySelector(".plenum-lan-text").textContent = fill2(LAN_WEB_STRIP, computer));
     let info = ctx.stripInfo ?? null;

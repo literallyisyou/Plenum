@@ -24,12 +24,15 @@
 
 /* The list and the diff: side by side from 760 px of pane width, stacked below. */
 .ext-review-body { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-width: 0; padding: 0 14px 12px; }
-.ext-review-files { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-height: 34vh; overflow: auto; }
+.ext-review-files { display: flex; flex-direction: column; min-width: 0; }
+.ext-review-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-height: 34vh; overflow: auto; }
+.ext-review-bulk { display: flex; justify-content: flex-end; padding: 0 7px 2px; }
 .ext-review-diff { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 @container review (min-width: 760px) {
   .ext-review-body { flex-direction: row; align-items: flex-start; }
-  .ext-review-files { flex: 0 0 240px; width: 240px; max-height: none; position: sticky; top: 0; }
+  .ext-review-files { flex: 0 0 240px; width: 240px; position: sticky; top: 0; }
+  .ext-review-list { max-height: none; }
   .ext-review-diff { flex: 1 1 auto; }
 }
 
@@ -57,6 +60,16 @@
 .ext-review-stats { flex: none; font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; }
 .ext-review-viewed { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11.5px; white-space: nowrap; cursor: pointer; }
 .ext-review-viewed input { margin: 0; accent-color: var(--accent); }
+.ext-review-select-all { min-height: 28px; color: var(--text-2); }
+.ext-review-select-all:has(input:disabled) { color: var(--muted); cursor: default; }
+/* The phone uses a custom 44px checkbox. Draw its mixed state as a dash. */
+html[data-surface="phone"] .ext-review-select-all input:indeterminate::before {
+  background: var(--accent); border-color: var(--accent);
+}
+html[data-surface="phone"] .ext-review-select-all input:indeterminate::after {
+  content: ""; position: absolute; inset: 0; margin: auto; width: 10px; height: 2px;
+  border-radius: 1px; background: var(--accent-ink);
+}
 
 .ext-review-file { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ext-review-file-title { margin: 0; font: 600 13.5px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }

@@ -517,6 +517,10 @@
       }
       body.seen = d.sha256;
     }
+    // Wave 8: on a phone, a yes that is a step outside asks for the phone's unlock first (public/ext-phone-answer.js gate; the server
+    // says which items: item.phone.unlock). On the desktop, and for a No, nothing is asked.
+    const gate = refusal ? null : await MU.phoneAnswer?.gate?.(item, choice);
+    if (gate && !gate.ok) { say(gate.why, true); return paint(); }
     const r = await act(`item|${n}`, '/api/decisions/answer', body);
     if (r.status === -1) return;
     if (r.ok) {
@@ -544,6 +548,9 @@
   async function answerStart(card, allow) {
     const id = str(card.id);
     const label = str(card.label) || 'The program';
+    // Wave 8: on a phone, the yes that starts a program asks for the phone's unlock first, as a yes to a step outside does.
+    const gate = allow ? await MU.phoneAnswer?.gate?.({ phone: { unlock: true } }, 'allow') : null;
+    if (gate && !gate.ok) { say(gate.why, true); return paint(); }
     const r = await act(`start|${id}`, '/api/programs/starts/answer', allow ? { id, allow: true, seen: str(card.sha256) } : { id, allow: false });
     if (r.status === -1) return;
     if (r.ok) say(allow ? `${label} starts with the task "${str(card.title)}".` : `${label} was not started.`);
@@ -820,6 +827,7 @@
       when: e.type === 'every' ? `every ${Math.round(Number(e.hours))}` : `daily ${e.at} ${[...e.days].sort((a, b) => a - b).join(',')}`,
       prompt: e.source === 'file' ? `file ${str(e.file).trim()}` : `text ${e.text}`,
       onlyIf: str(e.folder).trim(),
+      webResearch: e.webResearch,
       leads: [...e.leads].join(' '),
       catchUpHours: numText(e.catchUp),
       retryMin: numText(e.retry),
@@ -845,7 +853,7 @@
     const fields = {
       name, when,
       prompt: e.source === 'file' ? { text: '', file: e.file.trim() } : { text: e.text, file: '' },
-      onlyIf: { folder: e.folder.trim() }, leads: [...e.leads], ...late,
+      onlyIf: { folder: e.folder.trim() }, webResearch: e.webResearch, leads: [...e.leads], ...late,
     };
     // A new routine sends the two numbers only when they are not the server's defaults (it fills those in itself).
     if (!e.id) for (const k of Object.keys(late)) if (late[k] === LATE[k].def) delete fields[k];
@@ -901,6 +909,11 @@
     const lines = {};
     for (const [k, v] of Object.entries(f.lines)) if (String(v).trim() !== '') lines[k] = Number(v);
     const body = { id: b.id, name: f.name.trim(), purpose: f.purpose.trim(), leads: [...f.leads], runsPerDay: Number(f.runsPerDay), minutesPerDay: Number(f.minutesPerDay), lines, allowApi: f.allowApi === true, hubRoom: f.hubRoom.trim() };
+    const authority = { send: f.standingAuthority.send.trim(), publish: f.standingAuthority.publish.trim() };
+    if (authority.send !== s.authoritySeen.send || authority.publish !== s.authoritySeen.publish) {
+      body.standingAuthority = authority;
+      body.standingAuthoritySeen = s.authoritySeen;
+    }
     const res = await act('su', '/api/business/update', body);
     if (res.status === -1) return;
     if (res.ok) {
@@ -912,6 +925,18 @@
     ui.focus = 'su|save';
     paint();
     refresh();
+  }
+
+  // Text typed in an open routine editor is never dropped without a question either (a switch, Edit on another row, New routine or Turn
+  // back on replaces the editor). The editor is compared with the routine as saved, or with a blank one. True when the person may go on.
+  async function mayLeaveEditor() {
+    const e = ui.editor;
+    if (!e) return true;
+    const saved = e.id ? routines().find(r => r.id === e.id) ?? null : null;
+    if (JSON.stringify(sentOf(e)) === JSON.stringify(sentOf(editorOf(saved)))) return true;
+    const yes = await MU.confirm({ title: 'Discard changes?', body: 'Your changes to this routine are not saved.', action: 'Discard', focusCancel: true });
+    if (!yes) paint();
+    return Boolean(yes);
   }
 
   // Unsaved changes of the Setup form are never dropped without a question. True when the person may go on.
@@ -1083,9 +1108,8 @@
     if (!templates.some(t => t.id === f.template)) f.template = templates[0]?.id ?? '';
     // The lead: the model the folder already uses, until the person picks another or none.
     const own = str(projects().find(p => p.id === f.project)?.model) || str(state().model);
-    const offers = [...new Set([own, ...arr(MU.catalog).map(refOf)].filter(Boolean))];
     if (!f.leadSet) f.lead = own;
-    if (f.lead && !offers.includes(f.lead)) f.lead = '';
+    const offers = [...new Set([f.lead, own, ...MU.modelChoices().map(refOf)].filter(Boolean))];
     const box = section(title, 'biz-first');
     if (lead) box.append(make('p', 'biz-note', lead));
     // A council's verdict can be set up as a business with one press: Plenum makes the folder itself (public/ext-biz-setup.js).
@@ -1719,10 +1743,11 @@
     const track = make('span', 'switch-track');
     track.setAttribute('aria-hidden', 'true');
     sw.append(box, track);
-    box.addEventListener('change', () => {
+    box.addEventListener('change', async () => {
       if (!box.checked) return switchRoutine(r, false);
       // Switching on waits for one more press, under the two lines about the folder.
       box.checked = false;
+      if (!(await mayLeaveEditor())) return;
       ui.arming = r.id;
       ui.editor = null;
       ui.focus = `rt|${r.id}|arm`;
@@ -1745,7 +1770,7 @@
 
     const acts = make('div', 'biz-actions');
     if (offFails) {
-      acts.append(btn('ghost small', 'Turn back on', `rt|${r.id}|again`, () => { ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
+      acts.append(btn('ghost small', 'Turn back on', `rt|${r.id}|again`, async () => { if (!(await mayLeaveEditor())) return; ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
     }
     const run = btn('ghost small', 'Run now', `rt|${r.id}|run`, () => routineAct(r, 'run'));
     run.disabled = busy || running;
@@ -1763,7 +1788,7 @@
       acts.append(kb);
     }
     acts.append(
-      btn('biz-quiet', 'Edit', `rt|${r.id}|edit`, () => { ui.editor = editorOf(r); ui.arming = ''; ui.focus = 'ed|name'; paint(); refresh(); }),
+      btn('biz-quiet', 'Edit', `rt|${r.id}|edit`, async () => { if (!(await mayLeaveEditor())) return; ui.editor = editorOf(r); ui.arming = ''; ui.focus = 'ed|name'; paint(); refresh(); }),
       btn('biz-quiet', 'Delete', `rt|${r.id}|delete`, () => routineAct(r, 'delete')),
     );
     row.append(acts);
@@ -1841,6 +1866,7 @@
       type: w.type === 'every' ? 'every' : 'daily', at: str(w.at) || '06:30', hours: num(w.hours) || 6,
       days: new Set(arr(w.days).length ? arr(w.days).map(d => (d === 7 ? 0 : d)) : [1, 2, 3, 4, 5]),
       source: str(r?.prompt?.text) && !str(r?.prompt?.file) ? 'text' : 'file', file: str(r?.prompt?.file), text: str(r?.prompt?.text),
+      webResearch: r?.webResearch === true,
       folder: str(r?.onlyIf?.folder), leads: arr(r?.leads).map(String),
       catchUp: String(lateOf(r, 'catchUpHours')), retry: String(lateOf(r, 'retryMin')),
     };
@@ -1912,7 +1938,7 @@
       // Without a folder there are no two lines on this form, so Turn back on goes the row's way: the lines and Switch on, on the row.
       if (off && !editorProject(e)) {
         const acts = make('div', 'biz-actions');
-        acts.append(btn('ghost small', 'Turn back on', 'ed|again', () => { ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
+        acts.append(btn('ghost small', 'Turn back on', 'ed|again', async () => { if (!(await mayLeaveEditor())) return; ui.arming = r.id; ui.editor = null; ui.focus = `rt|${r.id}|arm`; paint(); refresh(); }));
         set.append(acts);
       }
     }
@@ -2024,10 +2050,10 @@
     form.append(field('Start only when this folder holds a file (optional)', input('text', e.folder, 'ed|folder', v => { e.folder = v; }, { maxlength: 200, placeholder: 'inbox' }), 'A folder inside the business folder. While it is empty no model is started, which costs nothing.'));
 
     const bizLeads = arr(bizById(e.business)?.leads).map(String);
-    const offers = [...new Set([...bizLeads, ...arr(MU.catalog).map(refOf)])];
+    const offers = [...new Set([...bizLeads, ...MU.modelChoices().map(refOf)])];
     const leads = make('fieldset', 'biz-set');
     leads.append(make('legend', 'biz-label', 'Leads, in your order'), leadsEditor(e.leads, offers, 'ed|lead', bizLeads.length ? `It uses the business's leads: ${bizLeads.map(modelLabel).join(', ')}.` : 'It uses the business\'s leads. The business has none yet: add them under Setup.', redraw));
-    form.append(leads, lateSet(e));
+    form.append(leads, switchRow('Public web research', 'Use Claude’s subscription to search and read public sources. Results go to the routine’s chat.', e.webResearch, 'ed|web', v => { e.webResearch = v; }), lateSet(e));
 
     const project = editorProject(e);
     if (project && !e.on) {
@@ -2060,7 +2086,7 @@
     const sch = isObj(D.rt.data.scheduler) ? D.rt.data.scheduler : {};
     const list = routines().filter(r => ui.sel === ALL || r.business === ui.sel);
     const anyOn = list.some(r => r.on === true);
-    const add = btn('ghost small', 'New routine', 'rt|new', () => { ui.editor = editorOf(null); ui.arming = ''; ui.focus = ui.editor.business ? 'ed|name' : 'ed|business'; paint(); refresh(); });
+    const add = btn('ghost small', 'New routine', 'rt|new', async () => { if (!(await mayLeaveEditor())) return; ui.editor = editorOf(null); ui.arming = ''; ui.focus = ui.editor.business ? 'ed|name' : 'ed|business'; paint(); refresh(); });
     add.disabled = D.biz.state === 'ok' && !open().length;
     const sec = section('Routines', 'biz-routines', add);
     const allPaused = D.biz.data?.paused === true || D.brief.data?.paused === true || /^Everything is paused/.test(str(sch.why));
@@ -2088,9 +2114,10 @@
     if (ui.setup?.id === b.id && ui.setup.dirty) return ui.setup;
     const sig = JSON.stringify(b);
     if (ui.setup?.id === b.id && ui.setup.sig === sig) return ui.setup;
+    const authoritySeen = { send: str(b.standingAuthority?.send), publish: str(b.standingAuthority?.publish) };
     ui.setup = {
-      id: b.id, sig, dirty: false,
-      f: { name: str(b.name), purpose: str(b.purpose), leads: arr(b.leads).map(String), runsPerDay: String(b.runsPerDay ?? ''), minutesPerDay: String(b.minutesPerDay ?? ''), lines: Object.fromEntries(Object.entries(isObj(b.lines) ? b.lines : {}).map(([k, v]) => [k, String(v)])), allowApi: b.allowApi === true, hubRoom: str(b.hubRoom) },
+      id: b.id, sig, dirty: false, authoritySeen,
+      f: { name: str(b.name), purpose: str(b.purpose), leads: arr(b.leads).map(String), runsPerDay: String(b.runsPerDay ?? ''), minutesPerDay: String(b.minutesPerDay ?? ''), lines: Object.fromEntries(Object.entries(isObj(b.lines) ? b.lines : {}).map(([k, v]) => [k, String(v)])), allowApi: b.allowApi === true, hubRoom: str(b.hubRoom), standingAuthority: { ...authoritySeen } },
     };
     return ui.setup;
   }
@@ -2169,7 +2196,7 @@
     stSec.append(row, make('p', 'biz-note', status === 'active' ? 'Its routines run at their times.' : status === 'paused' ? 'Nothing new starts for it until you press Resume.' : 'Closed: kept for the record, with its files. It is hidden from Today.'));
 
     const leads = section('Leads', 'biz-leads-sec');
-    leads.append(make('p', 'biz-note', b.autoLeads !== false ? 'The models that may lead its routines, in your order. Plenum never swaps in one you did not list.' : 'The models that may lead its routines, in your order. The first that can run is used; Plenum never swaps in one you did not list.'), leadsEditor(f.leads, arr(MU.catalog).map(refOf), 'su|lead', 'No lead yet. Add the model that should run its routines.', () => { touch(); paint(); }));
+    leads.append(make('p', 'biz-note', b.autoLeads !== false ? 'The models that may lead its routines, in your order. Plenum never swaps in one you did not list.' : 'The models that may lead its routines, in your order. The first that can run is used; Plenum never swaps in one you did not list.'), leadsEditor(f.leads, MU.modelChoices().map(refOf), 'su|lead', 'No lead yet. Add the model that should run its routines.', () => { touch(); paint(); }));
     // Auto routing (ar3): one switch for who leads the business's runs (routine runs and Night shift jobs with no pinned lead) and for
     // its own kind lists (lib/business.mjs overlayFor carries autoLeads; lib/team.mjs pick routes a business's own list only while it is
     // on, and a kind's own Auto switch on the Team page must be on too). Not a field of the form: it applies at once.
@@ -2213,6 +2240,15 @@
     apiRow.querySelector('input').disabled = ui.busy.has('su|api');
     limits.append(lineBox, apiRow);
 
+    const authority = section('Standing authority', 'biz-authority');
+    authority.append(
+      make('p', 'biz-note', 'Give the lead permission to handle a recurring action without an owner decision card. Specify the content, destination and purpose. Existing tool approvals apply.'),
+      field('Routine sends', input('text', f.standingAuthority.send, 'su|send', v => { f.standingAuthority.send = v; touch(); }, { maxlength: 400, placeholder: 'Send the weekly inventory report to ops@example.com' })),
+      field('Routine publications', input('text', f.standingAuthority.publish, 'su|publish', v => { f.standingAuthority.publish = v; touch(); }, { maxlength: 400, placeholder: 'Publish approved release notes to the product changelog' })),
+      make('p', 'biz-note', 'Clear a field and save to revoke it for future turns. Stop an active run before changing its authority. Check BUSINESS.md and existing playbooks for any conflicting instructions.'),
+      make('p', 'biz-note', 'Invoice payments require a separately installed business funds adapter and an allowance on the business account. Setup instructions are in docs/FUNDS-ADAPTER.md.'),
+    );
+
     const hub = section('Plenum Hub', 'biz-hubroom');
     hub.append(field('Room on the hub', input('text', f.hubRoom, 'su|room', v => { f.hubRoom = v; touch(); }, { maxlength: 64, placeholder: 'The room\'s name, as it is on the hub' }), 'Its agents talk in this room only. Leave it empty to keep the business off the hub.'));
 
@@ -2241,7 +2277,7 @@
     // The line is in the row only while something is unsaved, so nothing hidden is left in the page.
     if (s.dirty) acts.append(unsaved);
     acts.append(save);
-    form.append(about, stSec, leads, limits, hub, acts);
+    form.append(about, stSec, leads, authority, limits, hub, acts);
     form.addEventListener('submit', e => { e.preventDefault(); saveSetup(); });
     panel.append(form, fileSec, apart);
   }
@@ -2510,7 +2546,8 @@
     day0.setHours(0, 0, 0, 0);
     const waits = [
       ...startCards().map(c => ({ kind: 'start', id: str(c.id), title: `Start ${str(c.label) || 'a program'}: ${str(c.title) || 'a task'}`, sub: 'A program waits for your yes' })),
-      ...items().map(i => ({ kind: 'item', id: num(i.n), title: str(i.title) || 'An item with no title', sub: [bizName(i.business), (TYPES[i.type] ?? TYPES.question).label].join(' · ') })),
+      // item (wave 8): the item itself, for its answers on the card (public/ext-phone-answer.js draws them from item.phone, the server's word).
+      ...items().map(i => ({ kind: 'item', id: num(i.n), title: str(i.title) || 'An item with no title', sub: [bizName(i.business), (TYPES[i.type] ?? TYPES.question).label].join(' · '), item: i })),
     ];
     const running = [
       ...live.map(id => { const r = all.find(x => String(x.id) === id); return { key: id, name: str(r?.name) || 'A routine', business: str(r?.business) }; }),
@@ -2605,7 +2642,7 @@
     const m = glanceModel();
     const plan = m ? glancePlan() : null;
     const below = belowFull();
-    const sig = JSON.stringify([m, plan ? [plan.textContent, plan.className] : null, below, [...G.busy], G.said]);
+    const sig = JSON.stringify([m, plan ? [plan.textContent, plan.className] : null, below, [...G.busy], G.said, MU.phoneAnswer?.sig?.() ?? '']);
     if (sig === G.sig) return;
     G.sig = sig;
     const node = G.node;
@@ -2654,6 +2691,13 @@
         b.append(make('span', 'biz-g-row-title', w.title), make('span', 'biz-g-row-sub', w.sub));
         b.setAttribute('aria-label', `${w.title}. ${w.sub}. Open it on Today`);
         li.append(b);
+        // Wave 8: the item's answers on the card itself (public/ext-phone-answer.js): one tap, or two when its draft is read first. The
+        // row above still opens the item on Today. Below Full, and for a program's start card, there are none here.
+        let acts = null;
+        try {
+          acts = w.kind === 'item' ? MU.phoneAnswer?.row?.(w.item, { below, say: glanceSay, refresh, repaint: paintGlance, open: n => openToday({ item: n }) }) ?? null : null;
+        } catch (err) { console.error('Businesses: the answers of a row could not be drawn.', err); }
+        if (acts) li.append(acts);
         ul.append(li);
       }
       wait.append(ul);
@@ -2829,7 +2873,10 @@
       toldHold = ev.hold.until;
       try { MU.toast?.(sentence(ev.why), 'ok', 12000); } catch { /* the Routines tab says it too */ }
     }
-    if (ev.type === 'decisions') {
+    if (ev.type === 'catalog' && shown()) {
+      if (drawingWaits()) late = true;
+      else paint();
+    } else if (ev.type === 'decisions') {
       if (Number.isFinite(ev.waiting) && D.dec.state === 'ok' && !shown()) {
         D.dec.data = { ...D.dec.data, waiting: ev.waiting };
         paintCount();

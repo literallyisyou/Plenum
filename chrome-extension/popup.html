@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plenum for Chrome</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>Plenum</h1>
+  <form id="connect" hidden>
+    <p>Open Chrome sharing in Plenum to get a pairing code.</p>
+    <label for="code">Pairing code</label>
+    <input id="code" maxlength="32" minlength="32" pattern="[0-9a-fA-F]{32}" autocomplete="off" spellcheck="false" required>
+    <button type="submit">Connect to Plenum</button>
+  </form>
+  <section id="share" hidden aria-label="Share with Plenum">
+    <p id="tab-title"></p>
+    <button id="share-tab" type="button">Share this tab</button>
+    <button id="share-selection" type="button">Share selected text</button>
+    <button id="disconnect" class="quiet" type="button">Disconnect</button>
+  </section>
+  <button id="portfolio" class="quiet" type="button">Open portfolio drafts</button>
+  <p id="status" role="status"></p>
+</body>
+</html>

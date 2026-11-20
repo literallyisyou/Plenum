@@ -65,6 +65,8 @@ function subtractRects(rect, holes) {
 }
 
 const sameProgram = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+const sameWindow = (a, b) => Boolean(a && b) && String(a.id) === String(b.id)
+  && Number.isInteger(a.pid) && a.pid === b.pid && sameProgram(a.exe, b.exe);
 
 // The parts of `bounds` (the rectangle a window-scope capture keeps) that a screenshot must show as flat grey: the visible parts of
 // windows that belong to another program and sit above the target in the stacking order. `windows` is the list of every visible
@@ -77,7 +79,7 @@ const sameProgram = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b
 function maskRects(bounds, windows, target) {
   if (!rectOk(bounds)) return [];
   if (!target || !Array.isArray(windows)) return [plain(bounds)];
-  const index = windows.findIndex(w => w && String(w.id) === String(target.id));
+  const index = windows.findIndex(w => target.strict ? sameWindow(w, target) : w && String(w.id) === String(target.id));
   if (index < 0) return [plain(bounds)];
   const own = [];
   const masked = [];
@@ -86,7 +88,7 @@ function maskRects(bounds, windows, target) {
     if (!w || !rectOk(w.bounds)) continue;
     const overlap = intersect(w.bounds, bounds);
     if (!overlap) continue;
-    if (sameProgram(w.exe, target.exe)) {
+    if (!target.strict && sameProgram(w.exe, target.exe)) {
       own.push(overlap);
     } else {
       masked.push(...subtractRects(overlap, own));
@@ -150,4 +152,4 @@ function fitEdge(width, height, maxEdge) {
   return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)) };
 }
 
-module.exports = { BAR_SIZE, intersect, cropRect, maskRects, barPlacement, frameStrips, pointInRect, subtractRects, displayHolding, fitEdge, rectOk };
+module.exports = { BAR_SIZE, intersect, cropRect, maskRects, barPlacement, frameStrips, pointInRect, subtractRects, displayHolding, fitEdge, rectOk, sameWindow };

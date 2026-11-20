@@ -456,7 +456,7 @@ function createWinNative({ koffi, ownPid = process.pid, wait = sleep, now = Date
 
   function readCursor() {
     const buf = Buffer.alloc(8);
-    api.GetCursorPos(buf);
+    if (!api.GetCursorPos(buf)) throw new Error('Windows could not read the cursor position.');
     return { x: buf.readInt32LE(0), y: buf.readInt32LE(4) };
   }
 
@@ -737,7 +737,7 @@ function createWinNative({ koffi, ownPid = process.pid, wait = sleep, now = Date
       if ((exStyle & 0x80) !== 0 && (exStyle & 0x40000) === 0) continue;
       if (SKIPPED_CLASSES.has(classOf(id).toLowerCase())) continue;
       const w = describe(id);
-      if (w) out.push({ id: w.id, title: w.title, exe: w.exe, pid: w.pid, bounds: w.bounds, own: w.own, minimized: w.minimized });
+      if (w) out.push({ id: w.id, title: w.title, exe: w.exe, pid: w.pid, bounds: w.bounds, own: w.own, minimized: w.minimized, elevated: w.elevated });
     }
     return out;
   }
@@ -749,9 +749,23 @@ function createWinNative({ koffi, ownPid = process.pid, wait = sleep, now = Date
     return w ? { id: w.id, title: w.title, exe: w.exe, pid: w.pid, elevated: w.elevated, bounds: w.bounds, own: w.own } : null;
   }
 
-  async function focus(windowId) {
+  async function focus(windowId, expectedWindow, fallback = false) {
     const hwnd = handleArg(windowId);
     if (!api.IsWindow(hwnd)) return { ok: false, reason: 'no-focus', message: 'That window is gone.' };
+    if (expectedWindow) {
+      const target = describe(hwnd);
+      if (!target || target.own || target.elevated !== false || target.pid !== expectedWindow.pid
+        || target.exe.toLowerCase() !== expectedWindow.exe.toLowerCase()) {
+        return { ok: false, reason: 'no-focus', message: 'The selected window changed or was closed.' };
+      }
+      if (api.IsIconic(hwnd)) api.ShowWindow(hwnd, 9);
+      if (fallback) api.SwitchToThisWindow(hwnd, 1);
+      else api.SetForegroundWindow(hwnd);
+      await wait(100);
+      return idOf(api.GetForegroundWindow()) === String(windowId)
+        ? { ok: true }
+        : { ok: false, reason: 'no-focus', message: 'Windows did not bring that window to the front.' };
+    }
     if (api.IsIconic(hwnd)) api.ShowWindow(hwnd, 9);
     api.SetForegroundWindow(hwnd);
     await wait(60);

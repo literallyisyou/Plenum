@@ -218,10 +218,10 @@
       } else {
         const data = await res.json().catch(() => ({}));
         if (res.ok) applyState(data);
-        else loadError = textOf(data.error, 'Phones could not be read. Press Refresh to try again.');
+        else loadError = textOf(data.error, 'Phones could not be read. Press Try again.');
       }
     } catch (err) {
-      loadError = 'Phones could not be read. Press Refresh to try again.';
+      loadError = 'Phones could not be read. Press Try again.';
     }
     paintAll();
   }
@@ -747,14 +747,18 @@
     else stopCount();
   }
 
+  function browserAddresses(remoteView) {
+    return (Array.isArray(remoteView?.pairAddresses) ? remoteView.pairAddresses : [])
+      .filter(address => isObj(address) && /^https?:\/\//.test(textOf(address.url)));
+  }
+
   // The row "Open Plenum in a browser" (the computer only): the first short address of the code page, with Copy, and what it is.
   function paintBrowserAddress() {
     const p = page;
     if (!p) return;
     p.browserRow.hidden = remotePage() || unbuilt;
     if (p.browserRow.hidden) return;
-    const list = (Array.isArray(view?.pairAddresses) ? view.pairAddresses : []).filter(a => isObj(a) && /^https?:\/\//.test(textOf(a.url)));
-    const first = list[0];
+    const [first] = browserAddresses(view);
     p.browserUrl.textContent = first ? textOf(first.url) : '';
     p.browserUrl.hidden = !first;
     p.browserCopy.hidden = !first;
@@ -894,11 +898,15 @@
   function paintAll() {
     const p = page;
     if (!p) return;
-    p.plain.textContent = NOT_BUILT;
-    p.plain.hidden = !unbuilt;
-    p.main.hidden = unbuilt;
+    // Before the first answer the section says it is reading, in the same quiet line that says when phones are not built in.
+    const reading = !unbuilt && view === null && !loadError;
+    p.plain.textContent = reading ? 'Reading the phones…' : NOT_BUILT;
+    p.plain.hidden = !unbuilt && !reading;
+    // Until the state has been read once, the switches are not shown: drawn from nothing they would all read off while phones may be on.
+    p.main.hidden = unbuilt || view === null;
     p.error.textContent = loadError;
     p.error.hidden = !loadError || unbuilt;
+    if (p.retry) p.retry.hidden = p.error.hidden;
     if (unbuilt) return;
     const v = view ?? {};
     const phone = remotePage();
@@ -925,6 +933,7 @@
     else p.plainNotes.hidden = true;
 
     // The ways a phone can reach this computer.
+    const browserLinks = browserAddresses(v);
     const lan = v.carriers?.lan ?? {};
     p.lan.checked = lan.on === true;
     p.lan.disabled = phone;
@@ -933,8 +942,8 @@
     // Why the switch is grey, in words: it only means something while Same network is on, and only the computer sets it.
     p.lanAnyText.textContent = phone ? 'Only the computer can change this.' : lan.on !== true ? 'Turn on Same network first. Any address only changes who can use that way in.' : '';
     p.lanAnyText.hidden = !p.lanAnyText.textContent;
-    const addresses = Array.isArray(lan.addresses) ? lan.addresses.map(a => textOf(a)).filter(Boolean) : [];
-    p.lanText.textContent = lan.on === true ? (addresses.length ? `Phones can reach this computer at ${addresses.join(', ')}.` : 'No network address for this computer yet.') : '';
+    const lanSetupUrls = browserLinks.filter(address => address.kind === 'lan').map(address => address.url);
+    p.lanText.textContent = lan.on === true ? (lanSetupUrls.length ? `Browser setup on this network: ${lanSetupUrls.join(', ')}` : 'No network address for this computer yet.') : '';
     p.lanError.textContent = textOf(lan.error);
     p.lanError.hidden = !p.lanError.textContent;
     p.lanFirewall.textContent = lan.on === true ? textOf(lan.firewall) : "";
@@ -945,8 +954,8 @@
     const ts = v.carriers?.tailscale ?? {};
     p.ts.checked = ts.on === true;
     p.ts.disabled = phone;
-    const tsHost = textOf(ts.name).replace(/^https?:\/\//, '').replace(/\.$/, '');
-    p.tsText.textContent = ts.on === true && tsHost ? `Reaches this computer at https://${tsHost}.` : textOf(ts.message);
+    const tailscaleSetup = browserLinks.find(address => address.kind === 'tailscale');
+    p.tsText.textContent = ts.on === true && tailscaleSetup ? `Browser setup on Tailscale: ${tailscaleSetup.url}` : textOf(ts.message);
     showNote('phone-relay', p.relayNotes);
     const rl = v.carriers?.relay ?? {};
     p.relay.checked = rl.on === true;
@@ -1136,7 +1145,7 @@
     p.addBtn = button('primary', 'Add phone', () => addPhone('phone'));
     // Add a browser (wave 5): a short address and a code typed on another computer; the same compare and Allow in the window here.
     p.addBrowserBtn = button('ghost', 'Add a browser', addBrowser);
-    p.addBrowserHelp = make('p', 'remote-help', 'Use Plenum from a browser on another computer. You type a short address and a code there. No camera is needed.');
+    p.addBrowserHelp = make('p', 'remote-help', 'To use a web browser on your phone or another computer, choose Add a browser, open the full address including /pair/, and enter the code. In the Plenum phone app, scan the QR code from Add phone.');
     // The short address of the code page, for the browser on the other computer (the computer only; it holds no key).
     p.browserRow = make('div', 'remote-browser-row');
     p.browserLabel = make('p', 'remote-browser-label', 'Open Plenum in a browser');
@@ -1242,7 +1251,10 @@
       make('h5', 'remote-sub', 'Notifications'), pushBlock,
       make('h5', 'remote-sub', 'Stop'), stopBlock,
     );
-    root.append(p.plain, p.error, p.main);
+    // A failed read has its own next step beside the red line: read the phones again.
+    p.retry = button('ghost small', 'Try again', () => refreshState());
+    p.retry.hidden = true;
+    root.append(p.plain, p.error, p.retry, p.main);
     return p;
   }
 

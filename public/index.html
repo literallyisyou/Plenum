@@ -166,24 +166,25 @@
         </div>
         <!-- One banner slot above the message box: notices and other panels' banners are ordered by MuseUI.slots.bannerSlot. -->
         <div class="banner-slot" id="bannerSlot" data-slot="bannerSlot"></div>
+        <div class="pending-approvals" id="pendingApprovals" role="group" aria-label="Pending approvals for this chat" hidden></div>
         <form class="composer" id="composer">
-          <textarea id="input" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="palette" rows="1" placeholder="Ask for a change, a review or a plan. Type / for commands." spellcheck="false" aria-label="Message"></textarea>
+          <textarea id="input" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="palette" rows="1" placeholder="Talk to Plenum. Describe the work in your own words." spellcheck="false" aria-label="Message to Plenum"></textarea>
           <div class="composer-bar">
-            <div class="seg mode-seg" role="group" aria-label="What Send does" title="Chat asks the main model. Council asks every seat, then a moderator sums up">
-              <button type="button" class="seg-btn" data-mode="chat" aria-pressed="true">Chat</button>
-              <button type="button" class="seg-btn" data-mode="council" aria-pressed="false">Council</button>
-            </div>
-            <label class="pick" title="The model that answers your messages">
-              <select id="modelSel" aria-label="Model"></select>
-            </label>
-            <label class="pick" title="How hard the main model thinks: higher is slower and more thorough">
-              <svg class="ic" aria-hidden="true"><use href="#i-gauge"></use></svg>
-              <select id="effortSel" aria-label="Effort"></select>
-            </label>
+            <details class="chat-options" id="chatOptions">
+              <summary class="ghost small"><span id="chatOptionsLabel">Chat options</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"></use></svg></summary>
+              <div class="chat-options-menu">
+                <div class="seg mode-seg" role="group" aria-label="Conversation mode" title="Plenum keeps one conversation with your lead and available team. Council asks every seat">
+                  <button type="button" class="seg-btn" data-mode="chat" aria-pressed="true">Plenum</button>
+                  <button type="button" class="seg-btn" data-mode="council" aria-pressed="false">Council</button>
+                </div>
+                <label class="chat-option-row"><span>Lead model</span><span class="pick"><select id="modelSel" aria-label="Lead model"></select></span></label>
+                <label class="chat-option-row"><span>Effort</span><span class="pick"><select id="effortSel" aria-label="Effort"></select></span></label>
+              </div>
+            </details>
             <!-- The Mode menu: what sending allows for this project (Plan, Ask first, Auto-approve or Approve all). ext-approvals.js
                  builds its menu inside this wrapper and paints the button. -->
             <div class="mode-wrap" id="modeWrap">
-              <button type="button" class="mode-btn" id="modeBtn" data-tone="ask" aria-haspopup="dialog" aria-expanded="false" title="Edits and commands for this project: Ask first, Auto-approve or Approve all. Plan and Build focus are here too">Ask first</button>
+              <button type="button" class="mode-btn" id="modeBtn" data-tone="ask" aria-haspopup="dialog" aria-expanded="false" title="Choose when Plenum asks before editing files or running project terminal commands">Ask first</button>
             </div>
             <button id="send" type="submit" class="send" title="Send" aria-label="Send">
               <svg class="ic ic-send" aria-hidden="true"><use href="#i-arrow-up"></use></svg>
@@ -296,6 +297,7 @@
   </div>
   <!-- First, so the start check below can begin counting from the first moment of the page. -->
   <script src="/ext-a11y.js" defer></script>
+  <script src="/assistant-content.js" defer></script>
   <script src="/markdown.js" defer></script>
   <script src="/music.js" defer></script>
   <script src="/app.js" defer></script>

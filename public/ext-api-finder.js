@@ -384,7 +384,8 @@
     return runSet(row.key, () => MuseUI.setThreadModel(row.plenumRef), `Model set to ${name}${threadWord()}`);
   }
 
-  // The next message only goes to this model: the /ask prefix goes into the composer, and the drawer closes.
+  // The next message only goes to this model: the /ask prefix goes into the composer, and the Settings page (this finder is one of its
+  // sections) and any drawer close, so the message box can take focus (it is inert while the page shows). A toast says where it goes.
   function tryOnce(id) {
     if (!MuseUI.state.activeProject) return MuseUI.toast('Add a project folder first. Messages belong to a project.', 'bad');
     const input = MuseUI.el.input;
@@ -392,9 +393,11 @@
     const existing = input.value;
     input.value = existing && !existing.startsWith('/') ? prefix + existing : prefix;
     input.dispatchEvent(new Event('input'));
+    if (document.getElementById('app')?.hasAttribute('data-settings-open')) MuseUI.el.settingsClose?.click();
     MuseUI.closeDrawer();
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
+    MuseUI.toast(`Your next message goes to openrouter:${id} once. Remove the /ask part from the message box to send it to the chat's model.`);
     return undefined;
   }
 
@@ -764,7 +767,10 @@
   }
 
   // An https link. The visible text is set with textContent, and the arrow is hidden from screen readers.
+  // No link for an address that is missing or not https (the directory sends null for one it has not confirmed): an anchor with a null
+  // href would open Plenum's own /null page. The callers skip a null.
   function linkTo(url, text, srText = ' (opens in your browser)') {
+    if (!isHttps(url)) return null;
     const a = make('a', 'af-link', text);
     a.href = url;
     a.target = '_blank';
@@ -926,6 +932,12 @@
     const r = state.refs;
     if (!r) return;
     paintFilterBar();
+    // A control in the list that has focus keeps it across this repaint (a provider list or the readiness answer arriving rebuilds every row).
+    if (!state.pendingFocus) {
+      const active = document.activeElement;
+      const token = active && active !== r.list && r.list.contains?.(active) ? active.dataset?.focus : '';
+      if (token) state.pendingFocus = token;
+    }
     const d = state.data;
     r.list.replaceChildren();
     r.more.hidden = true;

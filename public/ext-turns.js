@@ -123,13 +123,13 @@
     return ok;
   }
 
-  // Copy: the reply's Markdown, as it was written, and the button reads Copied for a moment.
-  function copyButton(m) {
+  // Copy the Markdown shown in the reply. Folded model protocol stays in its disclosure.
+  function copyButton(text) {
     const b = MuseUI.button('ghost small ext-turns-btn', 'Copy');
     b.title = 'Copy this reply as Markdown';
     let timer = 0;
     b.addEventListener('click', async () => {
-      if (!(await copyText(String(m.content ?? '')))) {
+      if (!(await copyText(text))) {
         MuseUI.toast('The reply could not be copied. Select the text and copy it instead.', 'bad');
         return;
       }
@@ -181,19 +181,29 @@
   // The text that sends a question again. With a model chosen it goes through /ask. Without one, a question that starts with
   // a slash would run as a command, and in Council mode a plain send would ask every seat. Both go through /ask with the
   // chat's own model, which is what a plain send uses in Chat mode.
+  // The chat's own model is the model of the chat on screen (the thread's, the project's, then the app's), not the app-wide one.
+  const chatModel = () => MuseUI.modelInUse?.() || MuseUI.state.model;
   function sendText(text, ref) {
     if (ref) return `/ask ${ref} ${text}`;
-    if ((text.startsWith('/') || councilOn()) && MuseUI.state.model) return `/ask ${MuseUI.state.model} ${text}`;
+    const model = chatModel();
+    if ((text.startsWith('/') || councilOn()) && model) return `/ask ${model} ${text}`;
     return text;
   }
 
+  // The chat on screen, named in full: a cut or a rewind acts on this thread even when another window or the phone switches the
+  // project's active thread before the request arrives (DECISIONS 106). Main is named by the project's id. Taken before a confirm opens.
+  const scopeNow = () => {
+    const project = MuseUI.state.activeProject;
+    return { project, thread: MuseUI.state.activeThread || project };
+  };
+
   // Cuts the chat back to the message at index on the server, then draws the chat again. Resolves to the text of the
   // question that was cut, or to null when the server refused (the reason is shown).
-  async function cutBack(index) {
+  async function cutBack(index, scope = scopeNow()) {
     working = true;
     decorate();
     try {
-      const data = await MuseUI.api('/api/chat/rewind', { project: MuseUI.state.activeProject, index });
+      const data = await MuseUI.api('/api/chat/rewind', { ...scope, index });
       await MuseUI.refresh();
       return String(data.text ?? '');
     } catch (err) {
@@ -217,9 +227,10 @@
     if (working || runGoing()) return;
     if (composerHasText()) return MuseUI.toast('The composer already has text. Clear it first, then edit the message.', 'bad');
     const n = (MuseUI.state.messages ?? []).length - index - 1;
+    const scope = scopeNow();
     const sure = await MuseUI.confirm({ title: 'Edit message', body: `Edit this message? ${editGoes(n)} Undo stays above the composer until you send a message.`, action: 'Edit message', tone: 'danger', focusCancel: true });
     if (sure !== true) return;
-    const text = await cutBack(index);
+    const text = await cutBack(index, scope);
     if (text === null) return;
     setComposer(text);
   }
@@ -236,8 +247,6 @@
   const enc = encodeURIComponent;
   // Said in the Rewind tooltips: what a turn snapshot leaves out (lib/shadow.mjs), so a person does not expect those files back.
   const SECRETS_NOTE = 'Secret files such as .env and private keys are not kept and are not restored.';
-  // The project the chat is on, for every rewind request.
-  const activeProject = () => MuseUI.state.activeProject;
 
   // Why a question has no code snapshot, for the disabled choices. The server says it in record.snap.skipped.
   function noSnapshotReason(m) {
@@ -256,6 +265,7 @@
   async function rewindChat(index) {
     if (working || runGoing()) return;
     const n = (MuseUI.state.messages ?? []).length - index - 1;
+    const scope = scopeNow();
     const ok = await MuseUI.confirm({
       title: 'Rewind the chat to before this message?',
       body: `${chatGoes(n)} Undo stays above the composer until you send a message.`,
@@ -264,19 +274,19 @@
       focusCancel: true,
     });
     if (!ok) return;
-    await cutBack(index);
+    await cutBack(index, scope);
   }
 
   // The button in the drawer that undoes the code rewind (the server keeps the files as they were before it, for this scope).
-  function undoButton() {
+  function undoButton(scope) {
     const b = MuseUI.button('ghost', 'Undo code rewind');
     b.title = 'Put back the files this rewind changed';
     b.addEventListener('click', () => {
       window.MuseRestore?.run({
         title: 'Undo code rewind',
         url: '/api/snapshots/rewind',
-        payload: { project: activeProject(), undo: true },
-        diffUrl: `/api/snapshots/diff?project=${enc(activeProject())}&undo=1`,
+        payload: { ...scope, undo: true },
+        diffUrl: `/api/snapshots/diff?project=${enc(scope.project)}&thread=${enc(scope.thread)}&undo=1`,
         approveText: 'Approve undo',
         restoredText: ev => `Undo done: put back ${(ev.files ?? []).length} files and removed ${(ev.removed ?? []).length}.`,
       });
@@ -286,19 +296,20 @@
 
   // Code only: the files go back to before this question. The card lists them, and the drawer offers Undo once they are back.
   function rewindCode(index, after) {
+    const scope = scopeNow();
     return window.MuseRestore?.run({
       title: 'Rewind code',
       url: '/api/snapshots/rewind',
-      payload: { project: activeProject(), index },
-      diffUrl: `/api/snapshots/diff?project=${enc(activeProject())}&index=${index}`,
+      payload: { ...scope, index },
+      diffUrl: `/api/snapshots/diff?project=${enc(scope.project)}&thread=${enc(scope.thread)}&index=${index}`,
       approveText: 'Approve rewind',
       onEnd: (ev, view) => {
         // A rewind that stopped part way keeps its record (the server says so with undo set), so Undo is offered for it as well. The chat is
         // cut back only when the rewind finished.
         const kept = ev.type === 'error' && ev.undo === true;
         if (ev.type !== 'restored' && !kept) return;
-        view.actions.append(undoButton());
-        if (ev.type === 'restored' && after) after();
+        view.actions.append(undoButton(scope));
+        if (ev.type === 'restored' && after) after(scope);
       },
     });
   }
@@ -311,7 +322,7 @@
     const both = MuseUI.button('ghost small ext-turns-btn', 'Code and chat');
     both.title = hasSnap ? `Put the files back, then cut the chat back to before this message. ${SECRETS_NOTE}` : disabledTitle;
     both.disabled = !hasSnap;
-    both.addEventListener('click', () => rewindCode(index, () => cutBack(index)));
+    both.addEventListener('click', () => rewindCode(index, scope => cutBack(index, scope)));
     const code = MuseUI.button('ghost small ext-turns-btn', 'Code only');
     code.title = hasSnap ? `Put the files back to before this message; the chat stays. ${SECRETS_NOTE}` : disabledTitle;
     code.disabled = !hasSnap;
@@ -347,8 +358,8 @@
     if (working || runGoing()) return;
     if (composerHasText()) return MuseUI.toast('The composer already has text. Clear it first, then regenerate the reply.', 'bad');
     // Without a chat model there is nothing to send the question to, so nothing is cut.
-    if (!ref && councilOn() && !MuseUI.state.model) return MuseUI.toast('Choose a model first, then regenerate the reply.', 'bad');
-    const text = await cutBack(questionIndex);
+    if (!ref && councilOn() && !chatModel()) return MuseUI.toast('Choose a model first, then regenerate the reply.', 'bad');
+    const text = await cutBack(questionIndex, scopeNow());
     if (text === null) return;
     setComposer(sendText(text, ref));
     MuseUI.el.form.requestSubmit();
@@ -361,7 +372,9 @@
     select.title = 'The model that writes the new reply';
     select.setAttribute('aria-label', 'Model for the new reply');
     select.append(new Option('Same model', ''));
+    // A model its provider no longer offers (offered: false) is left out, as in the composer's model menu.
     for (const c of MuseUI.catalog ?? []) {
+      if (c.offered === false) continue;
       const ref = `${c.provider}:${c.id}`;
       select.append(new Option(MuseUI.modelName(ref), ref));
     }
@@ -629,7 +642,8 @@
     replies.forEach((r, i) => {
       const article = replyEls[i];
       if (article.hidden || article.querySelector(`:scope > .${BAR}`)) return;
-      const controls = [copyButton(r.m), insertButton(String(r.m.content ?? ''))];
+      const text = PlenumAssistantContent.clean(r.m.content).text;
+      const controls = text.trim() ? [copyButton(text), insertButton(text)] : [];
       const question = r === lastChat ? questionBefore(messages, r.index) : -1;
       if (question >= 0) controls.push(...regenerateControls(question));
       controls.push(...extrasFor('reply', r.m, r.index, messages, article));

@@ -451,7 +451,7 @@
   }
   const candidates = kind => {
     const have = new Set(refsOf(kind));
-    return models().filter(m => !have.has(m.ref) && canRun(m, kind));
+    return models().filter(m => !have.has(m.ref) && m.avail?.state !== 'not-offered' && canRun(m, kind));
   };
   // The reason beside a state's word. The server sends the rest of a sentence about the model ("is at 93% of its plan"); a reason that
   // only repeats the word ("needs sign-in" beside Needs sign-in) is left out, and a whole sentence is shown as it is.

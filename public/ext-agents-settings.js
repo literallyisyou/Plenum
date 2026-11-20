@@ -44,10 +44,12 @@
   let snap = null;
   // The Show view (types or limits), kept for the session.
   let view = 'types';
-  // The open type form: { mode: 'edit' | 'new', name, draft, error, moreOpen }. Its values live in draft, so a repaint keeps them.
-  let editing = null;
-  // The editor on screen. A load or save that finishes after its editor has gone is dropped.
-  let mounted = null;
+  // The open type form of each editor, by its scope ('app' or 'project'): { mode: 'edit' | 'new', name, draft, error }. Its values live
+  // in draft, so a repaint keeps them. The two editors can be on screen at once (the Settings page, with Project settings opened over it
+  // in the drawer), so each keeps its own form (panels-a-24).
+  const editing = { app: null, project: null };
+  // The editor on screen for each scope. A load or save that finishes after its editor has gone is dropped.
+  const mounted = { app: null, project: null };
   // Saves run one at a time, each from the block the last one stored, so two quick changes never overwrite each other.
   let queue = Promise.resolve();
   let pending = 0;
@@ -218,7 +220,7 @@
 
   // ---------- loading and saving ----------
 
-  const alive = m => mounted === m && m.body.isConnected;
+  const alive = m => mounted[m.scope] === m && m.body.isConnected;
 
   function load(pid) {
     return MuseUI.api(`/api/agents${pid ? `?project=${encodeURIComponent(pid)}` : ''}`);
@@ -272,7 +274,7 @@
     const host = make('div', 'ext-ag-host');
     body.append(host);
     const m = { body: host, scope, pid, id: ++seq };
-    mounted = m;
+    mounted[scope] = m;
     if (snap && snap.pid === pid) draw(m);
     else host.replaceChildren(para('ext-ag-loading', 'Loading the agent settings…'));
     load(pid)
@@ -289,6 +291,20 @@
         host.replaceChildren(wrap);
       });
   }
+
+  MuseUI.events.on('catalog', async () => {
+    const current = Object.values(mounted).filter(m => m && alive(m));
+    if (!current.length || !snap) return;
+    const previous = snap;
+    try {
+      const { catalog } = await load(previous.pid);
+      if (snap !== previous || !Array.isArray(catalog)) return;
+      snap = { ...previous, data: { ...previous.data, catalog } };
+      for (const m of current) if (alive(m)) draw(m);
+    } catch {
+      // Keep the current editor if the provider catalog could not be refreshed.
+    }
+  });
 
   // Paints the editor from the last answer. Focus returns to the control that had it, by its key.
   function draw(m) {
@@ -369,7 +385,7 @@
     try {
       const data = await MuseUI.api('/api/agents/reset', body);
       snap = { pid: m.pid, data };
-      editing = null;
+      editing[m.scope] = null;
       flash('Saved');
     } catch (err) {
       MuseUI.toast(err.message, 'bad');
@@ -398,17 +414,18 @@
   function typesView(m, block, data) {
     const wrap = make('div', 'ext-ag-types');
     wrap.append(para('ext-ag-intro', 'An agent is a model that does one task for another model and reports back. A model starts one with its delegate tool, and /build gives one to each task.'));
+    const ed = editing[m.scope];
     for (const t of block.types) {
-      if (editing && editing.mode === 'edit' && editing.name === t.name) wrap.append(typeForm(m, block, data));
+      if (ed && ed.mode === 'edit' && ed.name === t.name) wrap.append(typeForm(m, block, data));
       else wrap.append(typeCard(m, block, t, data));
     }
-    if (editing && editing.mode === 'new') {
+    if (ed && ed.mode === 'new') {
       wrap.append(typeForm(m, block, data));
       return wrap;
     }
     const full = block.types.length >= LIMITS.types;
     const add = button('primary small', 'Add a type', () => {
-      editing = { mode: 'new', name: '', draft: blankDraft(block), error: '' };
+      editing[m.scope] = { mode: 'new', name: '', draft: blankDraft(block), error: '' };
       draw(m);
     }, 'add-type');
     add.disabled = full;
@@ -432,12 +449,12 @@
 
     const actions = make('div', 'ext-ag-actions');
     actions.append(button('ghost small', 'Edit', () => {
-      editing = { mode: 'edit', name: t.name, draft: draftOf(t), error: '' };
+      editing[m.scope] = { mode: 'edit', name: t.name, draft: draftOf(t), error: '' };
       draw(m);
     }, `edit-${t.name}`));
     if (!t.buildOnly) {
       actions.append(button('ghost small', 'Copy', () => {
-        editing = { mode: 'new', name: '', draft: copyDraft(t, block), error: '' };
+        editing[m.scope] = { mode: 'new', name: '', draft: copyDraft(t, block), error: '' };
         view = 'types';
         draw(m);
       }, `copy-${t.name}`));
@@ -538,15 +555,16 @@
 
   // The form. Built-in types keep their label, kind and reply layout. A new type's name follows its label until its Name box is edited.
   function typeForm(m, block, data) {
-    const d = editing.draft;
-    const isNew = editing.mode === 'new';
-    const builtIn = !isNew && isBuiltIn(data, editing.name);
-    const current = builtIn ? block.types.find(t => t.name === editing.name) : null;
+    const ed = editing[m.scope];
+    const d = ed.draft;
+    const isNew = ed.mode === 'new';
+    const builtIn = !isNew && isBuiltIn(data, ed.name);
+    const current = builtIn ? block.types.find(t => t.name === ed.name) : null;
     const form = make('form', 'ext-ag-form');
     form.addEventListener('submit', e => e.preventDefault());
     const err = make('p', 'ext-ag-err');
     err.setAttribute('role', 'status');
-    err.textContent = editing.error || '';
+    err.textContent = ed.error || '';
 
     // Label, and the name the asking model will use.
     const labelNote = note('');
@@ -576,6 +594,7 @@
     // Model: any provider, the models without tool calls marked, and notes for the ones that need them.
     const byProvider = new Map();
     for (const c of data.catalog ?? []) {
+      if (c.offered === false && c.ref !== d.model) continue;
       if (!byProvider.has(c.provider)) byProvider.set(c.provider, []);
       byProvider.get(c.provider).push(c);
     }
@@ -593,6 +612,9 @@
         group.append(o);
       }
       modelSelect.append(group);
+    }
+    if (d.model && ![...modelSelect.options].some(o => o.value === d.model)) {
+      modelSelect.append(new Option(modelLabel(data, d.model), d.model));
     }
     modelSelect.value = d.model;
     const modelNotes = make('div', 'ext-ag-notes');
@@ -656,16 +678,20 @@
       folderInput.spellcheck = false;
       folderInput.dataset.agKey = 'form-folder';
       folderInput.setAttribute('aria-label', 'Add a folder');
+      // The box's text is kept in the draft, so a redraw (a number or a segment changed) does not empty it, and Save adds it.
+      folderInput.value = d.folderText ?? '';
+      folderInput.addEventListener('input', () => {
+        d.folderText = folderInput.value;
+      });
       folderInput.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
         e.preventDefault();
-        const folder = folderInput.value.trim();
-        if (!folder) return;
-        if (d.folders.length >= LIMITS.folders) {
-          MuseUI.toast(`A type can list at most ${LIMITS.folders} folders.`, 'bad');
+        d.folderText = folderInput.value;
+        const problem = takeFolderText(d);
+        if (problem) {
+          MuseUI.toast(problem, 'bad');
           return;
         }
-        if (!d.folders.includes(folder)) d.folders.push(folder);
         draw(m);
       });
       form.append(field('Writes only in', chips, note('Its writes must stay inside these folders as well as inside the task\'s scope. Empty: anywhere the scope allows.')), folderInput);
@@ -744,11 +770,11 @@
     actions.append(
       button('primary small', 'Save', () => submitType(m, block, data, builtIn, message => {
         // The server's refusal shows on the form's error line and in a toast.
-        if (editing) editing.error = message;
+        if (editing[m.scope]) editing[m.scope].error = message;
         MuseUI.toast(message, 'bad');
       }), 'form-save'),
       button('ghost small', 'Cancel', () => {
-        editing = null;
+        editing[m.scope] = null;
         draw(m);
       }, 'form-cancel'),
     );
@@ -756,24 +782,47 @@
     return form;
   }
 
+  // Moves the folder typed in the "Writes only in" box into the draft's folders. Answers the reason when it cannot (the list is full),
+  // else ''. An empty box or a folder already listed changes nothing.
+  function takeFolderText(d) {
+    const folder = String(d.folderText ?? '').trim();
+    if (!folder) {
+      d.folderText = '';
+      return '';
+    }
+    if (!d.folders.includes(folder)) {
+      if (d.folders.length >= LIMITS.folders) return `A type can list at most ${LIMITS.folders} folders. Remove one, or clear the box.`;
+      d.folders.push(folder);
+    }
+    d.folderText = '';
+    return '';
+  }
+
   // Checks the draft the way the server does, then saves the type and, for a new type, its rows, in one request.
   function submitType(m, block, data, builtIn, onRefused) {
-    const d = editing.draft;
-    const isNew = editing.mode === 'new';
-    editing.error = '';
+    const ed = editing[m.scope];
+    const d = ed.draft;
+    const isNew = ed.mode === 'new';
+    ed.error = '';
     // A check the page makes before anything is sent: the message goes on the form's error line, and nothing is saved.
     const refuse = text => {
-      editing.error = text;
+      ed.error = text;
       draw(m);
       return Promise.resolve(false);
     };
+    // A folder typed but not entered with Enter is the limit the person meant: it is added, not dropped (else the type would write anywhere
+    // the scope allows).
+    if (d.access === 'edit') {
+      const problem = takeFolderText(d);
+      if (problem) return refuse(problem);
+    }
     const label = d.label.trim();
     if (!label || label.length > LIMITS.label) return refuse('A type label is 1 to 40 characters.');
     if (!builtIn && !d.description.trim()) return refuse('Give the type a short description: the asking model reads it to choose a type.');
     if (!builtIn && !NAME_RE.test(d.name)) return refuse('A type name is 1 to 24 lowercase letters, digits or hyphens, starts with a letter, and cannot be a built-in or reserved name.');
     if (d.idleMin > d.timeoutMin) return refuse('The idle limit cannot be longer than the time limit.');
 
-    const name = builtIn ? editing.name : d.name;
+    const name = builtIn ? ed.name : d.name;
     const existing = builtIn ? block.types.find(t => t.name === name) : null;
     const type = builtIn
       ? { ...clone(existing), description: d.description.trim(), model: d.model || null, effort: d.effort || null, maxSteps: d.maxSteps, timeoutMin: d.timeoutMin, idleMin: d.idleMin, files: d.access !== 'none', commands: d.access === 'none' ? false : d.commands, web: d.access === 'none' ? false : d.web, folders: d.access === 'edit' ? d.folders.slice() : [], brief: d.brief }
@@ -810,13 +859,14 @@
           }
         }
       } else {
-        const from = editing.name;
+        const from = ed.name;
         next.types = next.types.map(t => (t.name === from ? type : t));
         if (from !== name) renameEverywhere(next, from, name);
       }
     }, onRefused).then(ok => {
+      // The form that was saved closes; one opened while the save was on its way stays open.
       if (ok) {
-        editing = null;
+        if (editing[m.scope] === ed) editing[m.scope] = null;
         view = 'types';
       }
       if (alive(m)) draw(m);
@@ -983,7 +1033,7 @@
   function overrideBox(m, block, data, o, i) {
     const box = make('div', 'ext-ag-override');
     const top = make('div', 'ext-ag-override-top');
-    const choices = (data.catalog ?? []).map(c => [c.ref, c.label, false]);
+    const choices = (data.catalog ?? []).filter(c => c.offered !== false).map(c => [c.ref, c.label, false]);
     if (!choices.some(c => c[0] === o.ref)) choices.unshift([o.ref, o.ref, false]);
     top.append(
       selectEl(choices, o.ref, v => save(m, next => { next.limits.models[i].ref = v; }), `override-${i}-model`, 'Model for this override'),

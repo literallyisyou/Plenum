@@ -23,6 +23,8 @@
   // Between the Plan toggle and Send, inside the composer bar.
   if (MuseUI.el.send) MuseUI.el.send.before(wrap);
 
+  // A failed read of the flag is tried again after this long.
+  const RETRY_MS = 4000;
   // The flag per project id, as the server last said it. A project that is not in the map has not answered yet.
   const known = new Map();
   // Counts the changes made to each project, so a read that started before a change cannot overwrite it when it answers.
@@ -59,12 +61,21 @@
     return read(project.id);
   }
 
-  // Starts a read for the project in the background. A failed read leaves the button as it is; the next switch tries again.
+  // Starts a read for the project in the background. A failed read is tried again a few seconds later (and on the next connection),
+  // while that project is on screen; until a read answers the button says it does not know yet.
+  let retry = 0;
   function refresh(project) {
     if (reading.has(project.id)) return;
     reading.add(project.id);
+    if (typeof clearTimeout === 'function') clearTimeout(retry);
     read(project.id)
-      .catch(() => {})
+      .catch(() => {
+        if (typeof setTimeout !== 'function') return;
+        retry = setTimeout(() => {
+          const now = activeProject();
+          if (now && now.id === project.id && !known.has(now.id)) refresh(now);
+        }, RETRY_MS);
+      })
       .finally(() => {
         reading.delete(project.id);
         paint();
@@ -73,10 +84,12 @@
 
   function paint() {
     const project = activeProject();
+    // Unknown (no read has answered yet): not "Focus off", which would say the saved focus is off when it may be on.
+    const unknown = Boolean(project) && !known.has(project.id);
     const on = project ? known.get(project.id) === true : false;
-    btn.textContent = on ? 'Focus on' : 'Focus off';
+    btn.textContent = unknown ? 'Focus …' : on ? 'Focus on' : 'Focus off';
     btn.dataset.on = String(on);
-    btn.disabled = !project || busy;
+    btn.disabled = !project || busy || unknown;
   }
 
   // What the page says once a change is saved. The run note only applies while a run is going.
@@ -150,5 +163,10 @@
   // The page redraws the project name whenever it reads the state again (a reload, a project switch), so the button follows it.
   // The button is not inside the project name, so painting cannot trigger the observer.
   new MutationObserver(follow).observe(MuseUI.el.projName, { childList: true, characterData: true, subtree: true });
+  // A (re)connected window reads the flag again when it has none for the project on screen.
+  window.addEventListener?.('plenum:event', e => {
+    const project = activeProject();
+    if (e.detail?.type === 'hello' && project && !known.has(project.id)) refresh(project);
+  });
   follow();
 })();

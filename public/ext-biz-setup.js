@@ -39,7 +39,7 @@
     ask: 'Ask before every change',
     askNote: 'Each change to a file and each command waits for your Approve for five minutes, then is skipped. With nobody at the PC the lead mostly reads, plans and asks. A Codex or Gemini coder still edits inside its scope without a card.',
     auto: 'Work on its own inside this folder',
-    autoNote: 'The lead changes files in this folder and runs commands without a card, including commands that reach the internet. A file edit outside the folder still shows a card. A command does not: it is not held to the folder, so it can change or delete files elsewhere on this PC. Plenum\'s own data and your sign-in folders stay closed. Leaving every send, post, payment and sign-up to you is an instruction to the lead, not a lock.',
+    autoNote: 'The lead changes files in this folder and runs commands without a card, including commands that reach the internet. A file edit outside the folder still shows a card, and so does a command whose folder or paths reach outside it. That check reads only the command line: a script or program the command starts can still change or delete files elsewhere on this PC, and Codex, Gemini CLI and Muse Code do not show Plenum their commands. Plenum\'s own data and your sign-in folders stay closed. Business instructions tell the lead which sends and posts you have authorized. The tools apply their own permissions.',
     askRec: 'This is how Plenum works unless you choose otherwise.',
     autoRec: 'This is the one that lets setup go on while you are away. Choose it only for a folder and a lead you would let run commands on this PC unwatched.',
     parentNote: 'The folder must be there already. Plenum remembers it for next time and makes one new folder in it for each business.',
@@ -330,15 +330,9 @@
   function todayEl({ business = '' } = {}) {
     if (D.state === 'idle') { read(); return null; }
     const list = setups().filter(s => !business || s.business === business);
-    if (D.state === 'error' && !list.length) return null;
+    if (D.state === 'error' && !list.length) return errorEl();
     if (!list.length) return null;
-    const box = make('section', 'biz-sec bzs-sec');
-    const head = make('div', 'biz-sec-head');
-    const h = make('h3', 'biz-sec-title', 'Being set up');
-    h.id = uid('bzs-h');
-    box.setAttribute('aria-labelledby', h.id);
-    head.append(h);
-    box.append(head);
+    const box = sectionEl();
     if (belowFull()) box.append(make('p', 'biz-note', TEXT.needFull));
     else if (D.data?.auto?.on === false && str(D.data?.auto?.why)) box.append(make('p', 'biz-note bzs-auto', sentence(D.data.auto.why)));
     const cards = make('div', 'biz-items bzs-cards');
@@ -347,19 +341,45 @@
     return box;
   }
 
+  // The section's frame: the "Being set up" heading.
+  function sectionEl() {
+    const box = make('section', 'biz-sec bzs-sec');
+    const head = make('div', 'biz-sec-head');
+    const h = make('h3', 'biz-sec-title', 'Being set up');
+    h.id = uid('bzs-h');
+    box.setAttribute('aria-labelledby', h.id);
+    head.append(h);
+    box.append(head);
+    return box;
+  }
+
+  // A read that failed with nothing to show says so, with Try again, so a business being set up does not vanish from Today without a word.
+  function errorEl() {
+    const box = sectionEl();
+    box.append(make('p', 'biz-calm biz-bad', `The businesses being set up could not be read. ${sentence(D.error) || 'Check that Plenum is running.'}`));
+    box.append(btn('ghost small', 'Try again', 'bzs|reread', () => { read().finally(told); }));
+    return box;
+  }
+
   // ---------- the form ----------
 
   let F = null; // the form on screen: { source, data, rows, parent, lead, template, mode, busy, error, askExisting, focus }
 
+  // The form's root while it is drawn. The form is on screen while that root is in the drawer and the drawer shows: a form closed with X or
+  // Escape, or replaced by another drawer, is not, and an answer that comes later must not redraw or close the drawer that shows then.
+  let formRoot = null;
+  const formShown = () => Boolean(formRoot?.isConnected) && MU.el?.drawer?.hidden !== true;
+
   function redraw(focus) {
     if (focus && F) F.focus = focus;
+    if (!formShown()) return;
     try { MU.refreshDrawer(); } catch { /* the drawer was closed */ }
   }
 
   async function browse() {
     const r = await ask('/api/pick-folder', {});
     if (!F) return;
-    if (r.ok && str(r.data.path)) { F.parent = r.data.path; redraw('bzs|parent'); } else if (r.ok && r.data.available === false) { F.error = 'The folder dialog is part of the desktop app. Type the folder\'s full path here.'; redraw('bzs|parent'); }
+    if (r.ok && str(r.data.path)) { F.parent = r.data.path; redraw('bzs|parent'); } else if (r.ok && r.data.available === false) { F.error = 'The folder dialog is part of the desktop app. Type the folder\'s full path here.'; redraw('bzs|parent'); } else if (!r.ok) { F.error = `The folder dialog did not open. ${sentence(r.error)} Type the folder's full path here.`.replace(/\s+/g, ' '); redraw('bzs|parent'); }
   }
 
   async function submit() {
@@ -375,18 +395,26 @@
       ...(r.notes.trim() ? { notes: r.notes.trim() } : {}),
       ...(F.existing ? { existing: true } : {}),
     }));
+    const mine = F;
     const r = await ask('/api/business/setup', { source: F.source, ideas, parent: F.parent.trim(), lead: F.lead, mode: F.mode, template: F.template });
-    if (!F) return;
-    F.busy = false;
+    // The answer belongs to this form only. Cancel (F is null then) or a newer form (F is another one) means it is not on screen any more:
+    // its result is still said, and the newer form is not touched.
+    const shown = F === mine && formShown();
+    mine.busy = false;
     if (!r.ok) {
-      F.error = sentence(r.error);
-      if (r.status === 409 && /already there/.test(r.error)) F.askExisting = true;
-      return redraw('bzs|start');
+      mine.error = sentence(r.error);
+      if (r.status === 409 && /already there/.test(r.error)) mine.askExisting = true;
+      if (shown) return redraw('bzs|start');
+      // The form was closed meanwhile: the refusal is said in a toast, and the drawer that shows now is left alone.
+      if (F === mine) F = null;
+      try { MU.toast?.(`The business was not set up. ${sentence(r.error)}`, 'bad', 12000); } catch { /* nothing else can say it */ }
+      return;
     }
     const made = arr(r.data.made);
     const refused = arr(r.data.refused);
-    F = null;
-    try { MU.closeDrawer(); } catch { /* it is closed */ }
+    if (F === mine) F = null;
+    // Only the form's own drawer is closed; a drawer the person opened meanwhile stays.
+    if (shown) try { MU.closeDrawer(); } catch { /* it is closed */ }
     // What is said is what happened: which businesses were made, whether their first step runs or waits, and which were not made.
     const words = [];
     if (made.length === 1) {
@@ -400,7 +428,7 @@
     for (const m of made) for (const sk of arr(m.skipped)) if (sentence(sk) !== sentence(m.why)) words.push(sentence(sk));
     try { MU.toast?.(words.join(' '), refused.length ? 'bad' : 'ok', 12000); } catch { /* the cards say it */ }
     await read();
-    try { MU.openBusinesses?.(); } catch { /* the title bar button still opens it */ }
+    if (shown) try { MU.openBusinesses?.(); } catch { /* the title bar button still opens it */ }
   }
 
   function ideaRow(r, i) {
@@ -439,6 +467,7 @@
     body.replaceChildren();
     const root = make('div', 'bzs-form-root');
     body.append(root);
+    formRoot = root;
     if (!F) return;
     if (F.loading) {
       const p = make('p', 'biz-calm biz-wait');
@@ -493,16 +522,15 @@
       form.append(row);
     }
 
-    const offers = [...new Set([str(d.lead), ...arr(MU.catalog).map(refOf)].filter(Boolean))];
-    if (!offers.includes(F.lead)) F.lead = offers[0] ?? '';
     const lead = make('select', 'biz-select');
     lead.dataset.fk = 'bzs|lead';
-    for (const ref of offers) {
-      const o = make('option', null, ref === str(d.lead) ? `${modelLabel(ref)} (this folder's model)` : modelLabel(ref));
-      o.value = ref;
-      lead.append(o);
-    }
-    lead.value = F.lead;
+    MU.trackModelMenu(lead, () => {
+      const offers = [...new Set([F.lead, str(d.lead), ...MU.modelChoices().map(refOf)].filter(Boolean))];
+      F.lead ||= offers[0] ?? '';
+      const options = offers.map(ref => new Option(ref === str(d.lead) ? `${modelLabel(ref)} (this folder's model)` : modelLabel(ref), ref));
+      lead.replaceChildren(...options);
+      lead.value = F.lead;
+    });
     lead.addEventListener('change', () => { F.lead = lead.value; });
     form.append(field('Lead model', lead, 'The model that does the setup and asks you. Plenum never puts another model in its place by itself.'));
 

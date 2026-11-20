@@ -3,6 +3,17 @@
 // user keeps the one to continue from. Only Keep writes to the chat. Replies are plain text, set with textContent.
 (function () {
   const MuseUI = window.MuseUI;
+  // A caught error in plain words, as one sentence: the server's own sentence, or a fixed one when Plenum did not answer or sent only a
+  // status (never the browser's "Failed to fetch" or "Request failed (500)").
+  const plain = err => {
+    const t = String((MuseUI?.plainError ? MuseUI.plainError(err) : err?.message) || 'That could not be done.').trim();
+    return /[.!?…]$/.test(t) ? t : `${t}.`;
+  };
+  // The error a refusal becomes: the server's sentence when it sent one, else only its status (plain() words that).
+  const refusal = (status, data) => {
+    const said = typeof data?.error === 'string' ? data.error.trim() : '';
+    return Object.assign(new Error(said || `The request was refused (${status}).`), { status, fromServer: Boolean(said) });
+  };
   // app.js defines MuseUI before the extra panels load. Without it there is nothing to attach to.
   if (!MuseUI) return;
 
@@ -91,9 +102,23 @@
   function modelsCard() {
     const card = make('section', 'card cmp-card');
     card.append(MuseUI.span('kicker', 'Models'));
-    const groups = make('div', 'cmp-groups');
+    view.groups = make('div', 'cmp-groups');
+    view.count = make('p', 'cmp-count');
+    drawModels();
+    card.append(view.groups, view.count);
+    return card;
+  }
+
+  function drawModels() {
+    const available = MuseUI.modelChoices();
+    view.groups.replaceChildren();
+    view.checks.clear();
     for (const provider of SEAT_PROVIDERS) {
-      const models = MuseUI.catalog.filter(c => c.provider === provider);
+      const models = available.filter(c => c.provider === provider);
+      for (const ref of chosen) {
+        if (!ref.startsWith(`${provider}:`) || models.some(c => refOf(c) === ref)) continue;
+        models.push({ provider, id: ref.slice(provider.length + 1), label: `${labelFor(ref)} — not offered to this account` });
+      }
       if (!models.length) continue;
       const group = make('div', 'cmp-group');
       group.append(make('span', 'cmp-group-name', GROUP_NAMES[provider] ?? provider));
@@ -111,17 +136,15 @@
         view.checks.set(ref, box);
       }
       group.append(chips);
-      groups.append(group);
+      view.groups.append(group);
     }
-    view.count = make('p', 'cmp-count');
-    card.append(groups, view.count);
-    return card;
   }
 
   // A pick adds or removes a model. Four is the most, so the other boxes stop accepting once four are chosen.
   function toggle(ref) {
     flash = null;
     chosen = chosen.includes(ref) ? chosen.filter(r => r !== ref) : [...chosen, ref].slice(0, MAX_SEATS);
+    if (!chosen.includes(ref) && !MuseUI.modelChoices().some(c => refOf(c) === ref)) drawModels();
     paint();
   }
 
@@ -275,6 +298,8 @@
     const head = make('div', 'cmp-col-head');
     head.append(make('span', 'cmp-col-name', seat.label), pill);
     const text = make('div', 'cmp-col-text');
+    const protocol = make('div');
+    protocol.hidden = true;
     const error = make('p', 'cmp-col-error');
     error.hidden = true;
     // Quiet buttons: there is one Keep per column, and the one filled button of this drawer is Compare.
@@ -292,8 +317,8 @@
     say.hidden = true;
     const foot = make('div', 'cmp-col-foot');
     foot.append(keep, fail, retry);
-    root.append(head, text, error, foot, say);
-    return { seat, root, pill, text, error, keep, retry, fail, say, failKey: '' };
+    root.append(head, text, protocol, error, foot, say);
+    return { seat, root, pill, text, protocol, error, keep, retry, fail, say, failKey: '' };
   }
 
   // The buttons of a failed column, by the failure's kind: the same table as under a failed reply in the chat (MuseUI.failedReply,
@@ -325,7 +350,16 @@
     col.pill.className = seat.status === 'done' ? 'pill ok' : seat.status === 'failed' ? 'pill bad' : 'pill';
     // The reply follows its newest words, unless the reader has scrolled up to read earlier ones.
     const near = col.text.scrollHeight - col.text.scrollTop - col.text.clientHeight < 40;
-    if (col.text.textContent !== seat.text) col.text.textContent = seat.text;
+    const streaming = seat.status === 'writing';
+    if (seat.text !== col.lastText || streaming !== col.wasStreaming) {
+      const visible = PlenumAssistantContent.clean(seat.text, { streaming });
+      if (col.text.textContent !== visible.text) col.text.textContent = visible.text;
+      const details = PlenumAssistantContent.details(visible.hidden);
+      col.protocol.replaceChildren(...(details ? [details] : []));
+      col.protocol.hidden = !details;
+      col.lastText = seat.text;
+      col.wasStreaming = streaming;
+    }
     col.text.dataset.empty = seat.status === 'waiting' ? 'Waiting for the first words…' : '';
     if (near) col.text.scrollTop = col.text.scrollHeight;
     col.error.hidden = !seat.error;
@@ -404,7 +438,7 @@
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Request failed (${res.status})`);
+        throw refusal(res.status, data);
       }
       // The run's id is claimed from its first event, so the events channel does not draw this compare as one started in
       // another window.
@@ -413,7 +447,7 @@
         onEvent(current, ev);
       });
     } catch (err) {
-      if (err.name !== 'AbortError') current.error = err.message;
+      if (err.name !== 'AbortError') current.error = plain(err);
     } finally {
       controller = null;
       current.active = false;
@@ -490,7 +524,11 @@
         const block = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
-        if (data) handle(JSON.parse(data));
+        if (!data) continue;
+        // A line that is not JSON is skipped: one bad line does not end the compare with the engine's words.
+        let ev = null;
+        try { ev = JSON.parse(data); } catch { ev = null; }
+        if (ev) handle(ev);
       }
     }
   }
@@ -517,10 +555,18 @@
       MuseUI.refresh();
     } catch (err) {
       current.kept = false;
-      flash = { text: err.message, bad: true };
+      flash = { text: plain(err), bad: true };
       paint();
     }
   }
+
+  MuseUI.events.on('catalog', () => {
+    if (!view?.groups.isConnected || MuseUI.el.drawer.hidden) return;
+    const focusedRef = [...view.checks].find(([, box]) => box === document.activeElement)?.[0];
+    drawModels();
+    paint();
+    if (focusedRef) view.checks.get(focusedRef)?.focus({ preventScroll: true });
+  });
 
   // Attach. The entry is added once, above Accounts, when the panel script loads.
   if (!document.getElementById('compareBtn')) MuseUI.el.accountsBtn.before(sideButton());

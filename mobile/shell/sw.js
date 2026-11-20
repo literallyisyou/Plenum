@@ -1,5 +1,5 @@
 // sw.js (mob-09, wave 105; MOBILE.json client_model.ui_source.pwa and the push rules of MOBILE-UI 10). The phone's service worker,
-// bundled as a classic script and served at /shell/sw.js with Service-Worker-Allowed: / (scope /).
+// bundled as a classic script and served beside the shell (/sw.js on a relay, /p/<key>/sw.js on the bridge) with scope /.
 //   - The UI files: GET of a UI path (index, app.js, ext-*.js and the rest) is answered from the cache the active record names
 //     (ui-loader.js). The index is rewritten on the way out (rewriteIndex: data-surface, viewport-fit, the shim tag).
 //     Anything not cached goes to the network as usual.
@@ -273,7 +273,10 @@ export async function openFromNotification(event, env) {
     client.postMessage(computer ? { op: 'plenum-hash', hash, computer } : { op: 'plenum-hash', hash });
     return 'focused';
   }
-  await env.clients.openWindow(`${env.scope ?? '/'}${withComputer(hash, computer)}`);
+  // Scope / lets the worker serve the cached UI. The shell itself lives beside the worker script. A direct bridge has no shell at /.
+  const workerUrl = env.workerUrl ? new URL(env.workerUrl) : null;
+  const shellPath = workerUrl?.pathname.startsWith('/p/') ? new URL('.', workerUrl).pathname : env.scope ?? '/';
+  await env.clients.openWindow(`${shellPath}${withComputer(hash, computer)}`);
   return 'opened';
 }
 

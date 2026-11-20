@@ -112,10 +112,12 @@
       if (data?.routes) paintRoutes(panel, data.routes);
       panel.misses = 0;
       if (panel.retry && typeof clearTimeout === 'function') clearTimeout(panel.retry);
+      return true;
     } catch {
       // The cards keep their last status, which says how old it is. While the panel is open and the page is seen, Plenum asks again by itself,
       // a little later each time.
       retryLater(panel);
+      return false;
     }
   }
 
@@ -333,6 +335,8 @@
 
   // Shows the server's route status. What a run does now is said in words, with the Claude choice and the switches as they are.
   function paintRoutes(panel, routes) {
+    // The routes as last drawn from the server, so a change that was not saved can be put back (saveRoute).
+    panel.savedRoutes = routes;
     if (!panel.ui) panel.ui = buildRoutes(panel);
     const ui = panel.ui;
     const g = routes.gemini ?? {};
@@ -374,8 +378,11 @@
       const data = await MuseUI.api('/api/key-routes', patch);
       if (seq === panel.routeSeq && data?.routes) paintRoutes(panel, data.routes);
     } catch (err) {
-      MuseUI.toast(err.message, 'bad');
-      await refreshStatus(panel);
+      MuseUI.toast(plain(err, 'The change was not saved. Try again.'), 'bad');
+      // When the saved state cannot be read either, the controls go back to what was last read, so a switch never shows a change
+      // that was not saved. The later retry confirms it.
+      const read = await refreshStatus(panel);
+      if (!read && seq === panel.routeSeq && panel.savedRoutes) paintRoutes(panel, panel.savedRoutes);
     } finally {
       if (seq === panel.routeSeq) setRoutesBusy(panel, false);
     }

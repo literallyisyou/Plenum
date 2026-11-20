@@ -95,11 +95,21 @@ function createHandler() {
     return { ok: true, awake: blockerId !== null, idleSec: idleSecOf(shell) };
   }
 
+  function presenceMessage(_message, shell) {
+    let state = 'unknown';
+    try {
+      state = shell.powerMonitor?.getSystemIdleState?.(1) ?? 'unknown';
+    } catch {
+      // An unavailable reading cannot authorize unattended work.
+    }
+    return { ok: true, idleSec: idleSecOf(shell), state };
+  }
+
   return {
     name: 'night-shift',
     // Whether the blocker is held now (for the tests).
     held: () => blockerId !== null,
-    messages: { 'night-shift-awake': awakeMessage },
+    messages: { 'night-shift-awake': awakeMessage, 'night-shift-presence': presenceMessage },
     hooks: {
       serverExited: shell => release(shell),
       beforeQuit: shell => release(shell),

@@ -14,7 +14,10 @@ export const MAX_MESSAGE_BYTES = 256 * 1024;
 // with its own words lost, so the two lists are pinned to each other (mobile/test/plugins.test.mjs).
 // 'clear' (wave 4) is not shown: it carries only the tag of a notification to take down (an answered approval, a fixed problem).
 export const PUSH_KINDS = Object.freeze(['approval', 'handover', 'finished', 'failed', 'limit', 'needs', 'test', 'clear']);
-export const PUSH_ACTIONS = Object.freeze(['deny', 'stop', 'approve']);
+// yes and no (wave 8): the two answers of a simple yes/no item of a business (lib/phone-answer.mjs); their route is '/#yes=<n>.<token>'.
+export const PUSH_ACTIONS = Object.freeze(['deny', 'stop', 'approve', 'yes', 'no']);
+// The actions that ask for the device's unlock before they run: a yes of any kind. Stop, Deny and No do not ask by themselves.
+export const AUTH_ACTIONS = Object.freeze(['approve', 'yes']);
 export const NOTIFICATION_CHANNELS = Object.freeze({
   approvals: 'plenum-approvals',
   finished: 'plenum-finished',
@@ -51,7 +54,7 @@ const COMPUTER_RE = /^[0-9a-f]{64}$/;
 // (letters, digits, dots, dashes, underscores; the shell's parseNotificationHash allows the same 80). The phone may add '&nt=<tag>' (the
 // notification to take down after acting) and '&computer=<64 hex>' (the computer that sent it), in that order. PlenumNotifier.kt
 // ROUTE_PATTERN is the same expression.
-const ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/;
+const ROUTE_RE = /^\/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve|yes|no)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$/;
 
 export class UnifiedPushError extends Error {
   constructor(code, message) {

@@ -776,6 +776,7 @@ describe('Isolated preview: size, title and the sandbox policy', () => {
     assert.equal(IP.SANDBOX_POLICY.files, 'blocked');
     assert.equal(IP.SANDBOX_POLICY.storage, 'off');
     assert.equal(IP.SANDBOX_POLICY.javascript, 'on');
+    assert.equal(IP.SANDBOX_POLICY.screenshots, 'allowed');
   });
 });
 
@@ -1082,9 +1083,12 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
   test('the closed-app notifications use the approval-only Approve rule; only Approve asks for the device unlock (wave 4)', () => {
     const notifier = fs.readFileSync(path.join(MOBILE, KOTLIN_UNIFIEDPUSH, 'PlenumNotifier.kt'), 'utf8');
     const code = codeOnly(notifier);
-    // Stop all must work from the lock screen and Deny passes the shell's own lock rules: one call, true only for approve.
-    assert.deepEqual([...code.matchAll(/setAuthenticationRequired\(([^)]*)\)/g)].map(m => m[1]), ['action.action == ""']);
-    assert.match(notifier, /\.setAuthenticationRequired\(action\.action == "approve"\)/);
+    // Stop all must work from the lock screen and Deny passes the shell's own lock rules: one call, true only for a yes. Wave 8: the
+    // Yes of a business's yes/no item asks as Approve does (AUTH_ACTIONS); Stop, Deny and No still do not. This test pinned
+    // `action.action == "approve"` before (the original is kept in build/v06-before/w8-phone-answer/mobile-test).
+    assert.deepEqual([...code.matchAll(/setAuthenticationRequired\(([^)]*)\)/g)].map(m => m[1]), ['action.action in AUTH_ACTIONS']);
+    assert.match(notifier, /private val AUTH_ACTIONS = setOf\("approve", "yes"\)/);
+    assert.match(notifier, /\.setAuthenticationRequired\(action\.action in AUTH_ACTIONS\)/);
     assert.match(notifier, /"Plenum has an update\."/);
     assert.match(notifier, /plenum:\/\/app\$route/);
     assert.match(notifier, /"&line=" \+ URLEncoder\.encode/);
@@ -1103,7 +1107,6 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
       'javaScriptCanOpenWindowsAutomatically = false',
       'setSupportMultipleWindows(false)',
       'mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW',
-      'FLAG_SECURE',
     ]) {
       assert.ok(activity.includes(setting), setting);
     }
@@ -1116,6 +1119,7 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     assert.match(manifest, /android:process=":isolatedpreview"/);
     assert.match(manifest, /android:exported="false"/);
     assert.match(manifest, /excludeFromRecents="true"/);
+    assert.match(manifest, /android:taskAffinity="\$\{applicationId\}\.isolatedpreview"/);
   });
 
   test('the preview reads only the file it staged, and deletes it after the read', () => {
@@ -1124,16 +1128,13 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     assert.match(activity, /finally \{\s*file\.delete\(\)/);
   });
 
-  test('FLAG_SECURE is set only by the privacy switch and the isolated preview, never by default elsewhere', () => {
+  test('Android activities allow foreground screenshots and the saved switch controls only the Android 13+ Recents thumbnail', () => {
     const hits = walk(MOBILE).filter(f => /\.(kt|java)$/.test(f) && fs.readFileSync(f, 'utf8').includes('FLAG_SECURE'));
-    const rels = hits.map(f => path.relative(MOBILE, f).split(path.sep).join('/')).sort();
-    assert.deepEqual(rels, [
-      'android/app/src/main/java/com/literallyisyou/plenum/PlenumPrivacyPlugin.java',
-      'plugins/isolated-preview/android/src/main/java/com/literallyisyou/plenum/isolatedpreview/IsolatedPreviewActivity.kt',
-    ]);
+    assert.deepEqual(hits, []);
     const privacy = read('android/app/src/main/java/com/literallyisyou/plenum/PlenumPrivacyPlugin.java');
-    assert.match(privacy, /getBoolean\(KEY_HIDE, true\)/, 'on by default, as MOBILE-UI 6.17 shows it checked');
-    assert.match(privacy, /if \(hide\) \{\s*window\.addFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)/);
+    assert.match(privacy, /getBoolean\(KEY_HIDE, true\)/);
+    assert.match(privacy, /if \(Build\.VERSION\.SDK_INT >= Build\.VERSION_CODES\.TIRAMISU\) \{\s*activity\.setRecentsScreenshotEnabled\(!hide\)/);
+    assert.match(privacy, /runOnUiThread\(\(\) -> applyTo\(activity, hide\)\)/);
   });
 
   test('MainActivity registers the privacy plugin before the bridge starts and applies the setting on the first frame', () => {
@@ -1141,7 +1142,7 @@ describe('the native code: names, sandbox, privacy and the notification rules', 
     const register = main.indexOf('registerPlugin(PlenumPrivacyPlugin.class)');
     const bridge = main.indexOf('super.onCreate(savedInstanceState)');
     assert.ok(register >= 0 && bridge > register, 'registration comes before super.onCreate');
-    assert.match(main, /PlenumPrivacyPlugin\.applyTo\(getWindow\(\), PlenumPrivacyPlugin\.hideInSwitcher\(this\)\)/);
+    assert.match(main, /PlenumPrivacyPlugin\.applyTo\(this, PlenumPrivacyPlugin\.hideInSwitcher\(this\)\)/);
   });
 
   test('the dictation plugin asks for the microphone only through its permission alias and uses on-device recognition first', () => {

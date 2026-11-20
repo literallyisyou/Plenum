@@ -1,0 +1,5 @@
+.chrome-share-panel, .chrome-share-panel section, .chrome-share-panel > div { display: grid; gap: .65rem; }
+.chrome-share-panel p, .chrome-share-panel h3 { margin: 0; overflow-wrap: anywhere; }
+.chrome-share-panel pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow-y: auto; padding: .65rem; border: 1px solid var(--border); }
+.chrome-share-panel button { justify-self: start; }
+.chrome-share-panel input { width: min(100%, 28ch); }

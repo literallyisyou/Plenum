@@ -330,6 +330,8 @@ function settings(ctx, io) {
     body: [
       section(C2.SETTINGS_COMPUTERS),
       el('div', { class: 'sh-rows' }, computerRows, row(C2.PAIR_ANOTHER_SHORT, null, () => io.go('how'))),
+      // w7: only while the Android app runs its built-in screens for this computer.
+      vm.screens?.bundled ? para(C2.fillName(C2.SCREENS_BUNDLED, ctx.computer), 'sh-help') : null,
       section(ctx.browser ? C2.SETTINGS_THIS_BROWSER : C2.SETTINGS_THIS_PHONE),
       el('div', { class: 'sh-rows' },
         row(C2.NOTIFY_TITLE, vm.notify.label, () => io.go('settings-notify')),
@@ -485,12 +487,13 @@ function settingsLock(ctx, io) {
       on ? null : para(C2.LOCK_OFF_HINT, 'sh-note'),
       on ? para(`${C2.LOCK_AFTER_LABEL}`, 'sh-section') : null,
       on ? radioGroup(C2.LOCK_AFTER_LABEL, S.LOCK_AFTER, vm.prefs.lockAfter, id => io.act.setPref({ lockAfter: id })) : null,
-      switchRow({
+      ctx.platform === 'ios' ? para(C2.LOCK_SWITCHER_IOS, 'sh-note') : switchRow({
         label: C2.LOCK_SWITCHER,
         checked: vm.prefs.hideSwitcher,
         id: 'sh-switcher',
         onChange: value => io.act.setPref({ hideSwitcher: value }),
       }),
+      ctx.platform === 'android' ? para(C2.LOCK_SWITCHER_ANDROID, 'sh-note') : null,
       web ? para(C2.LOCK_WEB_KEY, 'sh-note') : null,
       msgNode(io.local.lockNote ?? null),
     ],

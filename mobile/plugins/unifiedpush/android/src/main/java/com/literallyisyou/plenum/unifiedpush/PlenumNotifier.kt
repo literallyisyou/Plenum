@@ -50,14 +50,17 @@ internal object PlenumNotifier {
     // a backstop for a 'clear' that never arrived.
     private const val APPROVAL_TIMEOUT_MS = 3600L * 1000L
     private val KINDS = setOf("approval", "handover", "finished", "failed", "limit", "needs", "test", "clear")
-    private val ACTIONS = setOf("deny", "stop", "approve")
+    private val ACTIONS = setOf("deny", "stop", "approve", "yes", "no")
+
+    // The actions that ask for the device's unlock themselves (core.js AUTH_ACTIONS): a yes of any kind.
+    private val AUTH_ACTIONS = setOf("approve", "yes")
     private val TAG_PATTERN = Regex("^plenum-[0-9a-f]{32}$")
     private val CANCEL_TAG_PATTERN = Regex("^plenum(-[0-9a-f]{32})?$")
     private val COMPUTER_PATTERN = Regex("^[0-9a-f]{64}$")
 
     // The routes the computer names, as core.js ROUTE_RE: the same expression, character for character.
     private val ROUTE_PATTERN = Regex(
-        "^/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$",
+        "^/#(?:home|stop|waiting|chat|today|accounts|services|night-shift|settings=limit|(?:waiting|handover|chat|today|deny|approve|yes|no)=[A-Za-z0-9_.-]{1,80})(?:&nt=plenum-[0-9a-f]{32})?(?:&computer=[0-9a-f]{64})?$",
     )
     private val CONTROL = Regex("[\\u0000-\\u001f\\u007f]")
 
@@ -201,8 +204,9 @@ internal object PlenumNotifier {
             val actionIntent = if (stopFor != null) StopReceiver.pendingFor(context, payload.tag, stopFor) else intentFor(context, route)
             builder.addAction(
                 NotificationCompat.Action.Builder(null, action.title, actionIntent)
-                    // Only Approve asks for the device's unlock itself. Stop and Deny do not (Deny passes the shell's own lock rules).
-                    .setAuthenticationRequired(action.action == "approve")
+                    // Only a yes asks for the device's unlock itself: Approve, and the Yes of a business's yes/no item (wave 8). Stop, Deny
+                    // and No do not (Deny and No pass the shell's own lock rules).
+                    .setAuthenticationRequired(action.action in AUTH_ACTIONS)
                     .build(),
             )
         }
