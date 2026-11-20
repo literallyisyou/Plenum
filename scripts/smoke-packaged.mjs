@@ -15,7 +15,7 @@
 //      and passes only when the server was started again and the page reconnected.
 //   4. Asks GET /api/health on that port while it waits. The route is gated by the app's per-launch token (which only the app knows), so a 401 from it
 //      is an answer too: it shows the server is up. The verdict is the app's own: exit code 0 and its server.log saying the page loaded.
-//   5. Ends its own process tree if startup times out and removes the sealed folders when the run passed.
+//   5. Ends its own app process if startup times out and removes the sealed folders when the run passed.
 // Exit code 0: it came up. 1: it did not (the log tail is printed). 2: the script could not run.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -100,12 +100,12 @@ Object.assign(env, {
   PORT: String(port), PLENUM_SMOKE: '1',
 });
 if (crash) env.PLENUM_SMOKE_CRASH_SERVER = '1';
+if (mac) env.ELECTRON_ENABLE_LOGGING = '1';
 
 // ---------- start, wait, end ----------
 const started = Date.now();
-const child = spawn(EXE, [`--user-data-dir=${dirs.userdata}`], {
-  env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: mac,
-});
+const child = spawn(EXE, [`--user-data-dir=${dirs.userdata}`], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+console.log(`Starting ${crash ? 'recovery' : 'plain'} smoke test on port ${port}.`);
 let out = '';
 child.stdout.on('data', d => { out += d; });
 child.stderr.on('data', d => { out += d; });
@@ -123,15 +123,16 @@ const poll = () => {
 };
 const poller = setInterval(poll, 250);
 
-// Ends the process tree started here, by its PID, and nothing else. Only while the process is still running (a finished PID may be reused).
+// On Windows stop the whole process tree. On macOS keep normal launch
+// semantics and signal the child through its own handle.
+let ending = false;
 function endTree() {
-  if (exited || child.exitCode !== null || !child.pid) return;
+  if (ending || exited || child.exitCode !== null || !child.pid) return;
+  ending = true;
   if (windows) {
     spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
   } else {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch (err) {
-      if (err.code !== 'ESRCH') throw err;
-    }
+    child.kill('SIGKILL');
   }
 }
 const code = await new Promise(resolve => {
