@@ -26,8 +26,8 @@
   // The topics: a title and what it says. Every sentence is about something the app does today.
   const TOPICS = [
     { title: 'Start a chat', text: 'Add a project folder in the sidebar, then type in the message box and press Enter. Shift+Enter adds a line. Type / to see the commands.' },
-    { title: 'Stop a run', text: 'Press Esc, or the Stop button. Stop always works, and it ends everything the run started.' },
-    { title: 'Ask first and approvals', text: 'By default Plenum asks before it edits a file or runs a command. On a card that waits for you, Y approves and N denies. Nothing runs without your answer unless you turn Auto-approve on.' },
+    { title: 'Stop a run', text: 'Press Stop to interrupt an active run. The Review panel shows any changes already made.' },
+    { title: 'Ask first and approvals', text: 'Use Permissions to see what requires your approval. A pending request shows the action and the available choices. Some providers also apply their own limits.' },
     { title: 'Models and sign-in', text: `Open Accounts (${MOD}+Shift+A) to sign in to a coding agent or to save an API key. A key stays on this computer. It is never put in a log, a chat or a report.` },
     { title: 'Settings', text: `Open Settings (${MOD}+,) for the look of the app, safety, updates, backups and more. Updates shows which build you have.` },
     { title: 'Keyboard shortcuts', text: `Press ${MOD}+/ to see them all.` },
@@ -95,6 +95,13 @@
 
   function topicsPart() {
     const box = make('div', 'ext-help-topics');
+    const entry = make('div', 'ext-help-bar');
+    const capabilities = MuseUI.button('primary small', 'What Plenum can do');
+    capabilities.addEventListener('click', () => MuseUI.openCapabilities?.());
+    const setup = MuseUI.button('ghost small', 'Open setup');
+    setup.addEventListener('click', () => MuseUI.openSetup?.());
+    entry.append(capabilities, setup);
+    if (MuseUI.openCapabilities && MuseUI.openSetup) box.append(entry);
     for (const topic of TOPICS) {
       const d = make('details', 'ext-help-topic');
       d.append(make('summary', 'ext-help-summary', topic.title), make('p', 'ext-help-text', topic.text));

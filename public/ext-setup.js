@@ -1,5 +1,5 @@
 // ext-setup. The first-run setup wizard. It opens in the drawer by itself the first time Plenum is used with no saved key and
-// no CLI signed in, the way the other panels open. Four steps: what Plenum is, the CLI sign-ins, the API keys and a summary.
+// no project or account is set up. The connection step offers either a coding subscription or an API key.
 // It uses only routes the Accounts panel already has (GET /api/keys, POST /api/keys, POST /api/keys/test, GET /api/accounts and
 // the sign-in routes). POST /api/keys takes only the providers in lib/api-providers.mjs, so Anthropic's key goes through the
 // Claude key routes. A key is typed into a password box, sent once and cleared; the wizard keeps no copy of it. Text is set
@@ -19,7 +19,10 @@
   const DISMISSED = 'plenum-setup-dismissed';
   // The id of the Setup entry in the side menu.
   const BUTTON_ID = 'setupBtn';
-  const STEPS = ['Welcome', 'Sign-ins', 'API keys', 'Done'];
+  const WELCOME = 1;
+  const SIGN_INS = 2;
+  const API_KEYS = 3;
+  const DONE = 4;
   // Sign-in states. A CLI that is not installed cannot be signed in to, so its button stays off.
   const IN = 'in';
   const OUT = 'out';
@@ -35,8 +38,7 @@
   // A status older than this is read again when the wizard is opened or drawn again.
   const STALE_MS = 10000;
 
-  // Step 3, in order. Each label and variable name matches lib/api-providers.mjs (Anthropic: lib/keys.mjs). GET /api/keys
-  // gives each provider's key page; a provider that list leaves out is hidden.
+  // Each label and variable name matches lib/api-providers.mjs (Anthropic: lib/keys.mjs).
   const KEYS = [
     { id: 'anthropic', label: 'Anthropic (Claude)', envVar: 'ANTHROPIC_API_KEY', mark: 'C' },
     { id: 'xai', label: 'xAI (Grok)', envVar: 'XAI_API_KEY', mark: 'X' },
@@ -62,7 +64,7 @@
       id: 'claude', name: 'Claude Code', account: 'Claude account', mark: 'C', path: '/api/accounts/claude/login',
       // Claude runs through the Claude CLI only when the CLI is installed; otherwise it uses the Anthropic key from step 3.
       state: a => (a?.claude?.route === 'cli' ? (a.claude.connected === null ? UNKNOWN : a.claude.connected ? IN : OUT) : NONE),
-      missing: 'Not installed. Claude runs on an Anthropic API key instead, which step 3 sets up.',
+      missing: 'Install Claude Code to use your Claude subscription, or connect an Anthropic API key for usage-based billing.',
     },
     { id: 'codex', name: 'Codex', account: 'ChatGPT account', mark: 'X', path: '/api/accounts/codex/login', state: a => cliState(a?.codex, 'loggedIn'), missing: MISSING },
     { id: 'gemini', name: 'Gemini CLI', account: 'Google account', mark: 'G', path: '/api/accounts/gemini/login', state: a => cliState(a?.gemini, 'signedIn'), missing: MISSING },
@@ -144,7 +146,10 @@
   let watch = null;    // the running watch (MuseUI.watchSignIn), or null
   let forcedAt = 0;    // when the watch last asked the server to look again
   let ui = null;       // the wizard's elements from the last draw
-  let step = 1;
+  let step = WELCOME;
+  let connectionStep = SIGN_INS;
+  let selectedCli = 'codex';
+  let selectedKey = 'openai';
   let current = false; // true while the wizard is the drawer's content
 
   function make(tag, cls, text) {
@@ -188,9 +193,9 @@
   }
 
   // Opens the wizard in the drawer, as the other panels open, so the drawer's close button, the scrim and Escape all close it.
-  function openWizard() {
+  function openWizard(at = WELCOME) {
     current = true;
-    step = 1;
+    step = at;
     MuseUI.openDrawer(TITLE, draw);
     showStep(true);
   }
@@ -206,8 +211,9 @@
     closeWizard();
   }
 
-  function goTo(delta) {
-    step = Math.min(STEPS.length, Math.max(1, step + delta));
+  function goTo(at) {
+    if (at === SIGN_INS || at === API_KEYS) connectionStep = at;
+    step = at;
     showStep(true);
   }
 
@@ -215,11 +221,12 @@
   function showStep(focus) {
     if (!ui) return;
     ui.panes.forEach((pane, i) => { pane.hidden = i !== step - 1; });
-    ui.count.textContent = `Step ${step} of ${STEPS.length}: ${STEPS[step - 1]}`;
-    ui.back.disabled = step === 1;
-    ui.next.hidden = step === STEPS.length;
-    ui.finish.hidden = step !== STEPS.length;
-    if (step === STEPS.length) {
+    const connecting = step === SIGN_INS || step === API_KEYS;
+    ui.count.textContent = step === WELCOME ? '1 of 3 · Get started' : connecting ? '2 of 3 · Connect a model' : '3 of 3 · Start a chat';
+    ui.back.hidden = step === WELCOME;
+    ui.next.hidden = !connecting;
+    ui.finish.hidden = step !== DONE;
+    if (step === DONE) {
       paintSummary();
       readModels();
     }
@@ -232,10 +239,10 @@
     skip.addEventListener('click', () => closeWizard());
     const nav = make('div', 'setup-nav');
     ui.back = MuseUI.button('ghost small', 'Back');
-    ui.back.addEventListener('click', () => goTo(-1));
-    ui.next = MuseUI.button('primary small', 'Next');
-    ui.next.addEventListener('click', () => goTo(1));
-    ui.finish = MuseUI.button('primary small', 'Finish');
+    ui.back.addEventListener('click', () => goTo(step === DONE ? connectionStep : WELCOME));
+    ui.next = MuseUI.button('primary small', 'Continue');
+    ui.next.addEventListener('click', () => goTo(DONE));
+    ui.finish = MuseUI.button('ghost small', 'Close setup');
     ui.finish.addEventListener('click', () => finishSetup());
     nav.append(ui.back, ui.next, ui.finish);
     foot.append(skip, nav);
@@ -247,38 +254,68 @@
   function welcomePane() {
     const pane = make('section', 'setup-pane');
     const heading = stepHeading('Welcome to Plenum');
-    const facts = make('ul', 'setup-list');
-    facts.append(
-      make('li', '', 'Keys are kept in the operating system’s encrypted store on the desktop app.'),
-      make('li', '', 'The network is used for the providers you set up, a check of GitHub for new versions (at start and every four hours; turn it off in Settings › Updates), and public price lists when you open the API finder.'),
-      make('li', '', 'Nothing goes to Plenum’s developer.'),
-      make('li', '', 'The license agreement and privacy notice are under Legal in Settings.'),
+    const lead = make('p', 'setup-lead', 'Ask an AI to explain a project, plan a change, or work with your files. Connect one model to send your first message.');
+    const choices = make('div', 'setup-choices');
+    choices.append(
+      setupChoice('Use a subscription', 'Sign in to a coding tool such as Codex or Claude Code. Your provider’s plan and limits apply.', SIGN_INS),
+      setupChoice('Use an API key', 'Connect a provider that bills for requests. Use this if you already have an API account.', API_KEYS),
     );
-    const lead = make('p', 'setup-lead', 'Plenum is a local console for working with Claude, Codex, Gemini, Muse Code, Cursor, Grok Build, Antigravity and per-token API models in your own project folders.');
-    // Opens the Legal section. The wizard is the drawer's content, so the Legal page takes its place; Setup in the menu brings it back.
-    const terms = make('button', 'ghost small', 'Read the terms');
-    terms.type = 'button';
-    terms.addEventListener('click', () => MuseUI.openLegal?.());
-    pane.append(heading, lead, facts, terms);
+    const actions = make('div', 'actions');
+    const explore = MuseUI.button('ghost small', 'Explore what Plenum can do');
+    explore.addEventListener('click', () => openCapabilities(WELCOME));
+    actions.append(explore);
+    pane.append(heading, lead, choices, actions);
     return { pane, heading };
+  }
+
+  function setupChoice(title, description, next) {
+    const choice = MuseUI.button('setup-choice', '');
+    choice.append(make('strong', '', title), make('span', '', description));
+    choice.addEventListener('click', () => goTo(next));
+    return choice;
+  }
+
+  function providerPicker(label, rows, chosen, onChange) {
+    const field = make('label', 'setup-provider');
+    const select = make('select');
+    select.replaceChildren(...rows.map(({ id, label }) => new Option(label, id)));
+    select.value = chosen;
+    field.append(make('span', '', label), select);
+    select.addEventListener('change', () => onChange(select.value));
+    return { field, select };
+  }
+
+  function showSelected(rows, selected) {
+    for (const row of rows) row.card.hidden = (row.c?.id ?? row.id) !== selected;
+  }
+
+  function alternateRoute(title, next) {
+    const button = MuseUI.button('ghost small', title);
+    button.addEventListener('click', () => goTo(next));
+    return button;
   }
 
   // ---------- step 2: sign-ins ----------
 
   function signInPane() {
     const pane = make('section', 'setup-pane');
-    const heading = stepHeading('Sign in to your CLIs');
-    const lead = make('p', 'setup-lead', 'Sign in opens a window. You finish the sign-in in that window, and the credentials stay with that tool. Plenum checks every few seconds and shows the sign-in here when it is done.');
+    const heading = stepHeading('Connect a coding subscription');
+    const lead = make('p', 'setup-lead', 'Choose a coding tool you have access to. If you need to install it, follow its instructions and check again. Complete sign-in in the window that opens.');
     ui.clis = CLIS.map(c => cliRow(c));
     const rows = make('div', 'setup-rows');
     rows.append(...ui.clis.map(r => r.card));
+    const { field } = providerPicker('Coding tool', CLIS.map(c => ({ id: c.id, label: c.name })), selectedCli, id => {
+      selectedCli = id;
+      showSelected(ui.clis, selectedCli);
+    });
+    showSelected(ui.clis, selectedCli);
     const again = MuseUI.button('ghost small', 'Check again');
     again.addEventListener('click', () => loadStatus(true));
     // Kept so a read it started can turn it off until the answer is in (a fresh read asks the CLIs and takes a few seconds).
     ui.again = again;
     const actions = make('div', 'actions');
-    actions.append(again);
-    pane.append(heading, lead, rows, actions);
+    actions.append(again, alternateRoute('Use an API key instead', API_KEYS));
+    pane.append(heading, lead, field, rows, actions);
     // The provider-terms strip sits above the sign-in rows (step 2, as in Accounts).
     MuseUI.notice?.('provider-terms', { before: rows });
     return { pane, heading };
@@ -296,11 +333,20 @@
     const actions = make('div', 'actions');
     actions.append(row.button);
     if (c.id === 'claude') {
-      // Claude without its CLI runs on a key, so its row leads to the step that takes the key.
+      row.installGuide = make('a', 'setup-link', 'Claude Code installation guide ↗');
+      row.installGuide.href = 'https://code.claude.com/docs/en/setup';
+      row.installGuide.target = '_blank';
+      row.installGuide.rel = 'noopener noreferrer';
+      row.installGuide.hidden = true;
       row.toKeys = MuseUI.button('ghost small', 'Add an Anthropic key');
       row.toKeys.hidden = true;
-      row.toKeys.addEventListener('click', () => showKeys());
-      actions.append(row.toKeys);
+      row.toKeys.addEventListener('click', () => {
+        selectedKey = 'anthropic';
+        ui.keySelect.value = selectedKey;
+        ui.keys.forEach(paintKey);
+        goTo(API_KEYS);
+      });
+      actions.append(row.installGuide, row.toKeys);
     }
     card.append(row.note, row.install, actions);
     return row;
@@ -308,8 +354,7 @@
 
   // Opens step 3, the API keys.
   function showKeys() {
-    step = 3;
-    showStep(true);
+    goTo(API_KEYS);
   }
 
   // Starts the CLI's own sign-in window through its route. The person finishes the sign-in there, and the wizard watches for it:
@@ -440,20 +485,28 @@
     row.button.textContent = state === IN || wait ? 'Sign in again' : 'Sign in';
     row.button.disabled = row.busy || state === null || state === NONE;
     if (row.toKeys) row.toKeys.hidden = state !== NONE;
+    if (row.installGuide) row.installGuide.hidden = state !== NONE;
   }
 
   // ---------- step 3: API keys ----------
 
   function keyPane() {
     const pane = make('section', 'setup-pane');
-    const heading = stepHeading('Add API keys');
-    const lead = make('p', 'setup-lead', 'Keys are for providers that bill per token. Save checks a key with its provider, then keeps it. Test sends one small request to the provider to check the saved key.');
+    const heading = stepHeading('Connect an API provider');
+    const lead = make('p', 'setup-lead', 'Choose a provider and create a key in its dashboard. Your provider bills for usage. Saving checks the key and uses this computer’s encrypted store when available.');
     ui.notice = make('p', 'setup-notice');
     ui.notice.hidden = true;
     ui.keys = KEYS.map(k => keyRow(k));
     const rows = make('div', 'setup-rows');
     rows.append(...ui.keys.map(r => r.card));
-    pane.append(heading, lead, ui.notice, rows);
+    const { field, select } = providerPicker('API provider', KEYS, selectedKey, id => {
+      selectedKey = id;
+      ui.keys.forEach(paintKey);
+    });
+    ui.keySelect = select;
+    const actions = make('div', 'actions');
+    actions.append(alternateRoute('Use a subscription instead', SIGN_INS));
+    pane.append(heading, lead, field, ui.notice, rows, actions);
     // The per-token billing strip sits above the key rows (step 3, as in Accounts).
     MuseUI.notice?.('api-keys-spend', { before: rows });
     return { pane, heading };
@@ -479,7 +532,7 @@
     row.input.autocomplete = 'off';
     row.input.spellcheck = false;
     row.input.placeholder = `Paste your ${k.label} key`;
-    row.input.setAttribute('aria-label', `${k.label} API key`);
+    row.input.setAttribute('aria-label', `API key for ${k.label}`);
     row.result.setAttribute('role', 'status');
     row.link.target = '_blank';
     row.link.rel = 'noopener noreferrer';
@@ -552,16 +605,16 @@
   function paintKey(row) {
     const s = keyReady(row.id, status) ? status : null;
     const listed = !s || row.id === 'anthropic' || s.keys.providers.some(p => p.id === row.id);
-    row.card.hidden = !listed;
+    row.card.hidden = row.id !== selectedKey;
     const configured = s ? keyConfigured(s, row.id) : false;
     const unused = Boolean(s) && row.id === 'anthropic' && !claudeUsesKey(s.accounts);
-    row.pill.textContent = !s ? 'Checking…' : unused ? 'Not used' : configured ? 'Saved' : 'Not set';
+    row.pill.textContent = !s ? 'Checking…' : !listed ? 'Unavailable' : unused ? 'Not used' : configured ? 'Saved' : 'Not set';
     row.pill.className = configured ? 'pill ok' : 'pill';
-    row.note.textContent = unused
-      ? 'Claude Code runs through the Claude CLI here, so this key is not used while the CLI is installed.'
-      : row.billing;
+    row.note.textContent = !listed ? 'This provider is unavailable. Choose another provider to continue.'
+      : unused ? 'Claude Code runs through the Claude CLI here. You can change the Claude route in Accounts.'
+        : row.billing;
     row.test.disabled = row.busy || !configured;
-    row.save.disabled = row.busy || s?.keys?.storage?.canSave === false;
+    row.save.disabled = row.busy || !s || !listed || s.keys.storage?.canSave === false;
     const page = s?.keys?.providers?.find(p => p.id === row.id)?.keyUrl;
     row.link.hidden = !isHttps(page);
     if (isHttps(page)) {
@@ -574,18 +627,17 @@
 
   function donePane() {
     const pane = make('section', 'setup-pane');
-    const heading = stepHeading('Here is what is set up');
-    const lead = make('p', 'setup-lead', 'You can change any of this later in Accounts.');
+    const heading = stepHeading('Start your first chat');
+    const lead = make('p', 'setup-lead', 'Add a folder you want to work in and try “Explain how this project is organized.” Plenum can show a plan before changing files.');
     ui.summary = make('ul', 'setup-list');
-    // With nothing set up, the summary leads to the two ways forward instead of ending there.
-    ui.summaryNone = make('div');
+    ui.summaryNone = make('div', 'setup-pane');
+    ui.summaryNone.hidden = true;
     const addKey = MuseUI.button('primary small', 'Add an API key');
     addKey.addEventListener('click', () => showKeys());
-    const accounts = MuseUI.button('ghost small', 'Open Accounts');
-    accounts.addEventListener('click', () => MuseUI.el.accountsBtn.click());
+    const signIn = alternateRoute('Connect a subscription', SIGN_INS);
     const ways = make('div', 'actions');
-    ways.append(addKey, accounts);
-    ui.summaryNone.append(make('p', 'setup-lead', 'Nothing is set up yet. You can sign in or add a key later from Accounts.'), ways);
+    ways.append(signIn, addKey);
+    ui.summaryNone.append(make('p', 'setup-lead', 'Connect a model before sending a message. You can add a project now and connect later from Accounts.'), ways);
     // Which model answers (MuseUI.answering, ext-model-info.js). When the chosen model cannot, one press sets one that can.
     ui.useModel = MuseUI.button('primary small', 'Use');
     ui.useModel.addEventListener('click', async () => {
@@ -595,7 +647,18 @@
     ui.useModelRow = make('div', 'actions');
     ui.useModelRow.hidden = true;
     ui.useModelRow.append(ui.useModel);
-    pane.append(heading, lead, ui.summary, ui.useModelRow, ui.summaryNone);
+    ui.start = MuseUI.button('primary small', 'Add a project folder');
+    ui.start.addEventListener('click', () => {
+      const project = MuseUI.state?.activeProject;
+      finishSetup();
+      if (project) MuseUI.el.input?.focus();
+      else MuseUI.addProjectFromSettings?.();
+    });
+    const explore = MuseUI.button('ghost small', 'View capabilities');
+    explore.addEventListener('click', () => openCapabilities(DONE));
+    const actions = make('div', 'actions setup-start');
+    actions.append(ui.start, explore);
+    pane.append(heading, lead, ui.summary, ui.useModelRow, ui.summaryNone, actions);
     return { pane, heading };
   }
 
@@ -609,6 +672,7 @@
   }
 
   function paintSummary() {
+    if (ui?.start) ui.start.textContent = MuseUI.state?.activeProject ? 'Open project chat' : 'Add a project folder';
     // The summary needs every part: with one still on its way it would say too little.
     if (!ui || !ui.summary || !status?.keys || !status.accounts || status.cliPending) return;
     const signed = CLIS.filter(c => c.state(status.accounts) === IN).map(c => c.name);
@@ -632,7 +696,7 @@
   function readModels() {
     const mine = ++modelRead;
     Promise.resolve(MuseUI.refreshModelInfo?.()).then(() => {
-      if (mine === modelRead && ui && step === STEPS.length) paintSummary();
+      if (mine === modelRead && onScreen() && step === DONE) paintSummary();
     }, () => {});
   }
 
@@ -719,7 +783,8 @@
     if (!Array.isArray(keys?.providers) || !accounts?.claude) return;
     merge({ keys, main: accounts, cli, cliPending: false });
     statusAt = Date.now();
-    if (KEYS.some(k => keyConfigured(status, k.id)) || CLIS.some(c => c.state(status.accounts) === IN)) return;
+    const hasAccount = KEYS.some(k => keyConfigured(status, k.id)) || CLIS.some(c => c.state(status.accounts) === IN);
+    if (hasAccount && MuseUI.state?.projects?.length) return;
     // The person may have opened another panel while the check ran. The wizard waits for an empty drawer and never replaces one.
     if (!MuseUI.el.drawer.hidden) return;
     openWizard();
@@ -761,7 +826,7 @@
     const b = make('button', 'side-link');
     b.type = 'button';
     b.id = BUTTON_ID;
-    b.title = 'Set up Plenum: sign-ins and API keys';
+    b.title = 'Connect a model and get started';
     b.append(MuseUI.icon('sparkle'), 'Setup');
     b.addEventListener('click', openSetup);
     return b;
@@ -772,6 +837,42 @@
     forget();
     openWizard();
   }
+
+  const CAPABILITIES = [
+    ['Work in a project', 'Open a folder and ask Plenum to explain it, plan a change, edit files, or run tests. Add threads for separate conversations. Search chats in one project or across projects.'],
+    ['Compare and collaborate', 'In Chat options, choose a lead model for one conversation or open Council for perspectives from several models. Quick compare sends one question to several selected models. Each provider’s billing applies.'],
+    ['Review changes', 'Open Review to inspect changes from the last run. Mark files Viewed as you go. Approvals tell you when an action needs your decision. Use Stop to interrupt a run.'],
+    ['Automate recurring work', 'Use agents for focused tasks and routines for scheduled project work. Review active runs and pending requests in the Agents pane.'],
+    ['Use apps or a browser', 'Computer use can work with a screen or shared windows. On Mac, screen capture and input need Screen Recording and Accessibility permission. Chrome sharing uses the separate Plenum extension.'],
+    ['Take Plenum with you', 'Pair a phone from Settings to use Plenum remotely while the host computer is running. The desktop controls which actions the phone can take.'],
+  ];
+
+  function openCapabilities(returnStep = null) {
+    let heading;
+    MuseUI.openDrawer('What Plenum can do', body => {
+      heading = stepHeading('One workspace for your models');
+      const guide = make('div', 'setup');
+      guide.append(heading, make('p', 'setup-lead', 'Plenum runs on your computer and connects to the models you choose. Project chats and settings are saved on this computer. When you send a message, the selected provider receives the prompt and context needed for the work.'));
+      const entries = make('div', 'setup-capabilities');
+      for (const [title, detail] of CAPABILITIES) {
+        const entry = make('section', 'setup-capability');
+        entry.append(make('h4', '', title), make('p', '', detail));
+        entries.append(entry);
+      }
+      const actions = make('div', 'actions setup-start');
+      const setup = MuseUI.button('primary small', returnStep ? 'Back to setup' : 'Open setup');
+      setup.addEventListener('click', () => returnStep ? openWizard(returnStep) : openSetup());
+      const legal = MuseUI.button('ghost small', 'Privacy and terms');
+      legal.addEventListener('click', () => MuseUI.openLegal?.());
+      actions.append(setup, legal);
+      guide.append(actions, entries);
+      body.append(guide);
+    });
+    heading?.focus();
+  }
+
+  MuseUI.openSetup = openSetup;
+  MuseUI.openCapabilities = () => openCapabilities();
 
   // Attach. The entry is added once, above Accounts, when the panel script loads.
   if (!document.getElementById(BUTTON_ID)) MuseUI.el.accountsBtn.before(sideButton());

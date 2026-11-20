@@ -24,7 +24,21 @@
   background: var(--surface); color: var(--text-2); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere;
 }
 .setup-rows { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.setup-choices, .setup-capabilities { display: grid; gap: 10px; }
+.setup-choice, .setup-capability {
+  display: grid; gap: 5px; padding: 14px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
+  color: var(--text); text-align: left;
+}
+.setup-choice:hover { border-color: var(--accent); background: var(--fill-1); }
+.setup-choice:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.setup-choice strong, .setup-capability h4 { margin: 0; font: 650 14px/1.35 var(--ui); }
+.setup-choice span, .setup-capability p { margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.setup-provider { display: grid; gap: 6px; color: var(--text-2); font-size: 13px; font-weight: 600; }
+.setup-provider select { width: 100%; min-width: 0; padding: 8px 10px; }
+.setup-start { padding-top: 4px; }
 .setup .card { min-width: 0; }
+.setup .card[hidden], .setup-pane[hidden] { display: none; }
 .setup .card-head { flex-wrap: wrap; row-gap: 8px; }
 .setup .card-head > div:first-of-type { min-width: 0; flex: 1 1 140px; overflow-wrap: anywhere; }
 .setup .pill { white-space: normal; text-align: right; }

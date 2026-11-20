@@ -1,7 +1,7 @@
 // ext-openrouter. Builds on window.MuseUI (see app.js).
 // The OpenRouter model picker, a section of Settings > Accounts right after the model-provider keys (MuseUI.settings.register, scope
 // 'app', group 'accounts'). OpenRouter has no fixed list in Plenum: any
-// model id it lists works, written openrouter:<id>. The server fetches the list with the saved key and keeps it ten minutes
+// model id it lists works, written openrouter:<id>. The server fetches the list with the saved key and refreshes it daily
 // (GET /api/openrouter/models). This card lists it, narrows it as you type, and takes any other id typed into the same field.
 // Using a model goes through the existing model setting (MuseUI.update). The panel never handles a key, and every piece of
 // text is set with textContent.
@@ -83,6 +83,7 @@
     observer.observe(node);
   }
 
+  let reloadVisibleList;
   function buildSection() {
     const section = make('section', SECTION);
     section.setAttribute('aria-label', TITLE);
@@ -115,6 +116,8 @@
     let models = [];
     let why = LOADING;
     let busy = false;
+    let reading = false;
+    let shown = false;
 
     const paintPill = () => {
       const on = String(inUse() || '').startsWith(PREFIX);
@@ -158,14 +161,17 @@
     }
 
     async function load() {
+      if (reading) return;
+      reading = true;
       try {
         const data = await call('/api/openrouter/models');
         const listed = data.ok && Array.isArray(data.models) ? data.models.filter(m => m && typeof m.id === 'string' && typeof m.name === 'string') : [];
         models = listed;
         why = listed.length ? '' : String(data.message || 'The model list did not come back.');
       } catch (err) {
-        models = [];
         why = err.message;
+      } finally {
+        reading = false;
       }
       paintList();
     }
@@ -224,7 +230,8 @@
     section.append(card);
     paintPill();
     paintButtons();
-    whenShown(section, load);
+    reloadVisibleList = () => { if (shown && section.isConnected) void load(); };
+    whenShown(section, () => { shown = true; void load(); });
     return section;
   }
 
@@ -233,6 +240,7 @@
   if (typeof MuseUI.settings?.register === 'function') {
     MuseUI.settings.register({ id: SECTION_ID, scope: 'app', title: SECTION_TITLE, group: 'accounts', order: SECTION_ORDER, render: body => body.append(buildSection()) });
   }
+  MuseUI.events.on('providers', () => reloadVisibleList?.());
 
   // A saved OpenRouter model has to be named in the model menu when the page opens. app.js sets the menu's value on every render
   // and redraws the project list on every render too, so a change to either one means the value was just set. The menu is
