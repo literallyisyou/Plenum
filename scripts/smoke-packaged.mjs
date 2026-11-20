@@ -104,7 +104,11 @@ if (mac) env.ELECTRON_ENABLE_LOGGING = '1';
 
 // ---------- start, wait, end ----------
 const started = Date.now();
-const child = spawn(EXE, [`--user-data-dir=${dirs.userdata}`], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+const args = [`--user-data-dir=${dirs.userdata}`];
+// This profile is disposable and has no saved keys. macOS can otherwise
+// suspend Chromium's encrypted cookie store at a system Keychain prompt.
+if (mac) args.push('--use-mock-keychain');
+const child = spawn(EXE, args, { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 console.log(`Starting ${crash ? 'recovery' : 'plain'} smoke test on port ${port}.`);
 let out = '';
 child.stdout.on('data', d => { out += d; });

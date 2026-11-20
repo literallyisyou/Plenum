@@ -859,7 +859,10 @@ async function restartAndReload() {
 function loadApp() {
   if (!win) return;
   try {
-    win.loadURL(APP_URL)?.catch?.(() => {});
+    if (SMOKE) writeLog('smoke: requesting the local app page');
+    win.loadURL(APP_URL)?.catch?.(err => {
+      if (SMOKE && !quitting) writeLog(`smoke: navigation was interrupted (${String(err?.message ?? err).slice(0, 150)})`);
+    });
   } catch {
     // The window is gone.
   }
@@ -880,10 +883,10 @@ function createWindow() {
     backgroundColor: startLook.background,
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
-    titleBarOverlay: windowButtons(startLook),
+    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: windowButtons(startLook) }),
     show: false,
     // Smoke mode: never shown, no taskbar button, never takes the focus (opacity 0 as well, in case a platform shows it anyway).
-    ...(SMOKE ? { opacity: 0, skipTaskbar: true, focusable: false } : {}),
+    ...(SMOKE && process.platform !== 'darwin' ? { opacity: 0, skipTaskbar: true, focusable: false } : {}),
     // preload.cjs gives the page its token (window.plenumShell.token). spellcheck is off because on Linux Electron downloads
     // Hunspell dictionaries from a Google-hosted server when it is on, and the Privacy Notice says Plenum makes no such request.
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs'), spellcheck: false, ...(SMOKE ? { backgroundThrottling: false } : {}) },
@@ -899,7 +902,7 @@ function createWindow() {
   // (B-106): on macOS the window keeps its own buttons, so the call is skipped there and the background still follows the theme.
   win.webContents.on('did-change-theme-color', (_event, color) => {
     if (!win || !/^#[0-9a-f]{6}$/i.test(color ?? '')) return;
-    win.setTitleBarOverlay?.(windowButtons(isDark(color) ? CHROME.dark : CHROME.light));
+    if (process.platform !== 'darwin') win.setTitleBarOverlay?.(windowButtons(isDark(color) ? CHROME.dark : CHROME.light));
     win.setBackgroundColor(color);
   });
   // Links that open a new window go to the browser; the app itself stays in this window. Plain http links go too (B-113: a model's

@@ -53,6 +53,7 @@ const el = {
   accountsBtn: $('accountsBtn'),
   updatesBtn: $('updatesBtn'),
   updatesBadge: $('updatesBadge'),
+  usageBtn: $('usageBtn'),
   helpBtn: $('helpBtn'),
   settingsBtn: $('settingsBtn'),
   themeBtn: $('themeBtn'),
@@ -7369,6 +7370,10 @@ async function renderUsage(body) {
   body.append(foot, para('Muse Code and Claude report their numbers with a reply. Reading Muse Code can send one very small request.'));
 }
 
+function openUsage() {
+  openDrawer('Usage limits', renderUsage);
+}
+
 function openUpdates() {
   openSettingsPage('updates');
 }
@@ -9191,7 +9196,7 @@ async function runCommand(line) {
         return window.MuseUI.openLegal?.();
       case 'usage':
       case 'limits':
-        return openDrawer('Usage and limits', renderUsage);
+        return openUsage();
       // B-58: every promise is awaited inside the try, so a rejection reaches the catch below and shows as a toast.
       case 'compact':
         return await compact();
@@ -9607,6 +9612,7 @@ document.addEventListener('click', e => {
 for (const pick of document.querySelectorAll('.pick')) pickable(pick);
 
 el.accountsBtn.addEventListener('click', openAccounts);
+el.usageBtn?.addEventListener('click', openUsage);
 el.updatesBtn.addEventListener('click', openUpdates);
 el.helpBtn.addEventListener('click', () => openDrawer('Commands', renderCommands));
 el.settingsBtn.addEventListener('click', () => openSettings());
