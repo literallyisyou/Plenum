@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build one Apple Silicon disk image, then install and smoke-test that exact image.
 set -euo pipefail
+trap 'echo "Mac preview failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")/.."
 
 if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
@@ -54,16 +55,29 @@ binary="$app/Contents/MacOS/Plenum"
 resources="$app/Contents/Resources/app"
 test "$(lipo -archs "$binary")" = arm64
 codesign --verify --deep --strict --verbose=2 "$app"
-for file in server.mjs public/app.js public/assistant-content.js LICENSE.txt THIRD-PARTY-NOTICES.txt legal/EULA.txt; do
+for file in server.mjs public/app.js public/assistant-content.js legal/EULA.md legal/PRIVACY.md; do
   test -s "$resources/$file"
+done
+for file in LICENSE.txt THIRD-PARTY-NOTICES.txt EULA.txt; do
+  test -s "$app/Contents/$file"
 done
 
 # Load the actual ARM native dependency using the packaged Electron runtime.
 # No accessibility or screen recording permission is needed for this check.
 /usr/bin/env -i HOME="$scratch/home" PATH=/usr/bin:/bin \
-  ELECTRON_RUN_AS_NODE=1 "$binary" -e \
-  'if (process.platform !== "darwin" || process.arch !== "arm64") process.exit(1); require(require.resolve("koffi", { paths: [process.argv[1]] }));' \
-  "$resources"
+  ELECTRON_RUN_AS_NODE=1 "$binary" --input-type=module - "$resources" <<'NODE'
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Expected native Apple Silicon Electron.');
+const root = process.argv[2];
+createRequire(join(root, 'package.json'))('koffi');
+const { readDoc } = await import(pathToFileURL(join(root, 'lib/legal.mjs')));
+const { text } = await readDoc('open-source');
+if (!text.trim()) throw new Error('Packaged license notices are empty.');
+console.log('Native module and packaged license viewer verified.');
+NODE
 
 node scripts/smoke-packaged.mjs --exe "$binary" --root "$scratch/plain"
 node scripts/smoke-packaged.mjs --exe "$binary" --crash --root "$scratch/recovery"
