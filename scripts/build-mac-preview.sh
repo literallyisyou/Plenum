@@ -41,7 +41,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-hdiutil attach -readonly -nobrowse -mountpoint "$scratch/mount" "$image"
+# Mount this build's own installer in the isolated test. The published image
+# still presents its license when the recipient opens it.
+hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$scratch/mount" "$image" <<< Y
 mounted=true
 ditto "$scratch/mount/Plenum.app" "$scratch/Plenum.app"
 hdiutil detach "$scratch/mount"
